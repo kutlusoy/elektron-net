@@ -106,10 +106,65 @@ static void ApplyStats(CCoinsStats& stats, const std::map<uint32_t, Coin>& outpu
     }
 }
 
+template <typename T>
+static void ApplyUTXOCoinsToStats(
+    CCoinsStats& stats,
+    Txid& prevkey,
+    std::map<uint32_t, Coin>& outputs,
+    T& hash_obj,
+    const COutPoint& key,
+    const Coin& coin)
+{
+    if (!outputs.empty() && key.hash != prevkey) {
+        ApplyStats(stats, outputs);
+        ApplyHash(hash_obj, prevkey, outputs);
+        outputs.clear();
+    }
+    prevkey = key.hash;
+    outputs[key.n] = coin;
+    stats.coins_count++;
+}
+
+//! Calculate statistics about the unspent transaction output set
+template <typename T>
+static std::optional<CCoinsStats> ComputeUTXOStatsFromCache(
+    T hash_obj,
+    const CCoinsViewCache& cache,
+    node::BlockManager& blockman,
+    const std::function<void()>& interruption_point)
+{
+    CBlockIndex* pindex;
+    {
+        LOCK(::cs_main);
+        pindex = blockman.LookupBlockIndex(cache.GetBestBlock());
+    }
+    CCoinsStats stats{Assert(pindex)->nHeight, pindex->GetBlockHash()};
+
+    Txid prevkey;
+    std::map<uint32_t, Coin> outputs;
+    cache.ForEachUnspent([&](const COutPoint& key, const Coin& coin) {
+        if (interruption_point) interruption_point();
+        ApplyUTXOCoinsToStats(stats, prevkey, outputs, hash_obj, key, coin);
+        return true;
+    });
+    if (!outputs.empty()) {
+        ApplyStats(stats, outputs);
+        ApplyHash(hash_obj, prevkey, outputs);
+    }
+
+    FinalizeHash(hash_obj, stats);
+    stats.nDiskSize = cache.EstimateSize();
+    return stats;
+}
+
 //! Calculate statistics about the unspent transaction output set
 template <typename T>
 static std::optional<CCoinsStats> ComputeUTXOStats(T hash_obj, CCoinsView* view, node::BlockManager& blockman, const std::function<void()>& interruption_point)
 {
+    if (auto* cache = dynamic_cast<CCoinsViewCache*>(view)) {
+        return ComputeUTXOStatsFromCache(hash_obj, *cache, blockman, interruption_point);
+    }
+
     std::unique_ptr<CCoinsViewCursor> pcursor;
     CBlockIndex* pindex;
     {
@@ -127,14 +182,7 @@ static std::optional<CCoinsStats> ComputeUTXOStats(T hash_obj, CCoinsView* view,
         COutPoint key;
         Coin coin;
         if (pcursor->GetKey(key) && pcursor->GetValue(coin)) {
-            if (!outputs.empty() && key.hash != prevkey) {
-                ApplyStats(stats, outputs);
-                ApplyHash(hash_obj, prevkey, outputs);
-                outputs.clear();
-            }
-            prevkey = key.hash;
-            outputs[key.n] = std::move(coin);
-            stats.coins_count++;
+            ApplyUTXOCoinsToStats(stats, prevkey, outputs, hash_obj, key, std::move(coin));
         } else {
             LogError("%s: unable to read value\n", __func__);
             return std::nullopt;

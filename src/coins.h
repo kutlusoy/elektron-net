@@ -447,6 +447,12 @@ public:
     bool HaveCoinInCache(const COutPoint &outpoint) const;
 
     /**
+     * Iterate the effective unspent UTXO set (cache layered on base), in COutPoint
+     * sort order. Used when cursor iteration on CCoinsViewCache is unavailable.
+     */
+    void ForEachUnspent(const std::function<bool(const COutPoint&, const Coin&)>& fn) const;
+
+    /**
      * Return a reference to Coin in the cache, or coinEmpty if not found. This is
      * more efficient than GetCoin.
      *

@@ -10,6 +10,8 @@
 #include <util/log.h>
 #include <util/trace.h>
 
+#include <map>
+
 TRACEPOINT_SEMAPHORE(utxocache, add);
 TRACEPOINT_SEMAPHORE(utxocache, spent);
 TRACEPOINT_SEMAPHORE(utxocache, uncache);
@@ -173,6 +175,37 @@ bool CCoinsViewCache::HaveCoin(const COutPoint& outpoint) const
 bool CCoinsViewCache::HaveCoinInCache(const COutPoint &outpoint) const {
     CCoinsMap::const_iterator it = cacheCoins.find(outpoint);
     return (it != cacheCoins.end() && !it->second.coin.IsSpent());
+}
+
+void CCoinsViewCache::ForEachUnspent(const std::function<bool(const COutPoint&, const Coin&)>& fn) const
+{
+    std::map<COutPoint, Coin> utxos;
+
+    auto pcursor = base->Cursor();
+    while (pcursor->Valid()) {
+        COutPoint key;
+        Coin coin;
+        if (pcursor->GetKey(key) && pcursor->GetValue(coin)) {
+            if (cacheCoins.find(key) == cacheCoins.end() && !coin.IsSpent()) {
+                utxos.emplace(key, std::move(coin));
+            }
+        }
+        pcursor->Next();
+    }
+
+    for (const auto& [outpoint, entry] : cacheCoins) {
+        if (!entry.coin.IsSpent()) {
+            utxos[outpoint] = entry.coin;
+        } else {
+            utxos.erase(outpoint);
+        }
+    }
+
+    for (const auto& [outpoint, coin] : utxos) {
+        if (!fn(outpoint, coin)) {
+            break;
+        }
+    }
 }
 
 uint256 CCoinsViewCache::GetBestBlock() const {
