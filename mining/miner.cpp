@@ -52,10 +52,13 @@ static void sha256d(const uint8_t *data, size_t len, uint8_t out[32]) {
     SHA256(hash1, 32, out);
 }
 
-static bool hash_le_target(const uint8_t hash[32], const uint8_t target[32]) {
-    for (int i = 31; i >= 0; --i) {
-        if (hash[i] < target[i]) return true;
-        if (hash[i] > target[i]) return false;
+static bool hash_le_target(const uint8_t hash[32], const uint8_t target_msb[32]) {
+    // SHA256d hash is compared as a little-endian integer; GBT "target" hex is MSB-first.
+    for (int i = 0; i < 32; ++i) {
+        const uint8_t h = hash[31 - i];
+        const uint8_t t = target_msb[i];
+        if (h < t) return true;
+        if (h > t) return false;
     }
     return true;
 }
@@ -80,6 +83,21 @@ static std::vector<uint8_t> hex_decode(const std::string &hex) {
 // ---------------------------------------------------------------------------
 // JSON helpers (minimal, no external dependency)
 // ---------------------------------------------------------------------------
+
+/** Encode a value as a JSON string literal (including surrounding quotes). */
+static std::string json_quote_string(const std::string &value) {
+    std::ostringstream oss;
+    oss << '"';
+    for (char ch : value) {
+        switch (ch) {
+        case '\\': oss << "\\\\"; break;
+        case '"': oss << "\\\""; break;
+        default: oss << ch; break;
+        }
+    }
+    oss << '"';
+    return oss.str();
+}
 
 static std::string json_rpc(const std::string &method,
                             const std::vector<std::string> &params) {
@@ -133,6 +151,11 @@ static std::string extract_json_section(const std::string &json, const std::stri
         }
     }
     return "";
+}
+
+static std::string extract_json_result(const std::string &json) {
+    const std::string section = extract_json_section(json, "result");
+    return section.empty() ? json : section;
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +315,7 @@ struct BlockTemplate {
     std::string prev_blockhash;
     uint32_t curtime{0};
     uint32_t bits{0};
+    std::string target_hex;
     std::vector<TxOutTemplate> required_outputs;
     std::string default_witness_commitment;
     std::vector<GbtTransaction> transactions;
@@ -345,22 +369,24 @@ static std::vector<GbtTransaction> parse_transactions(const std::string &json) {
 }
 
 static BlockTemplate parse_template(const std::string &json) {
+    const std::string body = extract_json_result(json);
     BlockTemplate tmpl;
-    tmpl.version = static_cast<int>(extract_json_int(json, "version"));
-    tmpl.height = static_cast<int>(extract_json_int(json, "height"));
-    tmpl.coinbasevalue = extract_json_int(json, "coinbasevalue");
-    tmpl.prev_blockhash = extract_json_string(json, "previousblockhash");
-    tmpl.curtime = static_cast<uint32_t>(extract_json_int(json, "curtime"));
-    const std::string bits_str = extract_json_string(json, "bits");
+    tmpl.version = static_cast<int>(extract_json_int(body, "version"));
+    tmpl.height = static_cast<int>(extract_json_int(body, "height"));
+    tmpl.coinbasevalue = extract_json_int(body, "coinbasevalue");
+    tmpl.prev_blockhash = extract_json_string(body, "previousblockhash");
+    tmpl.curtime = static_cast<uint32_t>(extract_json_int(body, "curtime"));
+    const std::string bits_str = extract_json_string(body, "bits");
     if (!bits_str.empty()) tmpl.bits = static_cast<uint32_t>(std::stoul(bits_str, nullptr, 16));
-    tmpl.required_outputs = parse_required_outputs(json);
-    tmpl.default_witness_commitment = extract_json_string(json, "default_witness_commitment");
-    tmpl.transactions = parse_transactions(json);
+    tmpl.target_hex = extract_json_string(body, "target");
+    tmpl.required_outputs = parse_required_outputs(body);
+    tmpl.default_witness_commitment = extract_json_string(body, "default_witness_commitment");
+    tmpl.transactions = parse_transactions(body);
     return tmpl;
 }
 
 static std::vector<uint8_t> address_to_scriptpubkey(RpcClient &rpc, const std::string &address) {
-    const std::string resp = rpc.call("validateaddress", {"\"" + address + "\""});
+    const std::string resp = rpc.call("validateaddress", {json_quote_string(address)});
     if (resp.find("\"isvalid\":true") == std::string::npos &&
         resp.find("\"isvalid\": true") == std::string::npos) {
         throw std::runtime_error("Invalid payout address: " + address);
@@ -455,15 +481,33 @@ static std::vector<uint8_t> compute_merkle_root(std::vector<std::vector<uint8_t>
     return hashes[0];
 }
 
-static void bits_to_target(uint32_t n_bits, uint8_t target[32]) {
-    const uint32_t exponent = (n_bits >> 24) & 0xff;
-    const uint32_t coefficient = n_bits & 0x007fffff;
+static void hex_target_to_bytes(const std::string &hex, uint8_t target[32]) {
     std::memset(target, 0, 32);
-    if (exponent >= 3 && exponent <= 34) {
-        target[exponent - 3] = static_cast<uint8_t>(coefficient & 0xff);
-        if (exponent >= 2) target[exponent - 2] = static_cast<uint8_t>((coefficient >> 8) & 0xff);
-        if (exponent >= 1) target[exponent - 1] = static_cast<uint8_t>((coefficient >> 16) & 0xff);
+    const size_t nbytes = hex.size() / 2 < 32 ? hex.size() / 2 : 32;
+    for (size_t i = 0; i < nbytes; ++i) {
+        target[i] = static_cast<uint8_t>(std::stoul(hex.substr(i * 2, 2), nullptr, 16));
     }
+}
+
+static void bits_to_target(uint32_t n_bits, uint8_t target[32]) {
+    // Same algorithm as mining/miner.py (handles Stoic Awakening / powLimit compact values).
+    const uint32_t exponent = (n_bits >> 24) & 0xff;
+    uint64_t coefficient = n_bits & 0x007fffff;
+    std::memset(target, 0, 32);
+    if (exponent <= 3) {
+        coefficient >>= (8 * (3 - exponent));
+    } else if (exponent <= 34) {
+        const int shift_bytes = static_cast<int>(exponent - 3);
+        target[shift_bytes] = static_cast<uint8_t>(coefficient & 0xff);
+        if (shift_bytes >= 1) target[shift_bytes - 1] = static_cast<uint8_t>((coefficient >> 8) & 0xff);
+        if (shift_bytes >= 2) target[shift_bytes - 2] = static_cast<uint8_t>((coefficient >> 16) & 0xff);
+        return;
+    } else {
+        return;
+    }
+    target[0] = static_cast<uint8_t>(coefficient & 0xff);
+    if (coefficient > 0xff) target[1] = static_cast<uint8_t>((coefficient >> 8) & 0xff);
+    if (coefficient > 0xffff) target[2] = static_cast<uint8_t>((coefficient >> 16) & 0xff);
 }
 
 // ---------------------------------------------------------------------------
@@ -492,8 +536,10 @@ static void mine_thread(int tid, const uint8_t header_prefix[76],
             bool expected = false;
             if (g_found.compare_exchange_strong(expected, true)) {
                 g_nonce_found.store(nonce);
+                std::vector<uint8_t> hash_be(hash, hash + 32);
+                std::reverse(hash_be.begin(), hash_be.end());
                 std::cout << "\n[thread " << tid << "] FOUND nonce=" << nonce
-                          << " hash=" << hex_encode(hash, 32) << "\n";
+                          << " hash=" << hex_encode(hash_be.data(), 32) << "\n";
             }
             return;
         }
@@ -596,7 +642,8 @@ int main(int argc, char *argv[]) {
             std::cout << "\nFetching block template...\n";
             const std::string gbt_params =
                 "{\"rules\":[\"segwit\"],\"coinbaseaddress\":\"" + cfg.mining_address + "\"}";
-            const std::string tmpl_json = rpc.call("getblocktemplate", {"\"" + gbt_params + "\""});
+            // params[0] must be a JSON object, not a quoted string
+            const std::string tmpl_json = rpc.call("getblocktemplate", {gbt_params});
 
             if (tmpl_json.find("\"error\":") != std::string::npos &&
                 tmpl_json.find("\"error\":null") == std::string::npos &&
@@ -638,7 +685,11 @@ int main(int argc, char *argv[]) {
             std::cout << "Height: " << tmpl.height << "  bits: " << std::hex << tmpl.bits << std::dec << "\n";
 
             uint8_t target[32];
-            bits_to_target(tmpl.bits, target);
+            if (!tmpl.target_hex.empty()) {
+                hex_target_to_bytes(tmpl.target_hex, target);
+            } else {
+                bits_to_target(tmpl.bits, target);
+            }
             std::cout << "Target: " << hex_encode(target, 32) << "\n";
 
             uint8_t header_prefix[76];
@@ -658,8 +709,17 @@ int main(int argc, char *argv[]) {
                 const uint32_t nonce = g_nonce_found.load();
                 std::cout << "Submitting block with nonce=" << nonce << "\n";
                 const std::string block_hex = assemble_block_hex(tmpl, nonce, merkle_root.data(), coinbase_tx);
-                const std::string result = rpc.call("submitblock", {"\"" + block_hex + "\""});
-                std::cout << "Submit result: " << result << "\n";
+                const std::string submit_resp = rpc.call("submitblock", {json_quote_string(block_hex)});
+                const std::string reject = extract_json_string(submit_resp, "result");
+                if (reject.empty() &&
+                    (submit_resp.find("\"result\":null") != std::string::npos ||
+                     submit_resp.find("\"result\": null") != std::string::npos)) {
+                    std::cout << "Block accepted.\n";
+                } else if (!reject.empty()) {
+                    std::cout << "Block submit result: " << reject << "\n";
+                } else {
+                    std::cout << "Submit response: " << submit_resp << "\n";
+                }
             } else {
                 std::cout << "No nonce found (template expired?).\n";
             }
