@@ -9,7 +9,7 @@ This directory contains standalone CPU mining tools for Elektron Net, fully conf
 | `mine_genesis.py` | Python script to mine genesis blocks for all networks. |
 | `generate_address.py` | Generate Elektron Net addresses (P2PKH + P2WPKH) with private keys. |
 | `miner.py` | Standalone Python miner. Connects via RPC, fetches templates, mines, submits. |
-| `miner.cpp` | Standalone C++ miner. Multi-threaded, configurable via JSON. |
+| `miner.cpp` | Standalone C++ miner. Multi-threaded; builds coinbase from `coinbase_required_outputs` (UTXO attestation + witness). |
 | `config.json` | Configuration file for both Python and C++ miner (RPC, payout address, threads). |
 | `CMakeLists.txt` | Build file for the C++ miner. |
 
@@ -81,6 +81,16 @@ If you prefer the node's built-in mining over the standalone miners:
 ./elektron-cli -rpcwallet=miner getnewaddress
 ./elektron-cli -rpcwallet=miner generatetoaddress 1 "<address>"
 ```
+
+---
+
+## Mining Pools (Stratum / ASIC)
+
+ASIC firmware does **not** need changes. **Pool backends** must include
+`coinbase_required_outputs` from `getblocktemplate` in every coinbase
+(witness commitment + per-block UTXO attestation).
+
+Full integration guide: [`doc/mining-pool-integration.md`](../doc/mining-pool-integration.md)
 
 ---
 

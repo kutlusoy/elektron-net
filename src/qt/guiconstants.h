@@ -57,7 +57,15 @@ static const int TOOLTIP_WRAP_THRESHOLD = 80;
 /* One gigabyte (GB) in bytes */
 static constexpr uint64_t GB_BYTES{1000000000};
 
-// Default prune target displayed in GUI.
-static constexpr int DEFAULT_PRUNE_TARGET_GB{2};
+/**
+ * Estimated disk for Elektron Net's mandatory 137-day window (~197,280 blocks
+ * at 60 s spacing — ~10x Bitcoin's block count over the same calendar period).
+ * The protocol prunes by block depth, not by this number. Actual usage grows
+ * with transaction volume.
+ */
+static constexpr int ELEKTRON_MANDATORY_PRUNE_WINDOW_GB{10};
+
+// Informational default shown in GUI (not a user-configurable retention limit).
+static constexpr int DEFAULT_PRUNE_TARGET_GB{ELEKTRON_MANDATORY_PRUNE_WINDOW_GB};
 
 #endif // BITCOIN_QT_GUICONSTANTS_H

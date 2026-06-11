@@ -1,12 +1,9 @@
 Elektron Net
 ============
 
-[![Webseite](https://img.shields.io/badge/Webseite-elektron--net.org-blue?style=for-the-badge&logo=internet-explorer)](https://elektron-net.org)
+[![Website](https://img.shields.io/badge/Website-elektron--net.org-blue?style=for-the-badge&logo=internet-explorer)](https://elektron-net.org)
 [![Reddit](https://img.shields.io/badge/Reddit-r/elektronnet-orange?style=for-the-badge&logo=reddit)](https://www.reddit.com/r/elektronnet/)
 [![Discord](https://img.shields.io/badge/Discord-Join%20Us-7289DA?style=for-the-badge&logo=discord)](https://discord.gg/nYsm2vEb2W)
-
-# Warning: Although we are on the mainnet, the blockchain is highly experimental and unstable and should not be used for financial purposes at this stage. It is recommended to perform a daily build before a full release. Use at your own risk!
-
 
 https://github.com/kutlusoy/elektron-net
 
@@ -38,15 +35,26 @@ Key properties:
 - **137-day pruning** — cryptographic forgetting, structural privacy by design
 - **P2P port 8333** (RPC 8332)
 
-### Genesis Block
+### Genesis Block (v4.0 Restart)
 
-The genesis block has been mined and finalized. All network parameters
-(`hash`, `merkle root`, `time`, and `nonce`) are already baked into
-`src/kernel/chainparams.cpp` — the `assert(...)` lines contain the real values.
+Elektron Net v4.0 is a **complete chain restart** with new genesis blocks, network
+magic bytes (`0xe1ec7a6e`), and Stoic Awakening active from block 1. Delete any
+existing datadir before upgrading — the old chain is incompatible.
 
-If you are creating a **new fork**, you must run `mining/mine_genesis.py` to generate
-your own genesis block and replace the parameters accordingly. For the official
-Elektron Net repository, no further action is required.
+Genesis parameters are baked into `src/kernel/chainparams.cpp`. To regenerate:
+`python mining/mine_genesis.py --no-wallet`
+
+Until block 197,280 (first UTXO checkpoint), new nodes sync like Bitcoin Core.
+After that, fresh installations bootstrap from the latest on-chain snapshot only.
+See `The Blind Spot of Digital Money.docx` and `WHITEPAPER.md`.
+
+### Differences from Bitcoin Core
+
+Every deliberate protocol and code change vs upstream Bitcoin Core is documented in
+[`doc/BITCOIN_CORE_DIFF.md`](doc/BITCOIN_CORE_DIFF.md) (file-by-file, new functions,
+removed behaviour, network parameters).
+
+Mining pool operators (Stratum / ASIC): see [`doc/mining-pool-integration.md`](doc/mining-pool-integration.md).
 
 License
 -------
@@ -107,3 +115,7 @@ Documentation
 Protocol design notes are in [WHITEPAPER.md](WHITEPAPER.md).
 Full technical setup (genesis → build → node → mining → DNS seeds) is in [TECHNICAL_SETUP.md](TECHNICAL_SETUP.md).
 Additional technical docs are in [doc/](doc/).
+
+---
+
+<sup>¹</sup> *The network is young and still under active development; it is not yet intended for material financial use. Building from the latest source is recommended until a stable release. For private experiments, run [`mining/mine_genesis.py`](mining/mine_genesis.py) to generate your own `genesis_results.txt` and test with that genesis before joining the public chain (see [`mining/GENESIS.md`](mining/GENESIS.md)).*

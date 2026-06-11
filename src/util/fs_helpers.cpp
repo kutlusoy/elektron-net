@@ -308,6 +308,28 @@ std::optional<fs::perms> InterpretPermString(const std::string& s)
     }
 }
 
+uint64_t DirectorySize(const fs::path& dir)
+{
+    std::error_code ec;
+    if (!std::filesystem::exists(dir.std_path(), ec) || !std::filesystem::is_directory(dir.std_path(), ec)) {
+        return 0;
+    }
+
+    uint64_t size{0};
+    for (fs::recursive_directory_iterator it{dir, fs::directory_options::skip_permission_denied, ec};
+         it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        if (fs::is_regular_file(it->status(ec))) {
+            size += fs::file_size(it->path(), ec);
+            if (ec) ec.clear();
+        }
+    }
+    return size;
+}
+
 bool IsDirWritable(const fs::path& dir_path)
 {
     // Attempt to create a tmp file in the directory

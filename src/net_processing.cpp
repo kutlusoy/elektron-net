@@ -2178,8 +2178,12 @@ void PeerManagerImpl::MaybeRequestSnapshot()
     if (!best_header) return;
 
     const int header_height = best_header->nHeight;
-    if (header_height - tip_height <= static_cast<int>(MANDATORY_PRUNE_DEPTH)) {
-        return; // normal IBD is still possible
+    if (header_height < static_cast<int>(MANDATORY_PRUNE_DEPTH)) {
+        return; // first checkpoint not yet reached on the network — sync like Bitcoin Core
+    }
+
+    if (header_height - tip_height < static_cast<int>(MANDATORY_PRUNE_DEPTH)) {
+        return; // normal IBD is still possible within the trailing window
     }
 
     // Compute the most recent checkpoint height that is not ahead of the
@@ -5404,13 +5408,19 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
                     afile.write(std::span{reinterpret_cast<const std::byte*>(data.data()), data.size()});
                     it->second.last_progress_time = std::chrono::steady_clock::now();
                     if (it->second.AddRange(offset, data.size())) {
-                        it->second.completed = true;
-                        try {
-                            fs::rename(it->second.temp_path, it->second.final_path);
-                            LogInfo("[snapshot] Download complete for %s -> %s\n",
-                                    checkpoint_hash.ToString(), fs::PathToString(it->second.final_path));
-                        } catch (const fs::filesystem_error& e) {
-                            LogWarning("[snapshot] Failed to rename downloaded snapshot: %s\n", e.what());
+                        const fs::path hash_path = it->second.final_path + ".hash";
+                        if (!fs::exists(hash_path) || it->second.utxo_hash.IsNull()) {
+                            LogWarning("[snapshot] Download complete for %s but .hash sidecar missing — refusing activation\n",
+                                       checkpoint_hash.ToString());
+                        } else {
+                            it->second.completed = true;
+                            try {
+                                fs::rename(it->second.temp_path, it->second.final_path);
+                                LogInfo("[snapshot] Download complete for %s -> %s\n",
+                                        checkpoint_hash.ToString(), fs::PathToString(it->second.final_path));
+                            } catch (const fs::filesystem_error& e) {
+                                LogWarning("[snapshot] Failed to rename downloaded snapshot: %s\n", e.what());
+                            }
                         }
                     }
                 }
@@ -6598,7 +6608,43 @@ bool PeerManagerImpl::SendMessages(CNode& node)
             return false;
         }();
 
-        if (!snapshot_download_active && CanServeBlocks(peer) && ((sync_blocks_and_headers_from_peer && (!IsLimitedPeer(peer) || allow_limited_download)) || !m_chainman.IsInitialBlockDownload()) && state.vBlocksInFlight.size() < MAX_BLOCKS_IN_TRANSIT_PER_PEER) {
+        // Fresh nodes past the first on-chain checkpoint may bootstrap from a
+        // UTXO snapshot when the sync gap exceeds what pruned peers retain.
+        // Do not block block IBD while history is still within retention.
+        bool awaiting_snapshot_bootstrap = false;
+        if (m_chainman.IsInitialBlockDownload() && m_chainman.m_best_header) {
+            const int header_height = m_chainman.m_best_header->nHeight;
+            const int active_height = m_chainman.ActiveChain().Height();
+            if (header_height >= static_cast<int>(MANDATORY_PRUNE_DEPTH)) {
+                const int target_height = (header_height / static_cast<int>(MANDATORY_PRUNE_DEPTH))
+                                          * static_cast<int>(MANDATORY_PRUNE_DEPTH);
+                if (active_height < target_height) {
+                    const int sync_gap = target_height - active_height;
+                    const bool gap_exceeds_retention = sync_gap > static_cast<int>(MANDATORY_PRUNE_DEPTH);
+                    bool have_local_snapshot = false;
+                    if (const CBlockIndex* target_index = m_chainman.m_best_header->GetAncestor(target_height)) {
+                        have_local_snapshot = FindSnapshotFile(target_index->GetBlockHash()).has_value();
+                    }
+                    if (!have_local_snapshot) {
+                        const fs::path snapshot_dir = m_chainman.m_options.datadir / "snapshots";
+                        if (fs::exists(snapshot_dir)) {
+                            for (const auto& entry : fs::directory_iterator(snapshot_dir)) {
+                                const std::string fname = entry.path().filename().string();
+                                if (fname.ends_with(".dat") && !fname.ends_with(".download") && !fname.ends_with(".failed")) {
+                                    if (fs::exists(fs::path(entry.path()) + ".hash")) {
+                                        have_local_snapshot = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    awaiting_snapshot_bootstrap = gap_exceeds_retention || have_local_snapshot;
+                }
+            }
+        }
+
+        if (!snapshot_download_active && !awaiting_snapshot_bootstrap && CanServeBlocks(peer) && ((sync_blocks_and_headers_from_peer && (!IsLimitedPeer(peer) || allow_limited_download)) || !m_chainman.IsInitialBlockDownload()) && state.vBlocksInFlight.size() < MAX_BLOCKS_IN_TRANSIT_PER_PEER) {
             std::vector<const CBlockIndex*> vToDownload;
             NodeId staller = -1;
             auto get_inflight_budget = [&state]() {

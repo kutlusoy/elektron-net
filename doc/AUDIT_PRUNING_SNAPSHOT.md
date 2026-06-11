@@ -1,10 +1,11 @@
-# Technical Audit Report: Elektron Net v3.0.1
-## Pruning, UTXO-Checkpoints & Automatic Snapshot Synchronization
+# Technical Audit Report: Elektron Net v4.0.0
+## Pruning, Per-Block UTXO Attestation & Checkpoint Snapshot Synchronization
 
-**Date:** 2026-05-12 (Audit) / 2026-05-12 (Implementation completed)  
+**Date:** 2026-05-12 (Audit) / 2026-06-11 (v4.0 full reconciliation pass)
 **Auditor:** kutlusoy
-**Scope:** `src/validation.{h,cpp}`, `src/net_processing.{h,cpp}`, `src/init.cpp`, `src/node/{miner,blockstorage,chainstate}.cpp`, `src/protocol.h`, `src/kernel/chainparams.cpp`, `src/test/elektron_simulation.cpp`, `src/test/peerman_tests.cpp`  
-**Mandate:** Audit + implementation of all P0 fixes and selected P2 measures. Build successfully compiled.
+**Scope:** `src/validation.{h,cpp}`, `src/net_processing.{h,cpp}`, `src/init.cpp`, `src/node/{miner,blockstorage,chainstate}.cpp`, `src/rpc/mining.cpp`, `src/wallet/wallet.{h,cpp}`, `src/interfaces/chain.h`, `src/node/interfaces.cpp`, `src/protocol.h`, `src/kernel/chainparams.cpp`, `src/test/elektron_simulation.cpp`, `src/test/peerman_tests.cpp`  
+**Mandate:** Audit + implementation of all P0 fixes and selected P2 measures. Build successfully compiled (VS 2026 / `vs2026-static`).
+**Operator docs:** [`BITCOIN_CORE_DIFF.md`](BITCOIN_CORE_DIFF.md), [`mining-pool-integration.md`](mining-pool-integration.md), [`WHITEPAPER.md`](../WHITEPAPER.md) §4.
 
 ---
 
@@ -22,16 +23,27 @@ Corresponds to **137 days** at a block time of 60 seconds (`137 * 24 * 60 * 60 /
 | File | Line | Purpose |
 |------|------|---------|
 | `src/validation.h` | 79 | **Definition** of the constant |
-| `src/validation.cpp` | 2298 | `ValidateUTXOCheckpoint`: Only at heights `nHeight % 197280 == 0` a checkpoint is expected in the coinbase |
-| `src/validation.cpp` | 2367 | `WriteAutomaticSnapshot`: Snapshot is only written at checkpoint heights (except `force=true`) |
+| `src/validation.cpp` | ~2311 | `ValidateUTXOCheckpoint`: **Every block** (height > 0) must carry UTXO attestation in coinbase |
+| `src/validation.cpp` | ~2291 | `ComputeBlockUTXOAttestationHash`: Hash after simulated block connect (mining + validation) |
+| `src/validation.cpp` | ~2385 | `WriteAutomaticSnapshot`: On-disk snapshot **only** at checkpoint heights (except `force=true`) |
 | `src/validation.cpp` | 6580 | `GetPruneRange`: Maximum allowed prune = `tip - 197280` |
-| `src/node/miner.cpp` | 207 | `CreateNewBlock`: Embedding the UTXO hash into the coinbase at every checkpoint |
+| `src/node/miner.cpp` | ~207 | `CreateNewBlock`: UTXO attestation in every block via `ComputeBlockUTXOAttestationHash` |
+| `src/rpc/mining.cpp` | ~1040 | GBT `coinbase_required_outputs` exposes attestation to external miners |
 | `src/node/blockstorage.cpp` | 359 | `PruneBlockFiles`: Mandatory pruning of all files older than `tip - 197280`, regardless of disk space |
 | `src/net_processing.cpp` | 2160 | `MaybeRequestSnapshot`: Bootstrap trigger when `header_height - tip_height > 197280` |
 | `src/net_processing.cpp` | 2170 | `MaybeRequestSnapshot`: Calculation of the latest checkpoint via `(header / 197280) * 197280` |
 | `src/net_processing.cpp` | 5218 | `GETUTXOSNAPSHOT` handler: Validation that requested index is actually a checkpoint |
-| `src/kernel/chainparams.cpp` | 120 | `nPruneAfterHeight = 394560` (= `2 * 197280`): First pruning only after 274 days |
-| `src/test/elektron_simulation.cpp` | 49, 157, 176, 184, 192, 306, 339, 352 | Unit tests for validation of the constant and its calculations |
+| `src/kernel/chainparams.cpp` | 120 | `nPruneAfterHeight = 197280` (`MANDATORY_PRUNE_DEPTH`): Pruning starts at the first checkpoint (~137 days) |
+| `src/wallet/wallet.cpp` | ~3340 | `ScanUTXOSet`: Recover wallet balances from current UTXO set when pruned history is unavailable |
+| `src/net_processing.cpp` | ~6614 | `awaiting_snapshot_bootstrap`: Skip historical block IBD only when sync gap > `MANDATORY_PRUNE_DEPTH` or local snapshot exists |
+| `src/net_processing.cpp` | ~5266, ~5411 | P2P: refuse `UTXOSNAPSHOT` without `.hash`; download marked complete only with sidecar |
+| `src/validation.cpp` | ~2357 | `ExtractCoinbaseUTXOAttestation`: parse height + hash from coinbase `OP_RETURN` |
+| `src/validation.cpp` | ~6187 | `PopulateAndValidateSnapshot`: reject snapshot if content hash ≠ `expected_utxo_hash` |
+| `src/init.cpp` | ~1543 | `MaybeActivateAutomaticSnapshot`: requires `.hash`; compares to on-chain attestation; passes `expected_utxo_hash` |
+| `src/init.cpp` | ~1434 | `UpdateLocalSnapshotServices`: `NODE_SNAPSHOT` only when `.dat` + `.hash` both exist |
+| `src/interfaces/chain.h` | ~183 | `forEachCoin`: iterate live UTXO set for wallet recovery |
+| `src/wallet/wallet.cpp` | ~1922, ~3340 | `ScanUTXOSet` / `AttachChain`: UTXO scan on pruned nodes instead of `-reindex` |
+| `src/test/elektron_simulation.cpp` | 49, 157, 176, 184, 192, 306, 339, 352 | Unit tests for validation of the constant, hash mismatch rejection |
 | `src/test/blockmanager_tests.cpp` | 311, 331 | Unit tests for prune-range enforcement |
 
 **Conclusion:** The constant is centrally and consistently used across all relevant subsystems (Consensus, Mining, P2P, Storage, Tests).
@@ -45,10 +57,12 @@ Corresponds to **137 days** at a block time of 60 seconds (`137 * 24 * 60 * 60 /
 | Component | Mechanism | Responsible File |
 |-----------|-----------|------------------|
 | **Mandatory Pruning** | All blocks older than 137 days are deleted | `src/node/blockstorage.cpp` |
-| **UTXO-Checkpoint in Coinbase** | Every 197,280 blocks: OP_RETURN with `height + hash_serialized(UTXO-Set)` | `src/node/miner.cpp`, `src/validation.cpp` |
+| **UTXO attestation in coinbase** | **Every block**: OP_RETURN with `height + hash_serialized(UTXO-Set after connect)` | `src/node/miner.cpp`, `src/validation.cpp`, `src/rpc/mining.cpp` |
+| **Checkpoint marker** | Every 197,280 blocks: same attestation format; checkpoint logging only | `src/validation.cpp` |
 | **Automatic Snapshot Generation** | After `ConnectBlock` at checkpoint: `.dat` + `.hash` sidecar | `src/validation.cpp` |
 | **Snapshot P2P Download** | `GETUTXOSNAPSHOT` → `UTXOSNAPSHOT` → `GETSNAPSHOTDATA` → `SNAPSHOTDATA` | `src/net_processing.cpp`, `src/protocol.h` |
-| **Snapshot Activation** | `ActivateSnapshot()` with `verify_assumeutxo_hash=false`, background validation disabled | `src/init.cpp`, `src/validation.cpp` |
+| **Snapshot Activation** | `ActivateSnapshot()` with `verify_assumeutxo_hash=false`, `expected_utxo_hash` content check, background validation disabled | `src/init.cpp`, `src/validation.cpp` |
+| **Wallet UTXO recovery** | `ScanUTXOSet` via `Chain::forEachCoin` when pruned history unavailable | `src/wallet/wallet.cpp`, `src/node/interfaces.cpp` |
 
 ---
 
@@ -64,10 +78,11 @@ Corresponds to **137 days** at a block time of 60 seconds (`137 * 24 * 60 * 60 /
 5. `GETUTXOSNAPSHOT` is broadcast to **all** connected peers (line 2212).
 6. Responding peers are recorded in `m_snapshot_peers[checkpoint_hash]` (line 5265).
 7. Download state is initialized (`.download` temp file, line 5281).
-8. In `SendMessages()` (line 6598) it is checked for each peer whether they have the snapshot. Then `GETSNAPSHOTDATA` with 1-MB chunks is sent (line 6615), 10-second rate limit per peer.
-9. Incoming chunks are written to the `.download` file. Upon completion it is renamed to `.dat` (line 5351).
-10. `MaybeActivateAutomaticSnapshot()` (`src/init.cpp:1432`) finds the `.dat` file and activates it via `ActivateSnapshot()` with `verify_assumeutxo_hash=false` (line 1504).
-11. Background validation is immediately disabled: `SetTargetBlock(nullptr)` (line 1528).
+8. In `SendMessages()` (line ~6647) block download is skipped when `snapshot_download_active` or `awaiting_snapshot_bootstrap` (gap > `MANDATORY_PRUNE_DEPTH` or local snapshot). Snapshot chunks use `GETSNAPSHOTDATA` (1 MB, 10-second rate limit per peer).
+9. Incoming chunks are written to the `.download` file. Upon completion, rename to `.dat` **only if** `.hash` sidecar exists (line ~5411); otherwise download is not marked complete.
+10. `MaybeActivateAutomaticSnapshot()` (`src/init.cpp:~1461`) picks newest checkpoint `.dat`, requires `.hash`, verifies sidecar against on-chain attestation when checkpoint block is on disk, then `ActivateSnapshot(..., expected_utxo_hash)`.
+11. `PopulateAndValidateSnapshot()` deserializes the snapshot and rejects activation if `HASH_SERIALIZED` ≠ `expected_utxo_hash` (line ~6187).
+12. Background validation is immediately disabled: `SetTargetBlock(nullptr)` (line ~1628).
 
 **Snapshot replacement:** If an old snapshot already exists, `ActivateSnapshot()` (`src/validation.cpp:5798`) checks: `if (!verify_assumeutxo_hash)` → old chainstate is deleted via `DeleteChainstate()`.
 
@@ -104,7 +119,11 @@ Corresponds to **137 days** at a block time of 60 seconds (`137 * 24 * 60 * 60 /
 - Since background validation is permanently disabled for automatic snapshots (`SetTargetBlock(nullptr)`), there is **no** later validation path that would detect the manipulation.
 - The node would work with a poisoned UTXO set and accept/reject transactions differently from the rest of the network.
 
-**Post-Implementation Status:** **Resolved** by L0.1 (`src/init.cpp`). Before activation, the downloaded snapshot hash is validated against the coinbase OP_RETURN of the checkpoint block. On mismatch, the file is deleted and activation is aborted.
+**Post-Implementation Status:** **Resolved** by L0.1 + `PopulateAndValidateSnapshot` (`src/init.cpp`, `src/validation.cpp`):
+- `.hash` sidecar required; activation refused without it.
+- When checkpoint block is on disk: sidecar verified against `ExtractCoinbaseUTXOAttestation`.
+- After load: deserialized UTXO content must match `expected_utxo_hash` (`HASH_SERIALIZED`).
+- On any mismatch, snapshot files are removed and activation aborts.
 
 **Impact:** Permanent consensus split, unrecoverable without manual intervention.
 
@@ -125,7 +144,7 @@ for (const auto& entry : fs::directory_iterator(snapshot_dir)) {
 
 **Post-Implementation Status:** **Resolved** by L0.4 (`src/init.cpp`). `MaybeActivateAutomaticSnapshot` collects all `.dat` files, parses the height from the filename, and deterministically selects the newest checkpoint. After successful activation, all obsolete files in the `snapshots/` directory are deleted.
 
-**Impact:** Node may load an old snapshot, then need to replace it, losing time or oscillating between states. Old `.dat` and `.failed` files are **never** deleted.
+**Impact:** Node may load an old snapshot, then need to replace it, losing time or oscillating between states.
 
 ### 4.3 CRITICAL: Snapshot Download Without Global Timeout / Stall Detection
 
@@ -136,9 +155,9 @@ for (const auto& entry : fs::directory_iterator(snapshot_dir)) {
 - No logic to discard an incomplete download and restart.
 - `.download` file on disk persists on restart, but `received_ranges` in RAM is lost.
 
-**Post-Implementation Status:** **Resolved** by L0.2 (`src/net_processing.cpp`). `SnapshotDownload` now has `last_progress_time`. `MaybeRequestSnapshot` checks every 60 seconds: if a download has had no progress for >30 minutes, it is discarded, the `.download` file is deleted, and a re-broadcast is allowed.
+**Post-Implementation Status:** **Resolved** by L0.2 (`src/net_processing.cpp`). `SnapshotDownload` now has `last_progress_time`. `MaybeRequestSnapshot` checks every 60 seconds: if a download has had no progress for >30 minutes, it is discarded, the `.download` file is deleted, and a re-broadcast is allowed. Additionally, download completion requires a valid `.hash` sidecar — a finished `.dat` without sidecar is not marked complete and cannot activate.
 
-**Deadlock scenario:**
+**Deadlock scenario (pre-fix):**
 1. Node broadcasts `GETUTXOSNAPSHOT`.
 2. A peer responds with `UTXOSNAPSHOT`. Node starts download.
 3. This peer goes offline or never responds with `SNAPSHOTDATA`.
@@ -254,7 +273,20 @@ This value is explicitly set to 10,000,000 in Elektron Net (compared to Bitcoin'
 
 If the `.hash` file is missing or unreadable, `utxo_hash.SetNull()` is sent. The receiving node accepts the snapshot anyway. The hash is only transmitted informatively, but not used for validation.
 
-**Post-Implementation Status:** **Resolved** by L2.2 (`src/net_processing.cpp`). `ProcessGetUTXOSnapshot` now sends **no** `UTXOSNAPSHOT` response if the `.hash` sidecar file is missing or unreadable. The requesting node receives no offer and picks another peer.
+**Post-Implementation Status:** **Resolved** by L2.2 (`src/net_processing.cpp`) + `UpdateLocalSnapshotServices` (`src/init.cpp`):
+- `ProcessGetUTXOSnapshot` sends **no** `UTXOSNAPSHOT` if `.hash` is missing or unreadable.
+- `NODE_SNAPSHOT` is advertised only when the node holds both `.dat` and `.hash`.
+- Receiver refuses activation without `.hash`; download completion also checks sidecar presence.
+
+### 4.12 MEDIUM: Wallet Rescan Fails on Pruned Nodes (Pocket Recovery)
+
+**Location:** `src/wallet/wallet.cpp` (Bitcoin Core default path)
+
+On a pruned node, `rescanblockchain` and block-history rescan fail when the wallet's last-synced height is older than retained blocks. Bitcoin Core suggests `-reindex`, which is impractical on a pruned network.
+
+**Post-Implementation Status:** **Resolved.** `CWallet::AttachChain()` detects pruned history unavailability and calls `ScanUTXOSet()` via `Chain::forEachCoin()`. Balances are recovered from the live UTXO set; transaction history before the pruning window remains unavailable (by design). Functional tests: `test/functional/wallet_backup.py`, `wallet_assumeutxo.py`.
+
+**Operator reference:** [`BITCOIN_CORE_DIFF.md`](BITCOIN_CORE_DIFF.md) §2.6, [`WHITEPAPER.md`](../WHITEPAPER.md) §4.5.
 
 ---
 
@@ -265,11 +297,12 @@ If the `.hash` file is missing or unreadable, `utxo_hash.SetNull()` is sent. The
 #### L0.1: Validate Snapshot Hash Against On-Chain Checkpoint
 **Problem:** 4.1 (Poisoned snapshots)  
 **Solution implemented:**
-- Before calling `ActivateSnapshot()` in `MaybeActivateAutomaticSnapshot()` (`src/init.cpp:1432`), the content of the downloaded `.dat` file is parsed and its UTXO hash is compared with the hash embedded in the coinbase of the checkpoint block.
-- The coinbase checkpoint hash is already available in the block index (since the checkpoint block precedes the sync and the node has its header).
-- On mismatch, the file is deleted and activation is aborted.
+- `MaybeActivateAutomaticSnapshot()` requires a valid `.hash` sidecar; refuses activation without it.
+- When checkpoint block is on disk: sidecar hash compared to `ExtractCoinbaseUTXOAttestation` in coinbase.
+- `ActivateSnapshot(..., expected_utxo_hash)` → `PopulateAndValidateSnapshot` verifies deserialized content `HASH_SERIALIZED` matches `expected_utxo_hash`.
+- On mismatch, snapshot files are deleted and activation is aborted.
 
-**Files:** `src/init.cpp`  
+**Files:** `src/init.cpp`, `src/validation.cpp`  
 **Status:** **Implemented and compiled.**
 
 #### L0.2: Download Timeout & Retry Mechanism
@@ -328,16 +361,15 @@ If the `.hash` file is missing or unreadable, `utxo_hash.SetNull()` is sent. The
 
 ### 5.3 Priority P2 (Consensus Hardening & Resilience)
 
-#### L2.1: Checkpoint Error Watchdog
-**Problem:** 4.5 (Reorgs impossible, checkpoint error = halt)  
+#### L2.1: Per-Block Attestation Rejection (Invalid Block, Not FatalError)
+**Problem:** 4.5 (Reorgs impossible; malicious attestation on a fork)  
 **Solution implemented:**
-- **Option B (Watchdog) implemented:** When `ConnectBlock` fails at a checkpoint due to `bad-utxo-checkpoint` or `missing-utxo-checkpoint`, `FatalError()` is called with a clear message: "Checkpoint validation failed at height X. The network may be on an invalid fork or your node needs an upgrade."
-- The node shuts down instead of silently remaining on the old tip.
-- A human operator must then intervene (e.g. `-reindex` or upgrade).
-- **Note:** This does not resolve the fundamental pruning trade-off (deep reorgs remain impossible by design), but it prevents silent operation on an invalid fork.
+- `ValidateUTXOCheckpoint` in `ConnectBlock` returns `false` on `missing-utxo-attestation` or `bad-utxo-attestation` — the block is marked invalid; the node continues on the current tip.
+- This applies to **every block** (height > 0), including checkpoint heights; there is no separate `FatalError` watchdog for checkpoint attestation failures.
+- Miners cannot silently omit attestations: `CreateNewBlock` returns `nullptr` if attestation hash cannot be computed.
 
-**Files:** `src/validation.cpp`  
-**Status:** **Implemented and compiled.**
+**Files:** `src/validation.cpp`, `src/node/miner.cpp`  
+**Status:** **Implemented and compiled.** Deep reorgs beyond the pruning window remain an accepted design trade-off (§4.5).
 
 #### L2.2: Sidecar Hash Validation in P2P Handshake
 **Problem:** 4.11 (Missing `.hash` file leads to `null` hash)  
@@ -351,7 +383,26 @@ If the `.hash` file is missing or unreadable, `utxo_hash.SetNull()` is sent. The
 
 #### L2.3: `NODE_SNAPSHOT` Service Bit
 **Problem:** 4.4 (No way to know who has snapshots)  
-**Status:** **Fully implemented as part of L0.3.**
+**Status:** **Fully implemented as part of L0.3.** `UpdateLocalSnapshotServices` requires both `.dat` and `.hash`.
+
+#### L2.4: Wallet UTXO Scan on Pruned Attach
+**Problem:** 4.12 (Wallet rescan impossible on pruned nodes)  
+**Solution implemented:**
+- `Chain::forEachCoin()` exposes live UTXO iteration.
+- `CWallet::ScanUTXOSet()` credits matching outputs when block rescan is impossible.
+- Triggered automatically in `AttachChain()` when `chain.havePruned()`.
+
+**Files:** `src/wallet/wallet.cpp`, `src/node/interfaces.cpp`, `src/interfaces/chain.h`  
+**Status:** **Implemented.** Functional tests updated.
+
+#### L2.5: `awaiting_snapshot_bootstrap` IBD Gap Logic
+**Problem:** Fresh nodes blocked from block IBD while gap ≤ retention window  
+**Solution implemented:**
+- `SendMessages()` skips historical block download only when `sync_gap > MANDATORY_PRUNE_DEPTH` or local snapshot exists.
+- Allows normal block sync inside the 137-day window; snapshot path used only when history is unavailable.
+
+**Files:** `src/net_processing.cpp`  
+**Status:** **Implemented and compiled.**
 
 ---
 
@@ -362,12 +413,12 @@ If the `.hash` file is missing or unreadable, `utxo_hash.SetNull()` is sent. The
 | **1** | L0.4 (Deterministic selection), L0.2 (Download timeout) | P0 | Done |
 | **2** | L0.1 (Hash validation), L2.2 (Sidecar validation) | P0 | Done |
 | **3** | L0.3 (`NODE_SNAPSHOT` bit + selective broadcast) | P0 | Done |
-| **4** | L2.1 (Checkpoint error watchdog) | P2 | Done |
-| — | L1.1, L1.2, L1.3, L2.3 (Cleanup, persistent progress, rate-limiting) | P1/P2 | Accepted / Partially done |
+| **4** | L2.1 (Per-block attestation rejection), L2.4 (Wallet UTXO scan), L2.5 (`awaiting_snapshot_bootstrap`) | P2 | Done |
+| — | L1.1, L1.2, L1.3, L2.3 (Cleanup, persistent progress, rate-limiting, `NODE_SNAPSHOT`) | P1/P2 | Accepted / Partially done / Done |
 | — | 4.5, 4.6, 4.8 (Deep reorgs, double-compute, restart tracking) | — | Accepted as trade-offs |
-| — | 4.7 (Disk space leak) | P1 | Done |
+| — | 4.7 (Disk space leak), 4.12 (Wallet recovery) | P1/P2 | Done |
 
-**Key result:** All four P0 measures and both selected P2 measures have been implemented and the code compiles successfully. The remaining open items are either accepted design trade-offs or deemed non-critical by project decision.
+**Key result:** All four P0 measures, P2 hardening (sidecar + content hash + attestation rejection), wallet UTXO scan, and IBD gap logic are implemented. Code compiles on VS 2026 (`vs2026-static`). Remaining open items are accepted design trade-offs or non-critical bandwidth waste (persistent download progress). Operator documentation: [`BITCOIN_CORE_DIFF.md`](BITCOIN_CORE_DIFF.md), [`mining-pool-integration.md`](mining-pool-integration.md).
 
 ---
 

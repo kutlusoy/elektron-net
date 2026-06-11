@@ -1891,6 +1891,56 @@ int64_t CWallet::RescanFromTime(int64_t startTime, const WalletRescanReserver& r
  * the main chain after to the addition of any new keys you want to detect
  * transactions for.
  */
+bool CWallet::CreditUTXOFromChain(const COutPoint& outpoint, const Coin& coin)
+{
+    AssertLockHeld(cs_wallet);
+    if (!IsMine(coin.out)) return false;
+
+    const Txid& hash = outpoint.hash;
+    if (auto it = mapWallet.find(hash); it != mapWallet.end()) {
+        CWalletTx& wtx = it->second;
+        CMutableTransaction mtx{*wtx.tx};
+        if (mtx.vout.size() <= outpoint.n) {
+            mtx.vout.resize(outpoint.n + 1);
+        }
+        mtx.vout[outpoint.n] = coin.out;
+        wtx.SetTx(MakeTransactionRef(std::move(mtx)));
+        const uint256 block_hash = chain().getBlockHash(static_cast<int>(coin.nHeight));
+        wtx.m_state = TxStateConfirmed{block_hash, static_cast<int>(coin.nHeight), -1};
+        wtx.MarkDirty();
+        RefreshTXOsFromTx(wtx);
+        return true;
+    }
+
+    CMutableTransaction mtx;
+    mtx.vout.resize(outpoint.n + 1);
+    mtx.vout[outpoint.n] = coin.out;
+    const uint256 block_hash = chain().getBlockHash(static_cast<int>(coin.nHeight));
+    return AddToWallet(MakeTransactionRef(std::move(mtx)), TxStateConfirmed{block_hash, static_cast<int>(coin.nHeight), -1}) != nullptr;
+}
+
+bool CWallet::ScanUTXOSet(bilingual_str& error)
+{
+    AssertLockHeld(cs_wallet);
+    if (!HaveChain()) {
+        error = Untranslated("No chain connection");
+        return false;
+    }
+
+    WalletLogPrintf("Scanning UTXO set for wallet keys...\n");
+    size_t credited{0};
+    chain().forEachCoin([&](const COutPoint& outpoint, const Coin& coin) {
+        if (CreditUTXOFromChain(outpoint, coin)) {
+            ++credited;
+        }
+        return !chain().shutdownRequested();
+    });
+
+    WalletLogPrintf("UTXO scan credited %zu outputs\n", credited);
+    RefreshAllTXOs();
+    return true;
+}
+
 CWallet::ScanResult CWallet::ScanForWalletTransactions(const uint256& start_block, int start_height, std::optional<int> max_height, const WalletRescanReserver& reserver, bool fUpdate, const bool save_progress)
 {
     constexpr auto INTERVAL_TIME{60s};
@@ -3285,24 +3335,27 @@ bool CWallet::AttachChain(const std::shared_ptr<CWallet>& walletInstance, interf
             }
 
             if (rescan_height != block_height) {
-                // We can't rescan beyond blocks we don't have data for, stop and throw an error.
-                // This might happen if a user uses an old wallet within a pruned node
-                // or if they ran -disablewallet for a longer time, then decided to re-enable
-                // Exit early and print an error.
-                // It also may happen if an assumed-valid chain is in use and therefore not
-                // all block data is available.
-                // If a block is pruned after this check, we will load the wallet,
-                // but fail the rescan with a generic error.
-
-                error = chain.havePruned() ?
-                     _("Prune: last wallet synchronisation goes beyond pruned data. You need to -reindex (download the whole blockchain again in case of a pruned node)") :
-                     strprintf(_(
+                // Elektron Net: on pruned nodes, recover balances from the current UTXO set
+                // (pocket philosophy — no ancient history required).
+                if (chain.havePruned()) {
+                    chain.initMessage(_("Scanning UTXO set…"));
+                    if (!walletInstance->ScanUTXOSet(error)) {
+                        if (error.empty()) {
+                            error = _("Failed to scan UTXO set during wallet initialization");
+                        }
+                        return false;
+                    }
+                    warnings.push_back(_("Wallet balances recovered from the current UTXO set. Pruned transaction history is unavailable."));
+                    rescan_height = *tip_height;
+                } else {
+                    error = strprintf(_(
                         "Error loading wallet. Wallet requires blocks to be downloaded, "
                         "and software does not currently support loading wallets while "
                         "blocks are being downloaded out of order when using assumeutxo "
                         "snapshots. Wallet should be able to load successfully after "
                         "node sync reaches height %s"), block_height);
-                return false;
+                    return false;
+                }
             }
         }
 

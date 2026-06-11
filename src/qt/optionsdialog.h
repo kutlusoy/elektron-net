@@ -14,6 +14,7 @@ class QValidatedLineEdit;
 
 QT_BEGIN_NAMESPACE
 class QDataWidgetMapper;
+class QTimer;
 QT_END_NAMESPACE
 
 namespace Ui {
@@ -52,6 +53,7 @@ public:
     void setCurrentTab(OptionsDialog::Tab tab);
 
 private Q_SLOTS:
+    void updateMeasuredStorageSize();
     /* set OK button state (enabled / disabled) */
     void setOkButtonState(bool fState);
     void on_resetButton_clicked();
@@ -77,6 +79,7 @@ private:
     ClientModel* m_client_model{nullptr};
     OptionsModel* model{nullptr};
     QDataWidgetMapper* mapper{nullptr};
+    QTimer* m_storage_timer{nullptr};
 };
 
 #endif // BITCOIN_QT_OPTIONSDIALOG_H

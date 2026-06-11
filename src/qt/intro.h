@@ -75,12 +75,15 @@ private:
     int64_t m_required_space_gb{0};
     uint64_t m_bytes_available{0};
     int64_t m_prune_target_gb;
+    //! Measured on-disk usage in GB (-1 if not yet measured).
+    int64_t m_measured_storage_gb{-1};
 
     void startThread();
     void checkPath(const QString &dataDir);
     QString getPathToCheck() override;
     void UpdatePruneLabels(bool prune_checked);
     void UpdateFreeSpaceLabel();
+    void UpdateMeasuredStorage(const QString& dataDir);
 
     friend class FreespaceChecker;
 };

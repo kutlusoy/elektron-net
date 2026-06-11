@@ -23,8 +23,8 @@ unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHead
             (params.MinDifficultyActivationHeight != -1 && (pindexLast->nHeight + 1) >= params.MinDifficultyActivationHeight);
         if (allowMinDifficulty)
         {
-            // Special difficulty rule for testnet:
-            // If the new block's timestamp is more than 2* 10 minutes
+            // Stoic Awakening / testnet min-difficulty rule:
+            // If the new block's timestamp is more than 2× target spacing
             // then it MUST be a min-difficulty block.
             if (pblock->GetBlockTime() > pindexLast->GetBlockTime() + params.nPowTargetSpacing*2)
                 return nProofOfWorkLimit;

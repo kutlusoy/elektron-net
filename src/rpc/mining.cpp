@@ -168,7 +168,9 @@ static UniValue generateBlocks(ChainstateManager& chainman, Mining& miner, const
     UniValue blockHashes(UniValue::VARR);
     while (nGenerate > 0 && !chainman.m_interrupt) {
         std::unique_ptr<BlockTemplate> block_template(miner.createNewBlock({ .coinbase_output_script = coinbase_output_script, .include_dummy_extranonce = true }, /*cooldown=*/false));
-        CHECK_NONFATAL(block_template);
+        if (!block_template) {
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to create new block (UTXO attestation error)");
+        }
 
         std::shared_ptr<const CBlock> block_out;
         if (!GenerateBlock(chainman, block_template->getBlock(), nMaxTries, block_out, /*process_new_block=*/true)) {
@@ -380,7 +382,9 @@ static RPCMethod generateblock()
         LOCK(chainman.GetMutex());
         {
             std::unique_ptr<BlockTemplate> block_template{miner.createNewBlock({.use_mempool = false, .coinbase_output_script = coinbase_output_script, .include_dummy_extranonce = true}, /*cooldown=*/false)};
-            CHECK_NONFATAL(block_template);
+            if (!block_template) {
+                throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to create new block (UTXO attestation error)");
+            }
 
             block = block_template->getBlock();
         }
@@ -880,7 +884,9 @@ static RPCMethod getblocktemplate()
         // long-lived IPC usage, where the overhead is paid only when creating
         // the initial template.
         block_template = miner.createNewBlock({.include_dummy_extranonce = true}, /*cooldown=*/false);
-        CHECK_NONFATAL(block_template);
+        if (!block_template) {
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to create new block (UTXO attestation error)");
+        }
 
 
         // Need to update only after we know createNewBlock succeeded
@@ -1030,8 +1036,27 @@ static RPCMethod getblocktemplate()
     }
 
     if (auto coinbase{block_template->getCoinbaseTx()}; coinbase.required_outputs.size() > 0) {
-        CHECK_NONFATAL(coinbase.required_outputs.size() == 1); // Only one output is currently expected
-        result.pushKV("default_witness_commitment", HexStr(coinbase.required_outputs[0].scriptPubKey));
+        UniValue required_outputs(UniValue::VARR);
+        for (const CTxOut& out : coinbase.required_outputs) {
+            UniValue entry(UniValue::VOBJ);
+            entry.pushKV("value", out.nValue);
+            entry.pushKV("scriptPubKey", HexStr(out.scriptPubKey));
+            required_outputs.push_back(std::move(entry));
+        }
+        result.pushKV("coinbase_required_outputs", required_outputs);
+        // Backward-compatible witness commitment field for legacy miners.
+        for (const CTxOut& out : coinbase.required_outputs) {
+            if (out.scriptPubKey.size() >= 6 &&
+                out.scriptPubKey[0] == OP_RETURN &&
+                out.scriptPubKey[1] == 0x24 &&
+                out.scriptPubKey[2] == 0xaa &&
+                out.scriptPubKey[3] == 0x21 &&
+                out.scriptPubKey[4] == 0xa9 &&
+                out.scriptPubKey[5] == 0xed) {
+                result.pushKV("default_witness_commitment", HexStr(out.scriptPubKey));
+                break;
+            }
+        }
     }
 
     return result;

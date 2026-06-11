@@ -21,6 +21,7 @@
 #include <util/strencodings.h>
 #include <util/time.h>
 #include <util/translation.h>
+#include <script/script.h>
 #include <validation.h>
 #include <versionbits.h>
 #include <pow.h>
@@ -819,15 +820,29 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity)
             block.nTime = Assert(m_node.chainman)->ActiveChain().Tip()->GetMedianTimePast()+1;
             txCoinbase.version = 1;
             txCoinbase.vin[0].scriptSig = CScript{} << (current_height + 1) << bi.extranonce;
-            txCoinbase.vout.resize(1); // Ignore the (optional) segwit commitment added by CreateNewBlock (as the hardcoded nonces don't account for this)
+            txCoinbase.vout.resize(1); // Ignore the (optional) segwit commitment added by CreateNewBlock
             txCoinbase.vout[0].scriptPubKey = CScript();
             block.vtx[0] = MakeTransactionRef(txCoinbase);
+            // Elektron Net: UTXO attestation (OP_RETURN does not change the committed hash).
+            if (const auto hash = ComputeBlockUTXOAttestationHash(
+                    block, current_height + 1, Assert(m_node.chainman)->ActiveChainstate().CoinsDB(),
+                    m_node.chainman->m_blockman)) {
+                CMutableTransaction cb(*block.vtx[0]);
+                CTxOut out;
+                out.nValue = 0;
+                out.scriptPubKey = CScript() << OP_RETURN << (current_height + 1) << *hash;
+                cb.vout.push_back(out);
+                block.vtx[0] = MakeTransactionRef(std::move(cb));
+            }
             if (txFirst.size() == 0)
                 baseheight = current_height;
             if (txFirst.size() < 4)
                 txFirst.push_back(block.vtx[0]);
             block.hashMerkleRoot = BlockMerkleRoot(block);
-            block.nNonce = bi.nonce;
+            block.nNonce = 0;
+            while (!CheckProofOfWork(block.GetHash(), block.nBits, m_node.chainman->GetConsensus())) {
+                ++block.nNonce;
+            }
         }
         std::shared_ptr<const CBlock> shared_pblock = std::make_shared<const CBlock>(block);
         // Alternate calls between Chainman's ProcessNewBlock and submitSolution

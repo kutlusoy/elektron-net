@@ -530,9 +530,8 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
                              DEFAULT_PERSIST_V1_DAT),
                    ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-pid=<file>", strprintf("Specify pid file. Relative paths will be prefixed by a net-specific datadir location. (default: %s)", BITCOIN_PID_FILENAME), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
-    argsman.AddArg("-prune=<n>", strprintf("Reduce storage requirements by enabling pruning (deleting) of old blocks. This allows the pruneblockchain RPC to be called to delete specific blocks and enables automatic pruning of old blocks if a target size in MiB is provided. This mode is incompatible with -txindex. "
-            "Warning: Reverting this setting requires re-downloading the entire blockchain. "
-            "(default: 0 = disable pruning blocks, 1 = allow manual pruning via RPC, >=%u = automatically prune block files to stay under the specified target size in MiB)", MIN_DISK_SPACE_FOR_BLOCK_FILES / 1_MiB), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-prune=<n>", "Elektron Net: pruning is mandatory (137 days / 197,280 blocks). The -prune setting is ignored; nodes always run in manual pruning mode and retention is governed by consensus. Incompatible with -txindex. "
+            "(default: 1 = manual pruning mode)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-reindex", "If enabled, wipe chain state and block index, and rebuild them from blk*.dat files on disk. Also wipe and rebuild other optional indexes that are active. If an assumeutxo snapshot was loaded, its chainstate will be wiped as well. The snapshot can then be reloaded via RPC.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-reindex-chainstate", "If enabled, wipe chain state, and rebuild it from blk*.dat files on disk. If an assumeutxo snapshot was loaded, its chainstate will be wiped as well. The snapshot can then be reloaded via RPC.", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-settings=<file>", strprintf("Specify path to dynamic settings data file. Can be disabled with -nosettings. File is written at runtime and not meant to be edited by users (use %s instead for custom settings). Relative paths will be prefixed by datadir location. (default: %s)", BITCOIN_CONF_FILENAME, BITCOIN_SETTINGS_FILENAME), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
@@ -1440,8 +1439,11 @@ static void UpdateLocalSnapshotServices(const fs::path& datadir)
         for (const auto& entry : fs::directory_iterator(snapshot_dir)) {
             const std::string fname = entry.path().filename().string();
             if (fname.ends_with(".dat") && !fname.ends_with(".download") && !fname.ends_with(".failed")) {
-                have_snapshot = true;
-                break;
+                const fs::path hash_path = fs::path(entry.path()) + ".hash";
+                if (fs::exists(hash_path)) {
+                    have_snapshot = true;
+                    break;
+                }
             }
         }
     }
@@ -1538,77 +1540,52 @@ static void MaybeActivateAutomaticSnapshot(NodeContext& node)
         }
     }
 
-    // Elektron Net: validate the downloaded snapshot hash against the on-chain checkpoint.
-    {
-        const fs::path hash_path = *snapshot_path + ".hash";
-        uint256 expected_hash;
-        bool have_expected = false;
-        FILE* hash_file{fsbridge::fopen(hash_path, "rb")};
-        if (hash_file) {
-            AutoFile hash_afile{hash_file};
-            try {
-                hash_afile >> expected_hash;
-                have_expected = true;
-            } catch (...) {}
-        }
+    // Elektron Net: require .hash sidecar and verify against on-chain attestation when possible.
+    const fs::path hash_path = *snapshot_path + ".hash";
+    uint256 expected_hash;
+    bool have_expected = false;
+    FILE* hash_file{fsbridge::fopen(hash_path, "rb")};
+    if (hash_file) {
+        AutoFile hash_afile{hash_file};
+        try {
+            hash_afile >> expected_hash;
+            have_expected = !expected_hash.IsNull();
+        } catch (...) {}
+    }
 
-        if (have_expected) {
-            const CBlockIndex* checkpoint_index = chainman.m_blockman.LookupBlockIndex(metadata.m_base_blockhash);
-            if (checkpoint_index && checkpoint_index->nHeight > 0) {
-                CBlock checkpoint_block;
-                if (chainman.m_blockman.ReadBlock(checkpoint_block, *checkpoint_index)) {
-                    const CTransaction& coinbase = *checkpoint_block.vtx[0];
-                    bool hash_matched = false;
-                    for (const CTxOut& out : coinbase.vout) {
-                        CScript::const_iterator pc = out.scriptPubKey.begin();
-                        opcodetype opcode;
-                        std::vector<unsigned char> data;
-                        if (!out.scriptPubKey.GetOp(pc, opcode, data) || opcode != OP_RETURN) continue;
-                        if (!out.scriptPubKey.GetOp(pc, opcode, data)) continue;
-                        int cb_height = 0;
-                        if (opcode >= OP_1 && opcode <= OP_16) {
-                            cb_height = opcode - (OP_1 - 1);
-                        } else if (!data.empty()) {
-                            try { cb_height = CScriptNum(data, true, 5).getint(); } catch (...) { continue; }
-                        } else { continue; }
-                        if (!out.scriptPubKey.GetOp(pc, opcode, data)) continue;
-                        if (data.size() != 32) continue;
-                        if (cb_height == checkpoint_index->nHeight) {
-                            uint256 checkpoint_utxo_hash;
-                            std::memcpy(checkpoint_utxo_hash.begin(), data.data(), 32);
-                            if (checkpoint_utxo_hash == expected_hash) {
-                                hash_matched = true;
-                            }
-                            break;
-                        }
-                    }
+    if (!have_expected) {
+        LogWarning("[snapshot] No valid .hash sidecar for %s — refusing activation.\n",
+                   fs::PathToString(*snapshot_path));
+        try {
+            fs::remove(*snapshot_path);
+            fs::remove(hash_path);
+        } catch (const fs::filesystem_error&) {}
+        return;
+    }
 
-                    if (!hash_matched) {
-                        LogWarning("[snapshot] Snapshot hash does NOT match on-chain checkpoint for %s. Removing corrupted snapshot.\n",
-                                   metadata.m_base_blockhash.ToString());
-                        try {
-                            fs::remove(*snapshot_path);
-                            fs::remove(hash_path);
-                        } catch (const fs::filesystem_error&) {}
-                        return;
-                    }
-                    LogInfo("[snapshot] Snapshot hash verified against on-chain checkpoint at height %d.\n",
-                            checkpoint_index->nHeight);
-                } else {
-                    LogWarning("[snapshot] Unable to read checkpoint block %s from disk for validation. Proceeding without hash check.\n",
-                               metadata.m_base_blockhash.ToString());
-                }
+    const CBlockIndex* checkpoint_index = chainman.m_blockman.LookupBlockIndex(metadata.m_base_blockhash);
+    if (checkpoint_index && checkpoint_index->nHeight > 0) {
+        CBlock checkpoint_block;
+        if (chainman.m_blockman.ReadBlock(checkpoint_block, *checkpoint_index)) {
+            const auto attestation = ExtractCoinbaseUTXOAttestation(*checkpoint_block.vtx[0], checkpoint_index->nHeight);
+            if (!attestation || *attestation != expected_hash) {
+                LogWarning("[snapshot] Snapshot .hash does NOT match on-chain attestation for %s. Removing snapshot.\n",
+                           metadata.m_base_blockhash.ToString());
+                try {
+                    fs::remove(*snapshot_path);
+                    fs::remove(hash_path);
+                } catch (const fs::filesystem_error&) {}
+                return;
             }
+            LogInfo("[snapshot] Snapshot hash verified against on-chain attestation at height %d.\n",
+                    checkpoint_index->nHeight);
         } else {
-            LogWarning("[snapshot] No .hash sidecar found for %s. Proceeding without hash validation.\n",
-                       fs::PathToString(*snapshot_path));
+            LogInfo("[snapshot] Checkpoint block %s not on disk; will verify snapshot content against .hash sidecar.\n",
+                    metadata.m_base_blockhash.ToString());
         }
     }
 
-    // Elektron Net: automatic snapshots skip the hardcoded assumeutxo hash check
-    // because the checkpoint hash is validated on-chain and the snapshot was
-    // generated by a peer we trust enough to download from.
-    auto activation_result = chainman.ActivateSnapshot(afile, metadata, false, /*verify_assumeutxo_hash=*/false);
+    auto activation_result = chainman.ActivateSnapshot(afile, metadata, false, /*verify_assumeutxo_hash=*/false, expected_hash);
     if (!activation_result) {
         LogWarning("[snapshot] Failed to activate snapshot: %s\n",
                    util::ErrorString(activation_result).original);

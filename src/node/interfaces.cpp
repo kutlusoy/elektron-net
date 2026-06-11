@@ -631,6 +631,19 @@ public:
                int{FillBlock(block2, block2_out, lock, active, chainman().m_blockman)};
     }
     void findCoins(std::map<COutPoint, Coin>& coins) override { return FindCoins(m_node, coins); }
+    void forEachCoin(const std::function<bool(const COutPoint&, const Coin&)>& fn) override
+    {
+        LOCK(::cs_main);
+        auto pcursor = chainman().ActiveChainstate().CoinsDB().Cursor();
+        while (pcursor->Valid()) {
+            COutPoint key;
+            Coin coin;
+            if (pcursor->GetKey(key) && pcursor->GetValue(coin)) {
+                if (!fn(key, coin)) break;
+            }
+            pcursor->Next();
+        }
+    }
     double guessVerificationProgress(const uint256& block_hash) override
     {
         LOCK(chainman().GetMutex());

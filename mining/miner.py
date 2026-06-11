@@ -5,12 +5,13 @@ Standalone CPU miner for Elektron Net.
 Connects to a local node via RPC, fetches block templates, mines with
 multiple threads, and submits solved blocks.
 
-Hard Fork v3.0.1 (Stoic Awakening) — Block 137035:
-- From block 137035 onward, the node may serve templates with minimum
-  difficulty (powLimit) if more than 120 seconds have elapsed since
+Elektron Net v4.0 (genesis restart):
+- Stoic Awakening is active from block 1. The node may serve templates with
+  minimum difficulty (powLimit) if more than 120 seconds have elapsed since
   the previous block.
-- No changes are required in this miner; the difficulty (bits field)
-  is read directly from the block template returned by the node.
+- UTXO attestation outputs (every block) are included via the
+  coinbase_required_outputs field in getblocktemplate. Full on-disk snapshots
+  are written by nodes only at checkpoint heights (every 197,280 blocks).
 """
 
 import argparse
@@ -219,17 +220,31 @@ def _build_coinbase_tx(template, script_pubkey):
                _write_compact_size(len(script_pubkey)) +
                script_pubkey)
 
+    required_outputs = template.get('coinbase_required_outputs', [])
     witness_commitment = template.get('default_witness_commitment')
-    has_witness = witness_commitment is not None
-
-    if has_witness:
-        wc_script = bytes.fromhex(witness_commitment)
-        outputs += struct.pack('<Q', 0)  # witness commitment output value = 0
-        outputs += _write_compact_size(len(wc_script))
-        outputs += wc_script
-        output_count = 2
-    else:
+    if required_outputs:
         output_count = 1
+        for req in required_outputs:
+            script = bytes.fromhex(req['scriptPubKey'])
+            value = req.get('value', 0)
+            outputs += struct.pack('<Q', value)
+            outputs += _write_compact_size(len(script))
+            outputs += script
+            output_count += 1
+        has_witness = witness_commitment is not None or any(
+            len(bytes.fromhex(req['scriptPubKey'])) >= 6 and
+            bytes.fromhex(req['scriptPubKey'])[0:6] == bytes([0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed])
+            for req in required_outputs
+        )
+    else:
+        has_witness = witness_commitment is not None
+        output_count = 1
+        if has_witness:
+            wc_script = bytes.fromhex(witness_commitment)
+            outputs += struct.pack('<Q', 0)
+            outputs += _write_compact_size(len(wc_script))
+            outputs += wc_script
+            output_count = 2
 
     # --- assemble tx without witness first ---
     tx = struct.pack('<i', 2)          # version 2

@@ -65,6 +65,9 @@ enum class LockResult {
 void UnlockDirectory(const fs::path& directory, const fs::path& lockfile_name);
 bool CheckDiskSpace(const fs::path& dir, uint64_t additional_bytes = 0);
 
+/** Return the total byte size of all regular files under a directory (recursive). */
+uint64_t DirectorySize(const fs::path& dir);
+
 /** Get the size of a file by scanning it.
  *
  * @param[in] path The file path

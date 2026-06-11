@@ -654,6 +654,9 @@ public:
         uint256 last_failed_block;
     };
     ScanResult ScanForWalletTransactions(const uint256& start_block, int start_height, std::optional<int> max_height, const WalletRescanReserver& reserver, bool fUpdate, bool save_progress);
+    /** Elektron Net: recover wallet balances from the current UTXO set when pruned history is unavailable. */
+    bool ScanUTXOSet(bilingual_str& error) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+    bool CreditUTXOFromChain(const COutPoint& outpoint, const Coin& coin) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
     void transactionRemovedFromMempool(const CTransactionRef& tx, MemPoolRemovalReason reason) override;
     /** Set the next time this wallet should resend transactions to 12-36 hours from now, ~1 day on average. */
     void SetNextResend() { m_next_resend = GetDefaultNextResend(); }

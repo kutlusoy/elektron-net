@@ -92,13 +92,17 @@ static const uint64_t MIN_DISK_SPACE_FOR_BLOCK_FILES{550_MiB};
 /** Maximum number of dedicated script-checking threads allowed */
 static constexpr int MAX_SCRIPTCHECK_THREADS{15};
 
-/** Elektron Net: validate UTXO checkpoint embedded in a checkpoint block's coinbase.
- *  Every MANDATORY_PRUNE_DEPTH blocks, the coinbase must contain an OP_RETURN
- *  output with the serialized UTXO set hash computed after connecting the block.
+/** Elektron Net: validate UTXO attestation embedded in every block's coinbase (height > 0).
+ *  The coinbase must contain an OP_RETURN output with the serialized UTXO set hash
+ *  computed after connecting the block. Snapshot files are written only at checkpoint heights.
  */
 class CBlock;
 class CCoinsView;
 class BlockValidationState;
+/** Compute the UTXO attestation hash after connecting all transactions in a block. */
+std::optional<uint256> ComputeBlockUTXOAttestationHash(const CBlock& block, int nHeight, CCoinsView& base_view, node::BlockManager& blockman);
+/** Parse OP_RETURN UTXO attestation from a coinbase at the expected height. */
+std::optional<uint256> ExtractCoinbaseUTXOAttestation(const CTransaction& coinbase, int nHeight);
 bool ValidateUTXOCheckpoint(const CBlock& block, int nHeight, CCoinsView& view, node::BlockManager& blockman, BlockValidationState& state);
 
 /** Elektron Net: automatically write a UTXO snapshot to disk after a checkpoint block
@@ -973,7 +977,8 @@ private:
         Chainstate& snapshot_chainstate,
         AutoFile& coins_file,
         const node::SnapshotMetadata& metadata,
-        bool verify_assumeutxo_hash = true);
+        bool verify_assumeutxo_hash = true,
+        const std::optional<uint256>& expected_utxo_hash = std::nullopt);
 
     /**
      * If a block header hasn't already been seen, call CheckBlockHeader on it, ensure
@@ -1124,7 +1129,8 @@ public:
      *  snapshot bootstrap), the hardcoded assumeutxo hash check is skipped.
      */
     [[nodiscard]] util::Result<CBlockIndex*> ActivateSnapshot(
-        AutoFile& coins_file, const node::SnapshotMetadata& metadata, bool in_memory, bool verify_assumeutxo_hash = true);
+        AutoFile& coins_file, const node::SnapshotMetadata& metadata, bool in_memory, bool verify_assumeutxo_hash = true,
+        const std::optional<uint256>& expected_utxo_hash = std::nullopt);
 
     //! Try to validate an assumeutxo snapshot by using a validated historical
     //! chainstate targeted at the snapshot block. When the target block is

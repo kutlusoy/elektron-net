@@ -886,7 +886,7 @@ RPCMethod rescanblockchain()
         // We can't rescan unavailable blocks, stop and throw an error
         if (!pwallet->chain().hasBlocks(pwallet->GetLastBlockHash(), start_height, stop_height)) {
             if (pwallet->chain().havePruned() && pwallet->chain().getPruneHeight() >= start_height) {
-                throw JSONRPCError(RPC_MISC_ERROR, "Can't rescan beyond pruned data. Use RPC call getblockchaininfo to determine your pruned height.");
+                throw JSONRPCError(RPC_MISC_ERROR, "Can't rescan beyond pruned data. Reload the wallet after sync to recover balances from the current UTXO set, or use getblockchaininfo to determine your pruned height.");
             }
             if (pwallet->chain().hasAssumedValidChain()) {
                 throw JSONRPCError(RPC_MISC_ERROR, "Failed to rescan unavailable blocks likely due to an in-progress assumeutxo background sync. Check logs or getchainstates RPC for assumeutxo background sync progress and try again later.");

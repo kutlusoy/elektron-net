@@ -94,7 +94,7 @@ public:
         consensus.nPowTargetTimespan = 2016 * 60; // 1.4 days
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = false;
-        consensus.MinDifficultyActivationHeight = 137035; // v3.0.1 hard fork: Stoic Awakening
+        consensus.MinDifficultyActivationHeight = 1; // Stoic Awakening active from block 1 (v4.0 genesis restart)
         consensus.enforce_BIP94 = false;
         consensus.fPowNoRetargeting = false;
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].bit = 28;
@@ -112,18 +112,18 @@ public:
          * The characters are rarely used upper ASCII, not valid as UTF-8, and produce
          * a large 32-bit integer with any alignment.
          */
-        pchMessageStart[0] = 0xf9;
-        pchMessageStart[1] = 0xbe;
-        pchMessageStart[2] = 0xb4;
-        pchMessageStart[3] = 0xd9;
+        pchMessageStart[0] = 0xe1;
+        pchMessageStart[1] = 0xec;
+        pchMessageStart[2] = 0x7a;
+        pchMessageStart[3] = 0x6e;
         nDefaultPort = 8333;
-        nPruneAfterHeight = 394560; // 2 * MANDATORY_PRUNE_DEPTH: first prune at 274 days, keep last 137 days
-        m_assumed_blockchain_size = 856;
-        m_assumed_chain_state_size = 14;
+        nPruneAfterHeight = 197280; // MANDATORY_PRUNE_DEPTH: prune once first checkpoint is reached; retain last 137 days
+        m_assumed_blockchain_size = 10; // ~137-day window at 60s blocks (informational)
+        m_assumed_chain_state_size = 2;
 
-        genesis = CreateGenesisBlock(1778094557, 34390588, 0x1d7fffff, 1, 5 * COIN);
+        genesis = CreateGenesisBlock(1781164284, 8892291, 0x1d7fffff, 1, 5 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
-        assert(consensus.hashGenesisBlock == uint256{"0000004df73800eeb2984f1715feae3fad7d05696ab55c27d3beb244cdb1468c"});
+        assert(consensus.hashGenesisBlock == uint256{"00000006b054338443f1a5d5534df21eab0d13232028158ae198edbb169f9dad"});
         assert(genesis.hashMerkleRoot == uint256{"0a7087d81dfb14868848c7e02da8408fe721540e63f6cab9a67d0dfc37b19b17"});
 
         // Note that of those which support the service bits prefix, most only support a subset of
@@ -131,8 +131,7 @@ public:
         // This is fine at runtime as we'll fall back to using them as an addrfetch if they don't support the
         // service bits we want, but we should get them updated to support all service bits wanted by any
         // release ASAP to avoid it where possible.
-        // Placeholder DNS seed for Elektron Net mainnet
-        // vSeeds.emplace_back("seed.elektron-net.org.");
+        vSeeds.emplace_back("seed.elektron-net.org.");
 
         base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,0);
         base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1,5);
@@ -148,10 +147,9 @@ public:
         m_assumeutxo_data = {};
 
         chainTxData = ChainTxData{
-            // Data from RPC: getchaintxstats 4096 00000000000000000000ccebd6d74d9194d8dcdc1d177c478e094bfad51ba5ac
-            .nTime    = 1772055173,
-            .tx_count = 1315805869,
-            .dTxRate  = 5.40111006496122,
+            .nTime    = 1781164284,
+            .tx_count = 1,
+            .dTxRate  = 0.0,
         };
 
         // Elektron Net: optimized for ~60s block time and smaller chain.
@@ -196,8 +194,8 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].threshold = 1512; // 75%
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].period = 2016;
 
-        consensus.nMinimumChainWork = uint256{"0000000000000000000000000000000000000000000017dde1c649f3708d14b6"};
-        consensus.defaultAssumeValid = uint256{"000000007a61e4230b28ac5cb6b5e5a0130de37ac1faf2f8987d2fa6505b67f4"}; // 4842348
+        consensus.nMinimumChainWork = uint256{};
+        consensus.defaultAssumeValid = uint256{};
 
         pchMessageStart[0] = 0x0b;
         pchMessageStart[1] = 0x11;
@@ -208,9 +206,9 @@ public:
         m_assumed_blockchain_size = 245;
         m_assumed_chain_state_size = 19;
 
-        genesis = CreateGenesisBlock(1778094694, 92712578, 0x1d7fffff, 1, 5 * COIN);
+        genesis = CreateGenesisBlock(1781164421, 7265942, 0x1d7fffff, 1, 5 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
-        assert(consensus.hashGenesisBlock == uint256{"00000010d10985cc6db3aa96d6f82048feff7a2c0d57b10e23bb360a66840aea"});
+        assert(consensus.hashGenesisBlock == uint256{"00000078233832d6ba39d7693ad96e9e6a8bc869a5f49cfaf4760f2c73c73e4f"});
         assert(genesis.hashMerkleRoot == uint256{"0a7087d81dfb14868848c7e02da8408fe721540e63f6cab9a67d0dfc37b19b17"});
 
         vFixedSeeds.clear();
@@ -232,10 +230,9 @@ public:
         m_assumeutxo_data = {};
 
         chainTxData = ChainTxData{
-            // Data from RPC: getchaintxstats 4096 000000007a61e4230b28ac5cb6b5e5a0130de37ac1faf2f8987d2fa6505b67f4
-            .nTime    = 1772051651,
-            .tx_count = 536108416,
-            .dTxRate  = 0.02691479016257117,
+            .nTime    = 1781164421,
+            .tx_count = 1,
+            .dTxRate  = 0.0,
         };
 
         // Generated by headerssync-params.py on 2026-02-25.
@@ -277,8 +274,8 @@ public:
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].threshold = 1512; // 75%
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].period = 2016;
 
-        consensus.nMinimumChainWork = uint256{"0000000000000000000000000000000000000000000009a0fe15d0177d086304"};
-        consensus.defaultAssumeValid = uint256{"0000000002368b1e4ee27e2e85676ae6f9f9e69579b29093e9a82c170bf7cf8a"}; // 123613
+        consensus.nMinimumChainWork = uint256{};
+        consensus.defaultAssumeValid = uint256{};
 
         pchMessageStart[0] = 0x1c;
         pchMessageStart[1] = 0x16;
@@ -293,13 +290,13 @@ public:
         const CScript testnet4_genesis_script = CScript() << "000000000000000000000000000000000000000000000000000000000000000000"_hex << OP_CHECKSIG;
         genesis = CreateGenesisBlock(testnet4_genesis_msg,
                 testnet4_genesis_script,
-                1778094831,
-                86240929,
+                1781164558,
+                1618547,
                 0x1d7fffff,
                 1,
                 5 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
-        assert(consensus.hashGenesisBlock == uint256{"00000060d56b4a8cff9fe3c9e6e567b9a921bb3e066edfcd1aa76db72a6190a7"});
+        assert(consensus.hashGenesisBlock == uint256{"000000165a03e2afd7a326609e05ea55626c9464b52fe0d2828cabe78d9018ec"});
         assert(genesis.hashMerkleRoot == uint256{"fa6b057c611cbc9a40df72e36140da01bfa98d1371d5e7b36f789228c5004bf5"});
 
         vFixedSeeds.clear();
@@ -321,10 +318,9 @@ public:
         m_assumeutxo_data = {};
 
         chainTxData = ChainTxData{
-            // Data from RPC: getchaintxstats 4096 0000000002368b1e4ee27e2e85676ae6f9f9e69579b29093e9a82c170bf7cf8a
-            .nTime    = 1772013387,
-            .tx_count = 14191421,
-            .dTxRate  = 0.01848579579528412,
+            .nTime    = 1781164558,
+            .tx_count = 1,
+            .dTxRate  = 0.0,
         };
 
         // Generated by headerssync-params.py on 2026-02-25.
@@ -351,15 +347,14 @@ public:
             vFixedSeeds.clear();
             vSeeds.clear();
 
-            consensus.nMinimumChainWork = uint256{"00000000000000000000000000000000000000000000000000000b463ea0a4b8"};
-            consensus.defaultAssumeValid = uint256{"00000008414aab61092ef93f1aacc54cf9e9f16af29ddad493b908a01ff5c329"}; // 293175
-            m_assumed_blockchain_size = 24;
-            m_assumed_chain_state_size = 4;
+            consensus.nMinimumChainWork = uint256{};
+            consensus.defaultAssumeValid = uint256{};
+            m_assumed_blockchain_size = 1;
+            m_assumed_chain_state_size = 1;
             chainTxData = ChainTxData{
-                // Data from RPC: getchaintxstats 4096 00000008414aab61092ef93f1aacc54cf9e9f16af29ddad493b908a01ff5c329
-                .nTime    = 1772055248,
-                .tx_count = 28676833,
-                .dTxRate  = 0.06736623436338929,
+                .nTime    = 1781164695,
+                .tx_count = 1,
+                .dTxRate  = 0.0,
             };
         } else {
             bin = *options.challenge;
@@ -412,9 +407,9 @@ public:
         nDefaultPort = 38333;
         nPruneAfterHeight = 1000;
 
-        genesis = CreateGenesisBlock(1778094968, 1293151, 0x1d7fffff, 1, 5 * COIN);
+        genesis = CreateGenesisBlock(1781164695, 1701524, 0x1d7fffff, 1, 5 * COIN);
         consensus.hashGenesisBlock = genesis.GetHash();
-        assert(consensus.hashGenesisBlock == uint256{"000000468fb4d6c45b05b60a6048de4666aeaaceb8063761d7ef3d4d3267e1d8"});
+        assert(consensus.hashGenesisBlock == uint256{"00000040557e250978f497ad47c7e81a7b429c76abb1c96f28cc584623fd1388"});
         assert(genesis.hashMerkleRoot == uint256{"0a7087d81dfb14868848c7e02da8408fe721540e63f6cab9a67d0dfc37b19b17"});
 
         m_assumeutxo_data = {};

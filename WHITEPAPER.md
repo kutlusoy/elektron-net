@@ -1,7 +1,6 @@
 # Elektron Net — Whitepaper
-**Version 3.0.1 | Author: Ali Kutlusoy | Graz, Austria, 2026**
+**Version 4.0.0 | Author: Ali Kutlusoy | Graz, Austria, 2026**<sup>¹</sup>
 
-# Warning: Although we are on the mainnet, the blockchain is highly experimental and unstable and should not be used for financial purposes at this stage. It is recommended to perform a daily build before a full release. Use at your own risk!
 ---
 
 ## Abstract
@@ -10,6 +9,8 @@ Elektron Net is a minimal, focused fork of Bitcoin Core. It preserves Bitcoin's 
 
 1. **Block time reduced to 60 seconds** — faster confirmation latency without altering the economic model.
 2. **Mandatory 137-day pruning** — transaction history is mathematically erased after α⁻¹ days, leaving only headers, checkpoints, and the current UTXO set.
+
+Every block carries an on-chain UTXO attestation (37 bytes); full snapshot *files* are written only every 137 days. See §4.3 and [`doc/BITCOIN_CORE_DIFF.md`](doc/BITCOIN_CORE_DIFF.md) for the complete implementation diff vs Bitcoin Core.
 
 Everything else remains Bitcoin Core. The SHA-256d proof-of-work, the 21-million supply cap, the halving rhythm, and the Nakamoto consensus are untouched.
 
@@ -95,12 +96,12 @@ Bitcoin was built for institutional resilience. Elektron Net is built for human 
 |---|---|---|
 | Language | Bitcoin Core | C++20 |
 | Consensus | Bitcoin Core | SHA-256d PoW, Nakamoto longest-chain rule |
-| Difficulty Adjustment | Bitcoin Core | Every 2,016 blocks + Stoic Awakening recovery (block 137035) |
+| Difficulty Adjustment | Bitcoin Core | Every 2,016 blocks + Stoic Awakening recovery (from block 1) |
 | Script Engine | Bitcoin Core | OP_CODES unchanged |
 | P2P Network | Bitcoin Core | TCP/IP, addr relay, DoS protection |
 | Wallet | Bitcoin Core | BIP-32/39/44, descriptor wallets, Bech32m |
 | Storage | Bitcoin Core | LevelDB / RocksDB |
-| RPC | Bitcoin Core | Port 9337 (adapted) |
+| RPC / P2P | Bitcoin Core | Port **8332** / **8333** (unchanged) |
 
 **Changes to Bitcoin Core:**
 
@@ -109,7 +110,7 @@ Bitcoin was built for institutional resilience. Elektron Net is built for human 
 | Block time | 10 minutes | **60 seconds** |
 | Blocks per day | 144 | **1,440** |
 | Retarget interval | 2,016 blocks (2 weeks) | **2,016 blocks (1.4 days)** |
-| Difficulty recovery | None | **Stoic Awakening** (min-difficulty after >120s delay, activated at block 137035) |
+| Difficulty recovery | None | **Stoic Awakening** (min-difficulty after >120s delay, active from block 1) |
 | Pruning | Optional, user-defined | **Mandatory, 137 days** |
 
 All other consensus rules, opcodes, signature schemes (ECDSA, Schnorr/Taproot), and network behaviour are preserved exactly.
@@ -154,7 +155,7 @@ Bitcoin’s 2,016-block difficulty retargeting window assumes a relatively stabl
 
 #### 3.3.1 The Mechanism
 
-To prevent this, Elektron Net introduces a **Dynamic Difficulty Recovery Mechanism**, activated at block **137035** via hard fork v3.0.1 (*Stoic Awakening*).
+To prevent this, Elektron Net introduces a **Dynamic Difficulty Recovery Mechanism** (*Stoic Awakening*), active from block **1** on the v4.0 genesis restart.
 
 Outside the regular 2,016-block retargeting interval, the protocol evaluates an additional safety condition:
 
@@ -169,17 +170,17 @@ Once a minimum-difficulty block is found, the target immediately returns to the 
 | Competitive impact | Lowers barrier to entry | Neutral — all miners use same template |
 | Purpose | Test mining without hardware | **Prevent chain stall after hashrate shock** |
 
-Because the node automatically updates the block template’s `nBits` field when the delay threshold is crossed, **no miner software changes are required**. Standalone miners, pool software, and ASIC firmware continue to operate exactly as before — they simply mine against the `bits` value provided by `getblocktemplate`.
+Because the node automatically updates the block template’s `nBits` field when the delay threshold is crossed, **ASIC firmware and hash-only miners need no changes**. Pool backends and GBT miners **must** include every output in `coinbase_required_outputs` (witness commitment + UTXO attestation) — see [`doc/mining-pool-integration.md`](doc/mining-pool-integration.md). Omitting the attestation produces blocks rejected with `missing-utxo-attestation`.
 
 #### 3.3.2 Consensus Properties
 
-The activation is **height-based** (block 137035), not time-based. This guarantees deterministic behavior:
+Stoic Awakening is **height-based** (`MinDifficultyActivationHeight = 1`), not time-based. This guarantees deterministic behavior from the first post-genesis block.
 
-- Blocks before 137035 are validated under the original rules.
-- Blocks at or after 137035 are validated under the new rules.
-- Old nodes (v3.0.0) reject post-fork min-difficulty blocks as invalid, ensuring a clean network partition that forces upgrades.
+Protocol version is `70017`; `MIN_PEER_PROTO_VERSION` is `70017` from genesis onward.
 
-Protocol version is incremented to `70017`, and `MIN_PEER_PROTO_VERSION` is raised to `70017`, so v3.0.0 peers are disconnected immediately upon connection.
+#### 3.3.2a Bootstrap After the First Snapshot
+
+Until the first on-chain UTXO checkpoint (block 197,280), the network behaves like Bitcoin Core: new nodes sync headers and blocks normally. After that checkpoint exists, fresh installations bootstrap from the latest UTXO snapshot and download only the trailing 137-day window — see *The Blind Spot of Digital Money* for the full rolling-consensus model.
 
 #### 3.3.3 Why This Protects Everyone
 
@@ -204,6 +205,8 @@ The Stoic Awakening rule is therefore a **universal insurance policy**, not a re
 ### 4.1 Core Principle
 
 Elektron Net does not store transaction history indefinitely. Full block data (transactions, inputs, outputs) is deleted after exactly 137 days — α⁻¹, the inverse fine-structure constant.
+
+**There is no grace period.** Pruning starts at the first checkpoint (`nPruneAfterHeight = 197,280` blocks on mainnet). Unlike earlier designs that delayed pruning until 274 days (`2 × MANDATORY_PRUNE_DEPTH`), v4.0 enforces the 137-day window from the first checkpoint onward. User `-prune=<GB>` is ignored; retention is depth-based only.
 
 This is structural impossibility, not policy:
 - Every node deletes simultaneously — no node can retain data without forking onto a separate chain.
@@ -249,27 +252,51 @@ For the full legal overview, see [`right-to-be-forgotten.md`](right-to-be-forgot
 | **Permanent** | Genesis block header (80 bytes) |
 | | All block headers (80 bytes each, chain integrity) |
 | | UTXO set (current unspent outputs) |
-| | Checkpoints (BLS or threshold-signed, one per pruning window) |
+| | On-chain UTXO attestations (37 bytes per block in coinbase) |
+| | On-disk UTXO snapshot files (one per 137-day checkpoint) |
 | **137 days, then deleted** | Full transaction content |
 | | Input/output scripts and amounts |
 | **Never stored** | User identity, IP mappings, transaction graphs |
 
-### 4.3 Automatic UTXO Checkpoint Mechanism
+### 4.3 UTXO Attestation & Checkpoint Snapshots
 
-After 137 days, history is gone. New nodes need a way to trust the UTXO set without downloading 197,280 blocks that no peer retains.
+Elektron Net separates two concerns that are often conflated:
 
-**On-Chain UTXO Checkpoints:**
-- Produced automatically every 137 days (197,280 blocks at 60s).
-- Embedded in the coinbase transaction of the checkpoint block as an `OP_RETURN` output.
+1. **Continuous integrity** — every block must cryptographically bind the UTXO set.
+2. **Bootstrap efficiency** — every 137 days, a full snapshot file is written for new nodes.
+
+This is deliberate: a 37-byte `OP_RETURN` per block is not data waste; shipping a multi-gigabyte snapshot file every block would be.
+
+#### 4.3.1 Per-Block UTXO Attestation (Consensus)
+
+**Every block at height > 0** must carry a UTXO attestation in the coinbase:
+
 - Format: `OP_RETURN <height(4 bytes)> <UTXO set hash(32 bytes)>`.
-- The hash is `HASH_SERIALIZED` of the UTXO set computed *after* the checkpoint block is connected.
-- Every full node validates the checkpoint hash during block connection. If the embedded hash does not match the computed UTXO set hash, the block is rejected.
-- This makes checkpoints a consensus rule, not a trust assumption.
+- The hash is `HASH_SERIALIZED` of the UTXO set computed *after* all transactions in that block are connected.
+- Miners obtain the required output from `getblocktemplate` via `coinbase_required_outputs` (alongside the witness commitment).
+- External miners that omit the attestation produce invalid blocks; nodes reject them with `missing-utxo-attestation` or `bad-utxo-attestation`.
+- `OP_RETURN` outputs are not added to the UTXO set, so the attestation does not create a hash feedback loop.
 
-**Automatic Snapshot Creation:**
-- When a checkpoint block is accepted, every node automatically writes a UTXO snapshot to disk (`<datadir>/snapshots/<height>-<hash>.dat`).
-- The snapshot uses Bitcoin Core's existing AssumeUTXO serialization format (metadata + coins).
+This prevents a malicious miner from silently diverging the UTXO state between checkpoints. The chain carries a continuous, verifiable UTXO trail — not merely a checkpoint every 137 days.
+
+**Cost:** each connected block triggers one `ComputeUTXOStats` pass (~1,440 times per day at 60s spacing). This is the price of continuous on-chain UTXO accountability.
+
+#### 4.3.2 Checkpoint Snapshots (Every 137 Days)
+
+After 137 days, block *files* are gone. New nodes need a way to trust the UTXO set without downloading 197,280 blocks that no peer retains.
+
+**On-chain checkpoint blocks** (height divisible by 197,280):
+
+- Use the same attestation format as every other block.
+- Nodes log these as *checkpoints*; validation is identical, only log verbosity differs.
+
+**Automatic snapshot files on disk:**
+
+- Written **only** when a checkpoint block is accepted (`WriteAutomaticSnapshot`).
+- Path: `<datadir>/snapshots/<height>-<blockhash>.dat` plus a `.hash` sidecar.
+- Uses Bitcoin Core's AssumeUTXO serialization format (metadata + coins).
 - Snapshots are preserved even when block files are pruned.
+- Obsolete snapshot files from earlier checkpoints are deleted automatically.
 
 **P2P Snapshot Transfer:**
 - New nodes advertise `NODE_NETWORK_LIMITED` because no node stores blocks older than 137 days.
@@ -280,16 +307,29 @@ After 137 days, history is gone. New nodes need a way to trust the UTXO set with
   - `snapshotdata` — response with the requested file chunk.
 - This allows new nodes to download the UTXO snapshot directly from peers, chunk by chunk, without relying on external file distribution.
 
+**IBD vs snapshot bootstrap (`awaiting_snapshot_bootstrap`):**
+
+While the sync gap to the target checkpoint is **≤ 197,280 blocks**, the node downloads blocks normally — pruned peers still retain that window. Historical block download is skipped only when the gap **exceeds** `MANDATORY_PRUNE_DEPTH` or a local snapshot (`.dat` + `.hash`) is already present. This prevents fresh nodes from stalling on blocks no peer can serve, without blocking normal IBD inside the retention window.
+
 **Bootstrap for a new node:**
+
+*Before the first checkpoint (height < 197,280):* sync behaves like Bitcoin Core — headers and blocks from genesis.
+
+*After the first checkpoint exists:*
+
 1. Sync headers from any peer (headers are permanent and tiny).
 2. Identify the most recent checkpoint block in the headers chain.
-3. Request `getutxosnapshot` from peers to discover which checkpoint hash is available.
-4. Download the snapshot file via `getsnapshotdata` / `snapshotdata` chunks.
-5. Validate the downloaded snapshot hash against the checkpoint embedded in the coinbase.
-6. Load the snapshot via the existing AssumeUTXO infrastructure (`ActivateSnapshot`).
-7. Sync the remaining blocks from the checkpoint to the current tip (at most 197,280 blocks, always available from `NODE_NETWORK_LIMITED` peers).
+3. Request `getutxosnapshot` from peers advertising `NODE_SNAPSHOT` (only peers with both `.dat` and `.hash` advertise this bit).
+4. Download the snapshot file via `getsnapshotdata` / `snapshotdata` chunks (1 MB chunks; 30-minute stall timeout with automatic retry).
+5. Download completes only when both the `.dat` file **and** the `.hash` sidecar exist; peers without a sidecar do not offer snapshots.
+6. Activation (`MaybeActivateAutomaticSnapshot`) requires the `.hash` sidecar, verifies it against the on-chain coinbase attestation when the checkpoint block is on disk, and calls `PopulateAndValidateSnapshot` with `expected_utxo_hash` so deserialized content must match the sidecar hash.
+7. Sync the remaining blocks from the checkpoint to the current tip (at most 197,280 blocks).
 
-No trusted third party. No manual file download. No full historical sync. The entire bootstrap is peer-to-peer and cryptographically verified against the on-chain checkpoint.
+No trusted third party. No manual file download. No full historical sync after the first checkpoint. The entire bootstrap is peer-to-peer and cryptographically verified at three layers: sidecar hash, on-chain attestation, and post-load content hash. See [`doc/BITCOIN_CORE_DIFF.md`](doc/BITCOIN_CORE_DIFF.md) §2.3 and [`doc/AUDIT_PRUNING_SNAPSHOT.md`](doc/AUDIT_PRUNING_SNAPSHOT.md) for the full security model.
+
+#### 4.3.3 Mining Template Contract
+
+`getblocktemplate` exposes `coinbase_required_outputs`: an array of outputs the miner **must** include in the coinbase (witness commitment + UTXO attestation). The reference miners in `mining/miner.py` and `mining/miner.cpp` consume this field. Pool operators integrating Stratum must follow [`doc/mining-pool-integration.md`](doc/mining-pool-integration.md). Any mining software that ignores `coinbase_required_outputs` will produce blocks rejected by the network.
 
 ### 4.4 Storage Projection
 
@@ -304,13 +344,15 @@ Compared to Bitcoin's unbounded growth, this is a **~100× reduction** after 10 
 
 ### 4.5 Wallet Recovery Without History
 
+Recovery follows the **Pocket philosophy**: your seed finds your pocket (the current UTXO set), not your receipts.
+
 1. Enter 24-word BIP-39 seed.
 2. Derive all wallet descriptors (BIP-44/84/86).
-3. Download the current UTXO set from peers.
-4. Scan for outputs matching your derived addresses.
-5. Wallet is fully functional — balance spendable, no history needed.
+3. On wallet load, if pruned block history is unavailable for the wallet's last-synced height, the node runs **`ScanUTXOSet`** automatically (`CWallet::AttachChain` → `Chain::forEachCoin` → `CreditUTXOFromChain`).
+4. Outputs matching derived addresses are credited; balance is spendable immediately.
+5. **Transaction history before the 137-day pruning window is not recoverable** from the network — by design. `rescanblockchain` beyond the prune height still fails; reload the wallet to trigger UTXO scan.
 
-This works because the UTXO set *is* the pocket. The past is irrelevant.
+This is built into the node; no manual UTXO download or `-reindex` is required on pruned nodes. Wallet vendors and integrators should read [`doc/BITCOIN_CORE_DIFF.md`](doc/BITCOIN_CORE_DIFF.md) §2.6 and §9.3.
 
 ---
 
@@ -366,24 +408,34 @@ If a credible quantum threat emerges, the network can soft-fork to post-quantum 
 | | Address format | Bech32m (`be1q...` / `be1p...`) |
 | | Default output type | P2WPKH / P2TR (Taproot) |
 | **Node** | Minimum storage | ~100 MB (Year 1) |
-| | Full node storage | ~5–8 GB (Year 10) |
+| | Full node storage | ~5–8 GB (Year 10); GUI shows measured on-disk usage |
+| | Pruning | Mandatory; `-prune` size ignored; `nPruneAfterHeight = 197,280`; no 274-day grace |
+| | RPC / P2P ports | 8332 / 8333 (same as Bitcoin Core) |
 | | RAM (full node) | 4–8 GB |
+| **P2P** | New messages | `getutxosnapshot`, `utxosnapshot`, `getsnapshotdata`, `snapshotdata` |
+| | New service bit | `NODE_SNAPSHOT` (1 << 12) |
+| **Protocol** | `PROTOCOL_VERSION` | 70017 |
+| | `MIN_PEER_PROTO_VERSION` | 70017 (from genesis) |
 
 ---
 
 ## 7 — Conclusion
 
-Elektron Net is Bitcoin Core with two surgical modifications:
+Elektron Net is Bitcoin Core with surgical modifications:
 
 1. **60-second blocks** — faster payments, preserved economics.
 2. **137-day pruning** — privacy by mathematics, storage bounded forever.
+3. **Per-block UTXO attestation** — continuous UTXO integrity; snapshot *files* only every 137 days.
+4. **Stoic Awakening** — minimum-difficulty recovery after >120s block delay (from block 1).
 
-No new consensus mechanisms. No new trust models. No administrator keys. No pre-mine.
+No new trust models. No administrator keys. No pre-mine.
 
 The same SHA-256d proof-of-work. The same 21-million cap. The same Nakamoto consensus.
 
 > *"Mathematics secures your money. Time erases your traces. You own the moment."*
 
 ---
+
+<sup>¹</sup> *The network is young and still under active development; it is not yet intended for material financial use. Building from the latest source is recommended until a stable release. For private experiments, run `mining/mine_genesis.py` to generate your own `genesis_results.txt` and test with that genesis before joining the public chain.*
 
 **License: MIT**

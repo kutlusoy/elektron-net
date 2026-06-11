@@ -13,8 +13,11 @@
 #include <qt/guiutil.h>
 #include <qt/optionsmodel.h>
 
+#include <common/args.h>
 #include <common/system.h>
 #include <interfaces/node.h>
+#include <util/fs.h>
+#include <util/fs_helpers.h>
 #include <netbase.h>
 #include <node/caches.h>
 #include <node/chainstatemanager_args.h>
@@ -101,12 +104,16 @@ OptionsDialog::OptionsDialog(QWidget* parent, bool enableWallet)
     ui->pruneWarning->setVisible(false);
     ui->pruneWarning->setStyleSheet("QLabel { color: red; }");
 
-    ui->pruneSize->setEnabled(false);
-    connect(ui->prune, &QPushButton::toggled, ui->pruneSize, &QWidget::setEnabled);
-
-    // Elektron Net: pruning is mandatory — user cannot disable it.
+    // Elektron Net: mandatory 137-day pruning — not user-configurable.
     ui->prune->setChecked(true);
     ui->prune->setEnabled(false);
+    ui->pruneSize->setEnabled(false);
+    ui->pruneSize->setToolTip(tr("Shows current on-disk usage (blocks, chainstate, snapshots). Retention is governed by the mandatory 137-day window, not this number."));
+    m_storage_timer = new QTimer(this);
+    m_storage_timer->setInterval(30'000);
+    connect(m_storage_timer, &QTimer::timeout, this, &OptionsDialog::updateMeasuredStorageSize);
+    updateMeasuredStorageSize();
+    m_storage_timer->start();
 
     /* Network elements init */
     ui->proxyIp->setEnabled(false);
@@ -217,6 +224,21 @@ OptionsDialog::~OptionsDialog()
 void OptionsDialog::setClientModel(ClientModel* client_model)
 {
     m_client_model = client_model;
+    updateMeasuredStorageSize();
+}
+
+void OptionsDialog::updateMeasuredStorageSize()
+{
+    static constexpr const char* STORAGE_DIRS[]{"blocks", "chainstate", "snapshots"};
+    const fs::path datadir = gArgs.GetDataDirNet();
+    uint64_t total{0};
+    for (const char* subdir : STORAGE_DIRS) {
+        total += DirectorySize(datadir / subdir);
+    }
+    const int display_gb = total > 0
+        ? static_cast<int>((total + GB_BYTES - 1) / GB_BYTES)
+        : ELEKTRON_MANDATORY_PRUNE_WINDOW_GB;
+    ui->pruneSize->setValue(display_gb);
 }
 
 void OptionsDialog::setModel(OptionsModel *_model)

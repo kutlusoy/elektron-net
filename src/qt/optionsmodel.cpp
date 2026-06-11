@@ -349,27 +349,15 @@ static QString GetDefaultProxyAddress()
 
 void OptionsModel::SetPruneTargetGB(int prune_target_gb)
 {
+    Q_UNUSED(prune_target_gb);
     const common::SettingsValue cur_value = node().getPersistentSetting("prune");
-    const common::SettingsValue new_value = PruneSetting(prune_target_gb > 0, prune_target_gb);
+    // -prune=1: manual mode — retention is governed by MANDATORY_PRUNE_DEPTH, not disk size.
+    const common::SettingsValue new_value{1};
 
-    // Force setting to take effect. It is still safe to change the value at
-    // this point because this function is only called after the intro screen is
-    // shown, before the node starts.
     node().forceSetting("prune", new_value);
 
-    // Update settings.json if value configured in intro screen is different
-    // from saved value. Avoid writing settings.json if bitcoin.conf value
-    // doesn't need to be overridden.
-    if (PruneEnabled(cur_value) != PruneEnabled(new_value) ||
-        PruneSizeGB(cur_value) != PruneSizeGB(new_value)) {
-        // Call UpdateRwSetting() instead of setOption() to avoid setting
-        // RestartRequired flag
+    if (SettingTo<int64_t>(cur_value, 0) != 1) {
         UpdateRwSetting(node(), Prune, "", new_value);
-    }
-
-    // Keep previous pruning size, if pruning was disabled.
-    if (PruneEnabled(cur_value)) {
-        UpdateRwSetting(node(), Prune, "-prev", PruneEnabled(new_value) ? common::SettingsValue{} : cur_value);
     }
 }
 
@@ -463,11 +451,9 @@ QVariant OptionsModel::getOption(OptionID option, const std::string& suffix) con
     case EnablePSBTControls:
         return settings.value("enable_psbt_controls");
     case Prune:
-        return PruneEnabled(setting());
+        return true; // Elektron Net: mandatory pruning
     case PruneSize:
-        return PruneEnabled(setting()) ? PruneSizeGB(setting()) :
-               suffix.empty()          ? getOption(option, "-prev") :
-                                         DEFAULT_PRUNE_TARGET_GB;
+        return ELEKTRON_MANDATORY_PRUNE_WINDOW_GB; // fallback; OptionsDialog shows measured usage
     case DatabaseCache:
         return qlonglong(SettingTo<int64_t>(setting(), node::GetDefaultDBCache() >> 20));
     case ThreadsScriptVerif:
@@ -646,22 +632,8 @@ bool OptionsModel::setOption(OptionID option, const QVariant& value, const std::
         settings.setValue("enable_psbt_controls", m_enable_psbt_controls);
         break;
     case Prune:
-        if (changed()) {
-            if (suffix.empty() && !value.toBool()) setOption(option, true, "-prev");
-            update(PruneSetting(value.toBool(), getOption(PruneSize).toInt()));
-            if (suffix.empty() && value.toBool()) UpdateRwSetting(node(), option, "-prev", {});
-            if (suffix.empty()) setRestartRequired(true);
-        }
-        break;
     case PruneSize:
-        if (changed()) {
-            if (suffix.empty() && !getOption(Prune).toBool()) {
-                setOption(option, value, "-prev");
-            } else {
-                update(PruneSetting(true, ParsePruneSizeGB(value)));
-            }
-            if (suffix.empty() && getOption(Prune).toBool()) setRestartRequired(true);
-        }
+        // Elektron Net: mandatory 137-day pruning — GUI cannot change retention.
         break;
     case DatabaseCache:
         if (changed()) {

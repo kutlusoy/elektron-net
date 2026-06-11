@@ -4,7 +4,7 @@
 - **Version:** v3.0.1
 - **Codename:** Stoic Awakening
 - **Type:** Mandatory Hard Fork (Consensus Change)
-- **Status:** Implemented (Activation Height: 137035)
+- **Status:** Superseded by v4.0 genesis restart (Stoic Awakening active from block 1)
 - **Date:** 2026-05-10
 
 ---

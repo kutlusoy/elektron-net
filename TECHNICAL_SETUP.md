@@ -292,16 +292,16 @@ elektron-net/
         elektron-qt.exe
 ```
 
-### GUI-Build Hinweis
+### GUI build note
 
-Die Visual-Studio-Presets (`vs2026`, `vs2026-static`) bauen die GUI **automatisch mit** (`BUILD_GUI=ON`).  
-Für MSYS2 oder manuelle CMake-Aufrufe musst du die GUI explizit einschalten:
+The Visual Studio presets (`vs2026`, `vs2026-static`) build the GUI **automatically** (`BUILD_GUI=ON`).  
+For MSYS2 or manual CMake invocations, enable the GUI explicitly:
 
 ```bash
 cmake -G "MinGW Makefiles" .. -DBUILD_GUI=ON
 ```
 
-> **Hinweis:** Die GUI-Executable heißt `elektron-qt.exe`.
+> **Note:** The GUI executable is named `elektron-qt.exe`.
 
 ### Build directory quick reference
 

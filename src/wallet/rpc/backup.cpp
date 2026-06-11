@@ -437,9 +437,8 @@ RPCMethod importdescriptors()
                             "result, transactions and coins using this desc may not appear in the wallet.",
                             GetImportTimestamp(request, now), scanned_time - TIMESTAMP_WINDOW - 1, TIMESTAMP_WINDOW)};
                     if (pwallet->chain().havePruned()) {
-                        error_msg += strprintf(" This error could be caused by pruning or data corruption "
-                                "(see elektrond log for details) and could be dealt with by downloading and "
-                                "rescanning the relevant blocks (see -reindex option and rescanblockchain RPC).");
+                        error_msg += strprintf(" This error could be caused by pruning (see elektrond log for details). "
+                                "Reload the wallet after sync to recover balances from the current UTXO set.");
                     } else if (pwallet->chain().hasAssumedValidChain()) {
                         error_msg += strprintf(" This error is likely caused by an in-progress assumeutxo "
                                 "background sync. Check logs or getchainstates RPC for assumeutxo background "

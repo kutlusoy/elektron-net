@@ -1,0 +1,114 @@
+# =============================================================================
+# ELEKTRON NET GENESIS RESULTS — KEEP THIS FILE SECURE!
+# =============================================================================
+# Generated: 2026-06-11 07:51:59 UTC
+# This file contains:
+#   - Genesis block parameters for all networks
+#   - Wallet credentials for the genesis reward (5 Elek)
+#   - Copy-paste code for src/kernel/chainparams.cpp
+# =============================================================================
+
+
+# =============================================================================
+# WALLET CREDENTIALS — DO NOT SHARE
+# =============================================================================
+
+Genesis Private Key (hex):
+  <not shown in no-wallet mode>
+
+Genesis Private Key (WIF uncompressed):
+  N/A (no-wallet mode)
+
+Genesis Public Key (hex uncompressed):
+  045e63e670b5b45bf8b371cfd15e03503db200509292e472750b4967c60c756d11ecd99bff51e91a01a04609c466e42345463bbeb194adb1ff3af595ceaaf5ef3d
+
+Addresses derived from this keypair:
+  P2PKH:    N/A (no-wallet mode)
+  P2WPKH:   N/A (no-wallet mode)
+
+Note: The actual genesis output script is P2PK (pay-to-pubkey), not P2PKH
+or P2WPKH.  Standard wallets will NOT recognize this output automatically.
+To spend it you must build a raw transaction where the scriptSig is exactly
+"<pubkey> OP_CHECKSIG".  Use `elektron-tx` or a raw-transaction library.
+
+
+# =============================================================================
+# PUBLIC KEY / SCRIPT FOR src/kernel/chainparams.cpp
+# =============================================================================
+# The values below MUST be inserted into the CreateGenesisBlock() helper
+# or the individual network constructors in src/kernel/chainparams.cpp.
+# If they do not match the key used during mining, the assert() checks
+# will fail and the node will abort on startup.
+# =============================================================================
+
+Mainnet / Testnet3 / Signet / Regtest — genesis public key (hex):
+  045e63e670b5b45bf8b371cfd15e03503db200509292e472750b4967c60c756d11ecd99bff51e91a01a04609c466e42345463bbeb194adb1ff3af595ceaaf5ef3d
+  ^^^ This goes into the helper function at line ~72:
+      const CScript genesisOutputScript = CScript() << "045e63e670b5b45bf8b371cfd15e03503db200509292e472750b4967c60c756d11ecd99bff51e91a01a04609c466e42345463bbeb194adb1ff3af595ceaaf5ef3d"_hex << OP_CHECKSIG;
+
+Testnet4 — genesis script public key (hex):
+  000000000000000000000000000000000000000000000000000000000000000000
+  ^^^ This goes into CTestNet4Params (line ~290):
+      const CScript testnet4_genesis_script = CScript() << "000000000000000000000000000000000000000000000000000000000000000000"_hex << OP_CHECKSIG;
+
+
+# =============================================================================
+# GENESIS BLOCK PARAMETERS
+# =============================================================================
+
+| Network  | nTime      | nNonce       | hashGenesisBlock (uint256 BE)              | hashMerkleRoot (uint256 BE)                  |
+|----------|------------|--------------|----------------------------------------------|----------------------------------------------|
+| Mainnet  | 1781164284 |      8892291 | 00000006b054338443f1a5d5534df21eab0d13232028158ae198edbb169f9dad | 0a7087d81dfb14868848c7e02da8408fe721540e63f6cab9a67d0dfc37b19b17 |
+| Testnet3 | 1781164421 |      7265942 | 00000078233832d6ba39d7693ad96e9e6a8bc869a5f49cfaf4760f2c73c73e4f | 0a7087d81dfb14868848c7e02da8408fe721540e63f6cab9a67d0dfc37b19b17 |
+| Testnet4 | 1781164558 |      1618547 | 000000165a03e2afd7a326609e05ea55626c9464b52fe0d2828cabe78d9018ec | fa6b057c611cbc9a40df72e36140da01bfa98d1371d5e7b36f789228c5004bf5 |
+| Signet   | 1781164695 |      1701524 | 00000040557e250978f497ad47c7e81a7b429c76abb1c96f28cc584623fd1388 | 0a7087d81dfb14868848c7e02da8408fe721540e63f6cab9a67d0dfc37b19b17 |
+| Regtest  | 1296688602 |            2 | 752eeff40cb87937e666970e00ffdca686f950c5feca8894d7714086848c6d4f | 0a7087d81dfb14868848c7e02da8408fe721540e63f6cab9a67d0dfc37b19b17 |
+
+
+# =============================================================================
+# COPY-PASTE CODE FOR src/kernel/chainparams.cpp
+# =============================================================================
+# IMPORTANT: Before pasting, verify that the uncompressed public key in the
+#   CreateGenesisBlock() helper function (line ~72) matches the pubkey used
+#   to generate these hashes (see WALLET CREDENTIALS above). If the pubkey
+#   does not match, the assert() checks below will fail.
+#   Search inside chainparams.cpp for the class names to locate the blocks.
+# =============================================================================
+
+--- Mainnet (CMainParams constructor, around line 123) ---
+    genesis = CreateGenesisBlock(1781164284, 8892291, 0x1d7fffff, 1, 5 * COIN);
+    consensus.hashGenesisBlock = genesis.GetHash();
+    assert(consensus.hashGenesisBlock == uint256{"00000006b054338443f1a5d5534df21eab0d13232028158ae198edbb169f9dad"});
+    assert(genesis.hashMerkleRoot == uint256{"0a7087d81dfb14868848c7e02da8408fe721540e63f6cab9a67d0dfc37b19b17"});
+
+--- Testnet3 (CTestNetParams constructor, around line 208) ---
+    genesis = CreateGenesisBlock(1781164421, 7265942, 0x1d7fffff, 1, 5 * COIN);
+    consensus.hashGenesisBlock = genesis.GetHash();
+    assert(consensus.hashGenesisBlock == uint256{"00000078233832d6ba39d7693ad96e9e6a8bc869a5f49cfaf4760f2c73c73e4f"});
+    assert(genesis.hashMerkleRoot == uint256{"0a7087d81dfb14868848c7e02da8408fe721540e63f6cab9a67d0dfc37b19b17"});
+
+--- Testnet4 (CTestNet4Params constructor, around line 291) ---
+    genesis = CreateGenesisBlock(testnet4_genesis_msg,
+            testnet4_genesis_script,
+            1781164558,
+            1618547,
+            0x1d7fffff,
+            1,
+            5 * COIN);
+    consensus.hashGenesisBlock = genesis.GetHash();
+    assert(consensus.hashGenesisBlock == uint256{"000000165a03e2afd7a326609e05ea55626c9464b52fe0d2828cabe78d9018ec"});
+    assert(genesis.hashMerkleRoot == uint256{"fa6b057c611cbc9a40df72e36140da01bfa98d1371d5e7b36f789228c5004bf5"});
+
+--- Signet (SigNetParams constructor, around line 412) ---
+    genesis = CreateGenesisBlock(1781164695, 1701524, 0x1d7fffff, 1, 5 * COIN);
+    consensus.hashGenesisBlock = genesis.GetHash();
+    assert(consensus.hashGenesisBlock == uint256{"00000040557e250978f497ad47c7e81a7b429c76abb1c96f28cc584623fd1388"});
+    assert(genesis.hashMerkleRoot == uint256{"0a7087d81dfb14868848c7e02da8408fe721540e63f6cab9a67d0dfc37b19b17"});
+
+--- Regtest (CRegTestParams constructor, around line 510) ---
+    genesis = CreateGenesisBlock(1296688602, 2, 0x207fffff, 1, 5 * COIN);
+    consensus.hashGenesisBlock = genesis.GetHash();
+    assert(consensus.hashGenesisBlock == uint256{"752eeff40cb87937e666970e00ffdca686f950c5feca8894d7714086848c6d4f"});
+    assert(genesis.hashMerkleRoot == uint256{"0a7087d81dfb14868848c7e02da8408fe721540e63f6cab9a67d0dfc37b19b17"});
+
+# =============================================================================

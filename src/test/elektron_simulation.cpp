@@ -59,21 +59,39 @@ BOOST_AUTO_TEST_CASE(checkpoint_and_snapshot_mechanism)
     const CBlockIndex* tip = chain.Tip();
     BOOST_REQUIRE(tip != nullptr);
 
-    // Test that ValidateUTXOCheckpoint returns true for a non-checkpoint height
-    // (no validation is required yet, since we are far below MANDATORY_PRUNE_DEPTH).
-    CMutableTransaction dummy_coinbase;
-    dummy_coinbase.vin.resize(1);
-    dummy_coinbase.vin[0].prevout.SetNull();
-    dummy_coinbase.vout.resize(1);
-    dummy_coinbase.vout[0].nValue = 50 * COIN;
-    dummy_coinbase.vout[0].scriptPubKey = CScript() << OP_TRUE;
-    CBlock dummy_block;
-    dummy_block.vtx.push_back(MakeTransactionRef(std::move(dummy_coinbase)));
+    // Every block (height > 0) must carry a UTXO attestation in the coinbase.
+    const auto stats = kernel::ComputeUTXOStats(
+        kernel::CoinStatsHashType::HASH_SERIALIZED,
+        &chainstate.CoinsTip(), chainman.m_blockman);
+    BOOST_REQUIRE(stats);
+
+    CMutableTransaction attested_coinbase;
+    attested_coinbase.vin.resize(1);
+    attested_coinbase.vin[0].prevout.SetNull();
+    attested_coinbase.vout.resize(2);
+    attested_coinbase.vout[0].nValue = 50 * COIN;
+    attested_coinbase.vout[0].scriptPubKey = CScript() << OP_TRUE;
+    attested_coinbase.vout[1].nValue = 0;
+    attested_coinbase.vout[1].scriptPubKey = CScript() << OP_RETURN << tip->nHeight << stats->hashSerialized;
+    CBlock attested_block;
+    attested_block.vtx.push_back(MakeTransactionRef(std::move(attested_coinbase)));
 
     BlockValidationState state;
-    bool valid = ValidateUTXOCheckpoint(dummy_block, tip->nHeight, chainstate.CoinsTip(), chainman.m_blockman, state);
-    BOOST_CHECK(valid);
+    BOOST_CHECK(ValidateUTXOCheckpoint(attested_block, tip->nHeight, chainstate.CoinsTip(), chainman.m_blockman, state));
     BOOST_CHECK(state.IsValid());
+
+    CMutableTransaction missing_coinbase;
+    missing_coinbase.vin.resize(1);
+    missing_coinbase.vin[0].prevout.SetNull();
+    missing_coinbase.vout.resize(1);
+    missing_coinbase.vout[0].nValue = 50 * COIN;
+    missing_coinbase.vout[0].scriptPubKey = CScript() << OP_TRUE;
+    CBlock missing_block;
+    missing_block.vtx.push_back(MakeTransactionRef(std::move(missing_coinbase)));
+
+    BlockValidationState missing_state;
+    BOOST_CHECK(!ValidateUTXOCheckpoint(missing_block, tip->nHeight, chainstate.CoinsTip(), chainman.m_blockman, missing_state));
+    BOOST_CHECK(!missing_state.IsValid());
 }
 
 BOOST_AUTO_TEST_CASE(automatic_snapshot_file_creation)
@@ -160,6 +178,9 @@ BOOST_AUTO_TEST_CASE(prune_depth_calculation)
     // Verify MIN_BLOCKS_TO_KEEP corresponds to ~2 days at 60s block time
     BOOST_CHECK_EQUAL(MIN_BLOCKS_TO_KEEP, 2880U);
     BOOST_CHECK_EQUAL(MIN_BLOCKS_TO_KEEP, 2 * 24 * 60 * 60 / 60);
+
+    // Mainnet pruning must start at the first checkpoint, not after a grace period.
+    BOOST_CHECK_EQUAL(Params().PruneAfterHeight(), MANDATORY_PRUNE_DEPTH);
 }
 
 /** Verify the checkpoint height calculation used by MaybeRequestSnapshot(). */
@@ -193,10 +214,16 @@ BOOST_AUTO_TEST_CASE(snapshot_bootstrap_checkpoint_calculation)
                     * static_cast<int>(MANDATORY_PRUNE_DEPTH);
     BOOST_CHECK_EQUAL(target_height, 394560);
 
+    // Fresh node at genesis when the network just reached the first checkpoint
+    tip_height = 0;
+    header_height = 197280;
+    BOOST_CHECK(header_height >= static_cast<int>(MANDATORY_PRUNE_DEPTH));
+    BOOST_CHECK(header_height - tip_height >= static_cast<int>(MANDATORY_PRUNE_DEPTH));
+
     // Normal IBD (within prune depth) does NOT trigger bootstrap
     tip_height = 190000;
     header_height = 200000;
-    BOOST_CHECK(header_height - tip_height <= static_cast<int>(MANDATORY_PRUNE_DEPTH));
+    BOOST_CHECK(header_height - tip_height < static_cast<int>(MANDATORY_PRUNE_DEPTH));
 }
 
 /** Test the range-tracking logic used for out-of-order snapshot chunk downloads. */
@@ -272,6 +299,64 @@ BOOST_AUTO_TEST_CASE(snapshot_range_tracking)
     BOOST_CHECK(!tracker2.AddRange(262'144, 262'144)); // 256K-512K -> merges 0-768K
     BOOST_CHECK(tracker2.AddRange(786'432, 262'144)); // 768K-1M -> completes
     BOOST_CHECK(tracker2.IsComplete());
+}
+
+/** Verify that automatic snapshot activation rejects a content hash mismatch. */
+BOOST_AUTO_TEST_CASE(snapshot_hash_mismatch_rejected)
+{
+    auto& chainman = *m_node.chainman;
+    auto& chainstate = chainman.ActiveChainstate();
+
+    LOCK(::cs_main);
+
+    const CBlockIndex* tip = chainman.ActiveChain().Tip();
+    BOOST_REQUIRE(tip != nullptr);
+
+    WriteAutomaticSnapshot(chainstate, tip->nHeight, tip, true);
+
+    const fs::path snapshot_dir = m_args.GetDataDirNet() / "snapshots";
+    fs::path snapshot_path;
+    uint256 sidecar_hash;
+    if (fs::exists(snapshot_dir)) {
+        for (const auto& entry : fs::directory_iterator(snapshot_dir)) {
+            const std::string fname = entry.path().filename().string();
+            if (fname.ends_with(".dat")) {
+                snapshot_path = entry.path();
+                const fs::path hash_path = snapshot_path + ".hash";
+                FILE* hash_file{fsbridge::fopen(hash_path, "rb")};
+                if (hash_file) {
+                    AutoFile hash_afile{hash_file};
+                    hash_afile >> sidecar_hash;
+                }
+                break;
+            }
+        }
+    }
+    BOOST_REQUIRE(!snapshot_path.empty());
+    BOOST_REQUIRE(!sidecar_hash.IsNull());
+
+    FILE* file{fsbridge::fopen(snapshot_path, "rb")};
+    AutoFile afile{file};
+    BOOST_REQUIRE(!afile.IsNull());
+
+    SnapshotMetadata metadata{chainman.GetParams().MessageStart()};
+    afile >> metadata;
+
+    const auto wrong_hash_opt = uint256::FromHex("0000000000000000000000000000000000000000000000000000000000000001");
+    BOOST_REQUIRE(wrong_hash_opt);
+    const uint256 wrong_hash = *wrong_hash_opt;
+    BOOST_CHECK(wrong_hash != sidecar_hash);
+
+    // Snapshot base must be ahead of the active tip for activation to proceed.
+    CBlockIndex* tip_mutable = chainman.m_blockman.LookupBlockIndex(tip->GetBlockHash());
+    BOOST_REQUIRE(tip_mutable && tip_mutable->pprev);
+    chainman.ActiveChain().SetTip(*tip_mutable->pprev);
+
+    auto result = chainman.ActivateSnapshot(afile, metadata, /*in_memory=*/true,
+                                            /*verify_assumeutxo_hash=*/false, wrong_hash);
+    BOOST_CHECK(!result);
+
+    chainman.ActiveChain().SetTip(*tip_mutable);
 }
 
 /** Verify that WriteAutomaticSnapshot creates a sidecar .hash file. */

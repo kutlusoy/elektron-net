@@ -7,6 +7,7 @@
 #define BITCOIN_INTERFACES_CHAIN_H
 
 #include <blockfilter.h>
+#include <coins.h>
 #include <common/settings.h>
 #include <kernel/chain.h> // IWYU pragma: export
 #include <node/types.h>
@@ -176,6 +177,10 @@ public:
     //! the current chain UTXO set. Iterates through all the keys in the map and
     //! populates the values.
     virtual void findCoins(std::map<COutPoint, Coin>& coins) = 0;
+
+    //! Iterate unspent outputs in the current chain UTXO set.
+    //! Returning false from the callback stops iteration.
+    virtual void forEachCoin(const std::function<bool(const COutPoint&, const Coin&)>& fn) = 0;
 
     //! Estimate fraction of total transactions verified if blocks up to
     //! the specified block hash are verified.

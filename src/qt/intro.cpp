@@ -28,12 +28,21 @@
 #include <cmath>
 
 namespace {
-//! Return pruning size that will be used if automatic pruning is enabled.
-int GetPruneTargetGB()
+//! Elektron Net always uses manual pruning; retention is fixed at 137 days.
+int GetPruneDisplayGB()
 {
-    int64_t prune_target_mib = gArgs.GetIntArg("-prune", 0);
-    // >1 means automatic pruning is enabled by config, 1 means manual pruning, 0 means no pruning.
-    return prune_target_mib > 1 ? PruneMiBtoGB(prune_target_mib) : DEFAULT_PRUNE_TARGET_GB;
+    return ELEKTRON_MANDATORY_PRUNE_WINDOW_GB;
+}
+
+int64_t MeasureDataDirUsageGiB(const fs::path& datadir)
+{
+    static constexpr const char* STORAGE_DIRS[]{"blocks", "chainstate", "snapshots"};
+    uint64_t total{0};
+    for (const char* subdir : STORAGE_DIRS) {
+        total += DirectorySize(datadir / subdir);
+    }
+    if (total == 0) return -1;
+    return static_cast<int64_t>((total + GB_BYTES - 1) / GB_BYTES);
 }
 } // namespace
 
@@ -42,7 +51,7 @@ Intro::Intro(QWidget *parent, int64_t blockchain_size_gb, int64_t chain_state_si
     ui(new Ui::Intro),
     m_blockchain_size_gb(blockchain_size_gb),
     m_chain_state_size_gb(chain_state_size_gb),
-    m_prune_target_gb{GetPruneTargetGB()}
+    m_prune_target_gb{GetPruneDisplayGB()}
 {
     ui->setupUi(this);
     ui->welcomeLabel->setText(ui->welcomeLabel->text().arg(CLIENT_NAME));
@@ -56,26 +65,14 @@ Intro::Intro(QWidget *parent, int64_t blockchain_size_gb, int64_t chain_state_si
     );
     ui->lblExplanation2->setText(ui->lblExplanation2->text().arg(CLIENT_NAME));
 
-    const int min_prune_target_GB = std::ceil(MIN_DISK_SPACE_FOR_BLOCK_FILES / 1e9);
-    ui->pruneGB->setRange(min_prune_target_GB, std::numeric_limits<int>::max());
-    // Elektron Net: pruning is mandatory — user cannot disable it.
+    // Elektron Net: mandatory 137-day pruning — not user-configurable.
     ui->prune->setChecked(true);
     ui->prune->setEnabled(false);
     ui->pruneGB->setValue(m_prune_target_gb);
-    ui->pruneGB->setToolTip(ui->prune->toolTip());
-    ui->lblPruneSuffix->setToolTip(ui->prune->toolTip());
+    ui->pruneGB->setEnabled(false);
+    ui->pruneGB->setToolTip(tr("Shows current on-disk usage (blocks, chainstate, snapshots) when the data directory already exists; otherwise the planning estimate for the mandatory 137-day window (~197,280 blocks at 60 s spacing)."));
+    ui->lblPruneSuffix->setToolTip(ui->pruneGB->toolTip());
     UpdatePruneLabels(ui->prune->isChecked());
-
-    connect(ui->prune, &QCheckBox::toggled, [this](bool prune_checked) {
-        m_prune_checkbox_is_default = false;
-        UpdatePruneLabels(prune_checked);
-        UpdateFreeSpaceLabel();
-    });
-    connect(ui->pruneGB, qOverload<int>(&QSpinBox::valueChanged), [this](int prune_GB) {
-        m_prune_target_gb = prune_GB;
-        UpdatePruneLabels(ui->prune->isChecked());
-        UpdateFreeSpaceLabel();
-    });
 
     startThread();
 }
@@ -110,8 +107,8 @@ void Intro::setDataDirectory(const QString &dataDir)
 
 int64_t Intro::getPruneMiB() const
 {
-    // Elektron Net: pruning is mandatory.
-    return PruneGBtoMiB(m_prune_target_gb);
+    // -prune=1: manual pruning mode (no disk-size cap; MANDATORY_PRUNE_DEPTH applies).
+    return 1;
 }
 
 bool Intro::showIfNeeded(bool& did_show_intro, int64_t& prune_MiB)
@@ -206,6 +203,10 @@ void Intro::setStatus(int status, const QString &message, quint64 bytesAvailable
     }
     /* Don't allow confirm in ERROR state */
     ui->buttonBox->button(QDialogButtonBox::Ok)->setEnabled(status != FreespaceChecker::ST_ERROR);
+
+    if (status != FreespaceChecker::ST_ERROR) {
+        UpdateMeasuredStorage(ui->dataDirectory->text());
+    }
 }
 
 void Intro::UpdateFreeSpaceLabel()
@@ -284,26 +285,41 @@ QString Intro::getPathToCheck()
     return retval;
 }
 
+void Intro::UpdateMeasuredStorage(const QString& dataDir)
+{
+    const int64_t measured{MeasureDataDirUsageGiB(GUIUtil::QStringToPath(dataDir))};
+    m_measured_storage_gb = measured;
+    if (measured >= 0) {
+        m_prune_target_gb = measured;
+        ui->pruneGB->setValue(static_cast<int>(measured));
+    } else {
+        m_prune_target_gb = GetPruneDisplayGB();
+        ui->pruneGB->setValue(m_prune_target_gb);
+    }
+    UpdatePruneLabels(ui->prune->isChecked());
+}
+
 void Intro::UpdatePruneLabels(bool prune_checked)
 {
-    m_required_space_gb = m_blockchain_size_gb + m_chain_state_size_gb;
-    QString storageRequiresMsg = tr("At least %1 GB of data will be stored in this directory, and it will grow over time.");
-    if (prune_checked && m_prune_target_gb <= m_blockchain_size_gb) {
-        m_required_space_gb = m_prune_target_gb + m_chain_state_size_gb;
-        storageRequiresMsg = tr("Approximately %1 GB of data will be stored in this directory.");
+    Q_UNUSED(prune_checked);
+    const int64_t planning_gb = std::max<int64_t>(GetPruneDisplayGB(), m_blockchain_size_gb) + m_chain_state_size_gb;
+    m_required_space_gb = m_measured_storage_gb >= 0 ? m_measured_storage_gb : planning_gb;
+    ui->lblExplanation3->setVisible(true);
+    ui->pruneGB->setEnabled(false);
+    if (m_measured_storage_gb >= 0) {
+        ui->lblPruneSuffix->setText(tr("(current on-disk usage)"));
+        ui->sizeWarningLabel->setText(
+            tr("%1 will download and store a copy of the Elektron Net block chain.").arg(CLIENT_NAME) + " " +
+            tr("This data directory currently uses %1 GB (blocks, chainstate, snapshots).").arg(m_measured_storage_gb) + " " +
+            tr("The wallet will also be stored in this directory.")
+        );
+    } else {
+        ui->lblPruneSuffix->setText(tr("(137 days / 197,280 blocks — mandatory, not configurable)"));
+        ui->sizeWarningLabel->setText(
+            tr("%1 will download and store a copy of the Elektron Net block chain.").arg(CLIENT_NAME) + " " +
+            tr("Approximately %1 GB for the mandatory 137-day block window (grows with network usage), plus chainstate.").arg(planning_gb) + " " +
+            tr("The wallet will also be stored in this directory.")
+        );
     }
-    ui->lblExplanation3->setVisible(prune_checked);
-    ui->pruneGB->setEnabled(prune_checked);
-    static constexpr uint64_t nPowTargetSpacing = 60;  // from chainparams, which we don't have at this stage
-    static constexpr uint32_t expected_block_data_size = 2250000;  // includes undo data
-    const uint64_t expected_backup_days = m_prune_target_gb * 1e9 / (uint64_t(expected_block_data_size) * 86400 / nPowTargetSpacing);
-    ui->lblPruneSuffix->setText(
-        //: Explanatory text on the capability of the current prune target.
-        tr("(sufficient to restore backups %n day(s) old)", "", expected_backup_days));
-    ui->sizeWarningLabel->setText(
-        tr("%1 will download and store a copy of the Elektron Net block chain.").arg(CLIENT_NAME) + " " +
-        storageRequiresMsg.arg(m_required_space_gb) + " " +
-        tr("The wallet will also be stored in this directory.")
-    );
     this->adjustSize();
 }

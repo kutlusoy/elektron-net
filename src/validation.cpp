@@ -2288,38 +2288,40 @@ script_verify_flags GetBlockScriptFlags(const CBlockIndex& block_index, const Ch
 }
 
 
-/**
- * Validate the UTXO checkpoint embedded in a checkpoint block's coinbase.
- * Every MANDATORY_PRUNE_DEPTH blocks, the coinbase must contain an OP_RETURN
- * output with the serialized UTXO set hash computed after connecting the block.
- */
-bool ValidateUTXOCheckpoint(const CBlock& block, int nHeight, CCoinsView& view, node::BlockManager& blockman, BlockValidationState& state)
+std::optional<uint256> ComputeBlockUTXOAttestationHash(const CBlock& block, int nHeight, CCoinsView& base_view, node::BlockManager& blockman)
 {
-    if (nHeight <= 0 || nHeight % MANDATORY_PRUNE_DEPTH != 0) {
-        return true; // Not a checkpoint block
+    CCoinsViewCache view{&base_view};
+    CTxUndo undo_dummy;
+    for (const auto& tx : block.vtx) {
+        UpdateCoins(*tx, view, undo_dummy, nHeight);
     }
+    const auto stats = kernel::ComputeUTXOStats(
+        kernel::CoinStatsHashType::HASH_SERIALIZED,
+        &view, blockman);
+    if (!stats) return std::nullopt;
+    return stats->hashSerialized;
+}
 
-    const CTransaction& coinbase = *block.vtx[0];
+std::optional<uint256> ExtractCoinbaseUTXOAttestation(const CTransaction& coinbase, int nHeight)
+{
     for (const CTxOut& out : coinbase.vout) {
         CScript::const_iterator pc = out.scriptPubKey.begin();
         opcodetype opcode;
         std::vector<unsigned char> data;
 
-        // Must start with OP_RETURN
         if (!out.scriptPubKey.GetOp(pc, opcode, data) || opcode != OP_RETURN) {
             continue;
         }
 
-        // Next push: height (CScriptNum encoding)
         if (!out.scriptPubKey.GetOp(pc, opcode, data)) continue;
-        int checkpoint_height;
+        int attestation_height;
         if (opcode == OP_0) {
-            checkpoint_height = 0;
+            attestation_height = 0;
         } else if (opcode >= OP_1 && opcode <= OP_16) {
-            checkpoint_height = opcode - (OP_1 - 1);
+            attestation_height = opcode - (OP_1 - 1);
         } else if (!data.empty()) {
             try {
-                checkpoint_height = CScriptNum(data, true, 5).getint();
+                attestation_height = CScriptNum(data, true, 5).getint();
             } catch (const scriptnum_error&) {
                 continue;
             }
@@ -2327,35 +2329,59 @@ bool ValidateUTXOCheckpoint(const CBlock& block, int nHeight, CCoinsView& view, 
             continue;
         }
 
-        // Next push: hash (32 bytes)
         if (!out.scriptPubKey.GetOp(pc, opcode, data)) continue;
         if (data.size() != 32) continue;
-        uint256 checkpoint_hash;
-        memcpy(checkpoint_hash.begin(), data.data(), 32);
 
-        if (checkpoint_height == nHeight) {
-            auto stats = kernel::ComputeUTXOStats(
-                kernel::CoinStatsHashType::HASH_SERIALIZED,
-                &view, blockman);
-            if (!stats) {
-                state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "bad-utxo-checkpoint-compute");
-                return false;
-            }
-            if (stats->hashSerialized != checkpoint_hash) {
-                state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "bad-utxo-checkpoint",
-                    strprintf("UTXO checkpoint mismatch at height %d: expected %s, got %s",
-                        nHeight, checkpoint_hash.ToString(), stats->hashSerialized.ToString()));
-                return false;
-            }
-            LogInfo("Validated UTXO checkpoint at height %d, hash=%s\n",
-                    nHeight, checkpoint_hash.ToString());
-            return true;
+        if (attestation_height == nHeight) {
+            uint256 attestation_hash;
+            memcpy(attestation_hash.begin(), data.data(), 32);
+            return attestation_hash;
         }
     }
+    return std::nullopt;
+}
 
-    state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "missing-utxo-checkpoint",
-        strprintf("Missing UTXO checkpoint at height %d", nHeight));
-    return false;
+/**
+ * Validate the UTXO attestation embedded in every block's coinbase (height > 0).
+ * The coinbase must contain an OP_RETURN output with the serialized UTXO set hash
+ * computed after connecting the block. Full snapshot files are written to disk only
+ * at checkpoint heights (every MANDATORY_PRUNE_DEPTH blocks).
+ */
+bool ValidateUTXOCheckpoint(const CBlock& block, int nHeight, CCoinsView& view, node::BlockManager& blockman, BlockValidationState& state)
+{
+    if (nHeight <= 0) {
+        return true; // Genesis has no attestation
+    }
+
+    const CTransaction& coinbase = *block.vtx[0];
+    const auto attestation_hash = ExtractCoinbaseUTXOAttestation(coinbase, nHeight);
+    if (!attestation_hash) {
+        state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "missing-utxo-attestation",
+            strprintf("Missing UTXO attestation at height %d", nHeight));
+        return false;
+    }
+
+    auto stats = kernel::ComputeUTXOStats(
+        kernel::CoinStatsHashType::HASH_SERIALIZED,
+        &view, blockman);
+    if (!stats) {
+        state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "bad-utxo-attestation-compute");
+        return false;
+    }
+    if (stats->hashSerialized != *attestation_hash) {
+        state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "bad-utxo-attestation",
+            strprintf("UTXO attestation mismatch at height %d: expected %s, got %s",
+                nHeight, attestation_hash->ToString(), stats->hashSerialized.ToString()));
+        return false;
+    }
+    if (nHeight % MANDATORY_PRUNE_DEPTH == 0) {
+        LogInfo("Validated UTXO checkpoint at height %d, hash=%s\n",
+                nHeight, attestation_hash->ToString());
+    } else {
+        LogDebug(BCLog::VALIDATION, "Validated UTXO attestation at height %d, hash=%s\n",
+                 nHeight, attestation_hash->ToString());
+    }
+    return true;
 }
 
 /**
@@ -2461,18 +2487,29 @@ void WriteAutomaticSnapshot(Chainstate& chainstate, int nHeight, const CBlockInd
 
     // Write the UTXO hash to a sidecar file so peers can serve it without
     // recomputing the hash from the current (possibly advanced) tip.
+    bool hash_written{false};
     try {
         const fs::path hash_path = snapshot_path + ".hash";
         FILE* hash_file{fsbridge::fopen(hash_path, "wb")};
         if (hash_file) {
             AutoFile hash_afile{hash_file};
             hash_afile << maybe_stats->hashSerialized;
-            if (hash_afile.fclose() != 0) {
+            if (hash_afile.fclose() == 0) {
+                hash_written = true;
+            } else {
                 LogWarning("[snapshot] Error closing snapshot hash file %s\n", fs::PathToString(hash_path));
             }
         }
     } catch (const std::exception& e) {
         LogWarning("[snapshot] Failed to write snapshot hash file: %s\n", e.what());
+    }
+    if (!hash_written) {
+        LogWarning("[snapshot] Snapshot hash sidecar missing — removing unusable snapshot %s\n",
+                   fs::PathToString(snapshot_path));
+        try {
+            fs::remove(snapshot_path);
+        } catch (const fs::filesystem_error&) {}
+        return;
     }
 
     LogInfo("[snapshot] Automatic UTXO snapshot at height %d written successfully: %s (coins=%d, hash=%s)\n",
@@ -2834,13 +2871,9 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
              Ticks<SecondsDouble>(m_chainman.time_verify),
              Ticks<MillisecondsDouble>(m_chainman.time_verify) / m_chainman.num_blocks_total);
 
-    // Elektron Net: validate UTXO checkpoint for checkpoint blocks
+    // Elektron Net: validate UTXO attestation in every block (snapshot files only at checkpoints)
     if (!ValidateUTXOCheckpoint(block, pindex->nHeight, view, m_blockman, state)) {
-        // A checkpoint validation failure means the network consensus rules
-        // have been violated at a mandatory checkpoint.  The node must not
-        // continue on a potentially invalid fork.
-        return FatalError(m_chainman.GetNotifications(), state,
-            strprintf(_("Checkpoint validation failed at height %d. The network may be on an invalid fork or your node needs an upgrade."), pindex->nHeight));
+        return false;
     }
 
     if (!fJustCheck) {
@@ -5799,7 +5832,8 @@ util::Result<CBlockIndex*> ChainstateManager::ActivateSnapshot(
         AutoFile& coins_file,
         const SnapshotMetadata& metadata,
         bool in_memory,
-        bool verify_assumeutxo_hash)
+        bool verify_assumeutxo_hash,
+        const std::optional<uint256>& expected_utxo_hash)
 {
     uint256 base_blockhash = metadata.m_base_blockhash;
 
@@ -5925,7 +5959,7 @@ util::Result<CBlockIndex*> ChainstateManager::ActivateSnapshot(
         return util::Error{std::move(reason)};
     };
 
-    if (auto res{this->PopulateAndValidateSnapshot(*snapshot_chainstate, coins_file, metadata, verify_assumeutxo_hash)}; !res) {
+    if (auto res{this->PopulateAndValidateSnapshot(*snapshot_chainstate, coins_file, metadata, verify_assumeutxo_hash, expected_utxo_hash)}; !res) {
         LOCK(::cs_main);
         return cleanup_bad_snapshot(Untranslated(strprintf("Population failed: %s", util::ErrorString(res).original)));
     }
@@ -5987,7 +6021,8 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
     Chainstate& snapshot_chainstate,
     AutoFile& coins_file,
     const SnapshotMetadata& metadata,
-    bool verify_assumeutxo_hash)
+    bool verify_assumeutxo_hash,
+    const std::optional<uint256>& expected_utxo_hash)
 {
     // It's okay to release cs_main before we're done using `coins_cache` because we know
     // that nothing else will be referencing the newly created snapshot_chainstate yet.
@@ -6146,6 +6181,12 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
     if (verify_assumeutxo_hash && au_data && AssumeutxoHash{maybe_stats->hashSerialized} != au_data->hash_serialized) {
         return util::Error{Untranslated(strprintf("Bad snapshot content hash: expected %s, got %s",
             au_data->hash_serialized.ToString(), maybe_stats->hashSerialized.ToString()))};
+    }
+
+    // Elektron Net: automatic snapshots must match the on-chain attestation / .hash sidecar.
+    if (expected_utxo_hash && maybe_stats->hashSerialized != *expected_utxo_hash) {
+        return util::Error{Untranslated(strprintf("Bad snapshot content hash: expected %s, got %s",
+            expected_utxo_hash->ToString(), maybe_stats->hashSerialized.ToString()))};
     }
 
     snapshot_chainstate.m_chain.SetTip(*snapshot_start_block);

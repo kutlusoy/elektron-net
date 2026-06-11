@@ -3,15 +3,15 @@
  *
  * Conforms to the standard Bitcoin mining protocol:
  * - Fetches block templates via RPC (getblocktemplate)
+ * - Builds the coinbase from coinbasevalue + coinbase_required_outputs
  * - Mines using multi-threaded CPU SHA-256d
  * - Submits solved blocks via RPC (submitblock)
  *
- * Hard Fork v3.0.1 (Stoic Awakening) — Block 137035:
- * From block 137035 onward, the node may serve templates with minimum
- * difficulty (powLimit) if more than 120 seconds have elapsed since
- * the previous block. No changes are required in this miner; the
- * difficulty (bits field) is read directly from the block template
- * returned by the node.
+ * Elektron Net v4.0 (genesis restart):
+ * Stoic Awakening is active from block 1. The node may serve templates with
+ * minimum difficulty (powLimit) if more than 120 seconds have elapsed since
+ * the previous block. Every block requires UTXO attestation via
+ * coinbase_required_outputs (witness commitment + OP_RETURN hash).
  *
  * Build:
  *   mkdir build && cd build && cmake .. && cmake --build .
@@ -29,13 +29,13 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include <curl/curl.h>
 
-#include <openssl/evp.h>
 #include <openssl/sha.h>
 
 #if defined(_WIN32)
@@ -53,12 +53,11 @@ static void sha256d(const uint8_t *data, size_t len, uint8_t out[32]) {
 }
 
 static bool hash_le_target(const uint8_t hash[32], const uint8_t target[32]) {
-    // Compare in little-endian order (bytes are already LE)
     for (int i = 31; i >= 0; --i) {
         if (hash[i] < target[i]) return true;
         if (hash[i] > target[i]) return false;
     }
-    return true; // equal
+    return true;
 }
 
 static std::string hex_encode(const uint8_t *data, size_t len) {
@@ -71,36 +70,16 @@ static std::string hex_encode(const uint8_t *data, size_t len) {
 
 static std::vector<uint8_t> hex_decode(const std::string &hex) {
     std::vector<uint8_t> out;
+    out.reserve(hex.size() / 2);
     for (size_t i = 0; i + 1 < hex.size(); i += 2) {
-        std::string byte = hex.substr(i, 2);
-        out.push_back(static_cast<uint8_t>(std::stoul(byte, nullptr, 16)));
+        out.push_back(static_cast<uint8_t>(std::stoul(hex.substr(i, 2), nullptr, 16)));
     }
     return out;
-}
-
-// Reverse byte order (LE <-> BE for 256-bit values)
-static void reverse256(uint8_t *data) {
-    for (int i = 0; i < 16; ++i) std::swap(data[i], data[31 - i]);
 }
 
 // ---------------------------------------------------------------------------
 // JSON helpers (minimal, no external dependency)
 // ---------------------------------------------------------------------------
-
-static std::string json_escape(const std::string &s) {
-    std::string out;
-    for (char c : s) {
-        if (c == '"') out += "\\\"";
-        else if (c == '\\') out += "\\\\";
-        else if (c == '\b') out += "\\b";
-        else if (c == '\f') out += "\\f";
-        else if (c == '\n') out += "\\n";
-        else if (c == '\r') out += "\\r";
-        else if (c == '\t') out += "\\t";
-        else out += c;
-    }
-    return out;
-}
 
 static std::string json_rpc(const std::string &method,
                             const std::vector<std::string> &params) {
@@ -115,7 +94,7 @@ static std::string json_rpc(const std::string &method,
 }
 
 static std::string extract_json_string(const std::string &json, const std::string &key) {
-    std::string quoted = "\"" + key + "\"";
+    const std::string quoted = "\"" + key + "\"";
     size_t pos = json.find(quoted);
     if (pos == std::string::npos) return "";
     pos = json.find('"', pos + quoted.size());
@@ -126,14 +105,34 @@ static std::string extract_json_string(const std::string &json, const std::strin
 }
 
 static int64_t extract_json_int(const std::string &json, const std::string &key) {
-    std::string quoted = "\"" + key + "\"";
+    const std::string quoted = "\"" + key + "\"";
     size_t pos = json.find(quoted);
     if (pos == std::string::npos) return 0;
     pos = json.find(':', pos + quoted.size());
     if (pos == std::string::npos) return 0;
     ++pos;
     while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) ++pos;
-    return std::stoll(json.substr(pos));
+    size_t end = pos;
+    while (end < json.size() && (json[end] == '-' || (json[end] >= '0' && json[end] <= '9'))) ++end;
+    if (end == pos) return 0;
+    return std::stoll(json.substr(pos, end - pos));
+}
+
+static std::string extract_json_section(const std::string &json, const std::string &key) {
+    const std::string quoted = "\"" + key + "\"";
+    size_t pos = json.find(quoted);
+    if (pos == std::string::npos) return "";
+    pos = json.find('{', pos);
+    if (pos == std::string::npos) return "";
+    int depth = 0;
+    for (size_t i = pos; i < json.size(); ++i) {
+        if (json[i] == '{') ++depth;
+        else if (json[i] == '}') {
+            --depth;
+            if (depth == 0) return json.substr(pos, i - pos + 1);
+        }
+    }
+    return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -159,12 +158,12 @@ public:
         CURL *curl = curl_easy_init();
         if (!curl) throw std::runtime_error("curl init failed");
 
-        std::string payload = json_rpc(method, params);
+        const std::string payload = json_rpc(method, params);
         std::string readBuffer;
         struct curl_slist *headers = nullptr;
         headers = curl_slist_append(headers, "Content-Type: application/json");
 
-        std::string creds = user + ":" + password;
+        const std::string creds = user + ":" + password;
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, payload.c_str());
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -173,7 +172,7 @@ public:
         curl_easy_setopt(curl, CURLOPT_USERPWD, creds.c_str());
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
 
-        CURLcode res = curl_easy_perform(curl);
+        const CURLcode res = curl_easy_perform(curl);
         curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
 
@@ -194,11 +193,7 @@ struct Config {
     std::string rpc_password = "password";
     std::string mining_address;
     int threads = 4;
-    int target_spacing = 60;
-    bool pool_enabled = false;
-    std::string pool_url;
-    std::string pool_user;
-    std::string pool_password;
+    bool continuous = true;
 
     void load(const std::string &path) {
         std::ifstream f(path);
@@ -206,58 +201,284 @@ struct Config {
             std::cerr << "Warning: cannot open " << path << ", using defaults.\n";
             return;
         }
-        std::string json((std::istreambuf_iterator<char>(f)),
-                         std::istreambuf_iterator<char>());
+        const std::string json((std::istreambuf_iterator<char>(f)),
+                               std::istreambuf_iterator<char>());
 
-        rpc_url = extract_json_string(json, "url");
-        rpc_user = extract_json_string(json, "user");
-        rpc_password = extract_json_string(json, "password");
-        mining_address = extract_json_string(json, "address");
-        threads = static_cast<int>(extract_json_int(json, "threads"));
-        target_spacing = static_cast<int>(extract_json_int(json, "target_spacing"));
-        pool_enabled = json.find("\"enabled\":true") != std::string::npos;
-        pool_url = extract_json_string(json, "url");
-        pool_user = extract_json_string(json, "user");
-        pool_password = extract_json_string(json, "password");
+        if (const std::string rpc = extract_json_section(json, "rpc"); !rpc.empty()) {
+            if (const std::string u = extract_json_string(rpc, "url"); !u.empty()) rpc_url = u;
+            if (const std::string u = extract_json_string(rpc, "user"); !u.empty()) rpc_user = u;
+            if (const std::string p = extract_json_string(rpc, "password"); !p.empty()) rpc_password = p;
+        }
+        if (const std::string mining = extract_json_section(json, "mining"); !mining.empty()) {
+            if (const std::string a = extract_json_string(mining, "address"); !a.empty()) mining_address = a;
+            if (const int64_t t = extract_json_int(mining, "threads"); t > 0) threads = static_cast<int>(t);
+            continuous = mining.find("\"continuous\":true") != std::string::npos ||
+                         mining.find("\"continuous\": true") != std::string::npos;
+        }
 
         if (threads <= 0) threads = 4;
     }
 };
 
 // ---------------------------------------------------------------------------
+// Transaction / block serialization (matches mining/miner.py)
+// ---------------------------------------------------------------------------
+
+static void append_compact_size(std::vector<uint8_t> &out, uint64_t n) {
+    if (n < 0xfd) {
+        out.push_back(static_cast<uint8_t>(n));
+    } else if (n <= 0xffff) {
+        out.push_back(0xfd);
+        out.push_back(static_cast<uint8_t>(n & 0xff));
+        out.push_back(static_cast<uint8_t>((n >> 8) & 0xff));
+    } else if (n <= 0xffffffff) {
+        out.push_back(0xfe);
+        for (int i = 0; i < 4; ++i) out.push_back(static_cast<uint8_t>((n >> (8 * i)) & 0xff));
+    } else {
+        out.push_back(0xff);
+        for (int i = 0; i < 8; ++i) out.push_back(static_cast<uint8_t>((n >> (8 * i)) & 0xff));
+    }
+}
+
+static void append_script_num(std::vector<uint8_t> &out, int64_t n) {
+    if (n == -1) {
+        out.push_back(0x4f);
+        return;
+    }
+    if (n == 0) {
+        out.push_back(0x00);
+        return;
+    }
+    if (n >= 1 && n <= 16) {
+        out.push_back(static_cast<uint8_t>(0x50 + n));
+        return;
+    }
+    bool neg = n < 0;
+    uint64_t abs = neg ? static_cast<uint64_t>(-(n + 1)) + 1 : static_cast<uint64_t>(n);
+    std::vector<uint8_t> result;
+    while (abs) {
+        result.push_back(static_cast<uint8_t>(abs & 0xff));
+        abs >>= 8;
+    }
+    if (result.back() & 0x80) {
+        result.push_back(neg ? 0x80 : 0x00);
+    } else if (neg) {
+        result.back() |= 0x80;
+    }
+    out.push_back(static_cast<uint8_t>(result.size()));
+    out.insert(out.end(), result.begin(), result.end());
+}
+
+static bool is_witness_commitment_script(const std::vector<uint8_t> &script) {
+    static const uint8_t kPattern[] = {0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed};
+    return script.size() >= sizeof(kPattern) &&
+           std::memcmp(script.data(), kPattern, sizeof(kPattern)) == 0;
+}
+
+struct TxOutTemplate {
+    int64_t value{0};
+    std::vector<uint8_t> script;
+};
+
+struct GbtTransaction {
+    std::string txid;
+    std::string data_hex;
+};
+
+struct BlockTemplate {
+    int version{1};
+    int height{0};
+    int64_t coinbasevalue{0};
+    std::string prev_blockhash;
+    uint32_t curtime{0};
+    uint32_t bits{0};
+    std::vector<TxOutTemplate> required_outputs;
+    std::string default_witness_commitment;
+    std::vector<GbtTransaction> transactions;
+};
+
+static std::vector<TxOutTemplate> parse_required_outputs(const std::string &json) {
+    std::vector<TxOutTemplate> outs;
+    size_t pos = json.find("\"coinbase_required_outputs\"");
+    if (pos == std::string::npos) return outs;
+    pos = json.find('[', pos);
+    if (pos == std::string::npos) return outs;
+
+    size_t i = pos + 1;
+    while (i < json.size()) {
+        size_t obj_start = json.find('{', i);
+        if (obj_start == std::string::npos || obj_start > json.find(']', pos)) break;
+        size_t obj_end = json.find('}', obj_start);
+        if (obj_end == std::string::npos) break;
+        const std::string obj = json.substr(obj_start, obj_end - obj_start + 1);
+        TxOutTemplate out;
+        out.value = extract_json_int(obj, "value");
+        const std::string spk = extract_json_string(obj, "scriptPubKey");
+        if (!spk.empty()) out.script = hex_decode(spk);
+        if (!out.script.empty()) outs.push_back(std::move(out));
+        i = obj_end + 1;
+    }
+    return outs;
+}
+
+static std::vector<GbtTransaction> parse_transactions(const std::string &json) {
+    std::vector<GbtTransaction> txs;
+    size_t pos = json.find("\"transactions\"");
+    if (pos == std::string::npos) return txs;
+    pos = json.find('[', pos);
+    if (pos == std::string::npos) return txs;
+
+    size_t i = pos + 1;
+    while (i < json.size()) {
+        size_t obj_start = json.find('{', i);
+        if (obj_start == std::string::npos || obj_start > json.find(']', pos)) break;
+        size_t obj_end = json.find('}', obj_start);
+        if (obj_end == std::string::npos) break;
+        const std::string obj = json.substr(obj_start, obj_end - obj_start + 1);
+        GbtTransaction tx;
+        tx.txid = extract_json_string(obj, "txid");
+        tx.data_hex = extract_json_string(obj, "data");
+        if (!tx.data_hex.empty()) txs.push_back(std::move(tx));
+        i = obj_end + 1;
+    }
+    return txs;
+}
+
+static BlockTemplate parse_template(const std::string &json) {
+    BlockTemplate tmpl;
+    tmpl.version = static_cast<int>(extract_json_int(json, "version"));
+    tmpl.height = static_cast<int>(extract_json_int(json, "height"));
+    tmpl.coinbasevalue = extract_json_int(json, "coinbasevalue");
+    tmpl.prev_blockhash = extract_json_string(json, "previousblockhash");
+    tmpl.curtime = static_cast<uint32_t>(extract_json_int(json, "curtime"));
+    const std::string bits_str = extract_json_string(json, "bits");
+    if (!bits_str.empty()) tmpl.bits = static_cast<uint32_t>(std::stoul(bits_str, nullptr, 16));
+    tmpl.required_outputs = parse_required_outputs(json);
+    tmpl.default_witness_commitment = extract_json_string(json, "default_witness_commitment");
+    tmpl.transactions = parse_transactions(json);
+    return tmpl;
+}
+
+static std::vector<uint8_t> address_to_scriptpubkey(RpcClient &rpc, const std::string &address) {
+    const std::string resp = rpc.call("validateaddress", {"\"" + address + "\""});
+    if (resp.find("\"isvalid\":true") == std::string::npos &&
+        resp.find("\"isvalid\": true") == std::string::npos) {
+        throw std::runtime_error("Invalid payout address: " + address);
+    }
+    const std::string spk_hex = extract_json_string(resp, "scriptPubKey");
+    if (spk_hex.empty()) throw std::runtime_error("validateaddress returned no scriptPubKey");
+    return hex_decode(spk_hex);
+}
+
+static void build_coinbase_tx(const BlockTemplate &tmpl,
+                              const std::vector<uint8_t> &script_pubkey,
+                              std::vector<uint8_t> &tx_out,
+                              std::vector<uint8_t> &tx_no_witness_out) {
+    std::vector<uint8_t> script_sig;
+    append_script_num(script_sig, tmpl.height);
+    if (script_sig.size() < 2) script_sig.push_back(0x00); // OP_0 — bad-cb-length guard
+
+    std::vector<uint8_t> outputs;
+    auto append_u64_le = [](std::vector<uint8_t> &buf, uint64_t v) {
+        for (int i = 0; i < 8; ++i) buf.push_back(static_cast<uint8_t>((v >> (8 * i)) & 0xff));
+    };
+    append_u64_le(outputs, static_cast<uint64_t>(tmpl.coinbasevalue));
+    append_compact_size(outputs, script_pubkey.size());
+    outputs.insert(outputs.end(), script_pubkey.begin(), script_pubkey.end());
+
+    size_t output_count = 1;
+    bool has_witness = !tmpl.default_witness_commitment.empty();
+
+    if (!tmpl.required_outputs.empty()) {
+        for (const auto &req : tmpl.required_outputs) {
+            append_u64_le(outputs, static_cast<uint64_t>(req.value));
+            append_compact_size(outputs, req.script.size());
+            outputs.insert(outputs.end(), req.script.begin(), req.script.end());
+            ++output_count;
+            if (is_witness_commitment_script(req.script)) has_witness = true;
+        }
+    } else if (!tmpl.default_witness_commitment.empty()) {
+        const auto wc = hex_decode(tmpl.default_witness_commitment);
+        append_u64_le(outputs, 0);
+        append_compact_size(outputs, wc.size());
+        outputs.insert(outputs.end(), wc.begin(), wc.end());
+        output_count = 2;
+        has_witness = true;
+    }
+
+    auto assemble = [&](bool with_witness) {
+        std::vector<uint8_t> tx;
+        auto append_i32_le = [](std::vector<uint8_t> &buf, int32_t v) {
+            for (int i = 0; i < 4; ++i) buf.push_back(static_cast<uint8_t>((v >> (8 * i)) & 0xff));
+        };
+        append_i32_le(tx, 2); // version
+        if (with_witness) {
+            tx.push_back(0x00);
+            tx.push_back(0x01);
+        }
+        append_compact_size(tx, 1); // 1 input
+        tx.insert(tx.end(), 32, 0x00); // null prevout hash
+        append_i32_le(tx, 0xffffffff); // prevout index
+        append_compact_size(tx, script_sig.size());
+        tx.insert(tx.end(), script_sig.begin(), script_sig.end());
+        append_i32_le(tx, 0xfffffffe); // nSequence
+        append_compact_size(tx, output_count);
+        tx.insert(tx.end(), outputs.begin(), outputs.end());
+        if (with_witness) {
+            append_compact_size(tx, 1); // 1 witness stack item
+            append_compact_size(tx, 32);
+            tx.insert(tx.end(), 32, 0x00);
+        }
+        append_i32_le(tx, tmpl.height > 0 ? tmpl.height - 1 : 0); // nLockTime
+        return tx;
+    };
+
+    tx_out = assemble(has_witness);
+    tx_no_witness_out = assemble(false);
+}
+
+static std::vector<uint8_t> compute_merkle_root(std::vector<std::vector<uint8_t>> hashes) {
+    if (hashes.empty()) return std::vector<uint8_t>(32, 0);
+    while (hashes.size() > 1) {
+        if (hashes.size() % 2 == 1) hashes.push_back(hashes.back());
+        std::vector<std::vector<uint8_t>> next;
+        for (size_t i = 0; i < hashes.size(); i += 2) {
+            std::vector<uint8_t> combined;
+            combined.insert(combined.end(), hashes[i].begin(), hashes[i].end());
+            combined.insert(combined.end(), hashes[i + 1].begin(), hashes[i + 1].end());
+            std::vector<uint8_t> h(32);
+            sha256d(combined.data(), combined.size(), h.data());
+            next.push_back(std::move(h));
+        }
+        hashes = std::move(next);
+    }
+    return hashes[0];
+}
+
+static void bits_to_target(uint32_t n_bits, uint8_t target[32]) {
+    const uint32_t exponent = (n_bits >> 24) & 0xff;
+    const uint32_t coefficient = n_bits & 0x007fffff;
+    std::memset(target, 0, 32);
+    if (exponent >= 3 && exponent <= 34) {
+        target[exponent - 3] = static_cast<uint8_t>(coefficient & 0xff);
+        if (exponent >= 2) target[exponent - 2] = static_cast<uint8_t>((coefficient >> 8) & 0xff);
+        if (exponent >= 1) target[exponent - 1] = static_cast<uint8_t>((coefficient >> 16) & 0xff);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Mining
 // ---------------------------------------------------------------------------
 
-static std::atomic<bool> g_stop{false};
 static std::atomic<uint32_t> g_nonce_found{0};
 static std::atomic<bool> g_found{false};
 
-struct BlockTemplate {
-    int version = 1;
-    std::string prev_blockhash;
-    std::string merkleroot;
-    uint32_t curtime = 0;
-    uint32_t bits = 0;
-    std::string coinbase_tx_hex;
-    std::vector<std::string> tx_hexes;
-};
-
-static uint32_t bits_to_target(uint32_t n_bits, uint8_t target[32]) {
-    uint32_t exponent = (n_bits >> 24) & 0xff;
-    uint32_t coefficient = n_bits & 0x007fffff;
-    std::memset(target, 0, 32);
-    target[exponent - 3] = (coefficient >> 0) & 0xff;
-    if (exponent >= 2) target[exponent - 2] = (coefficient >> 8) & 0xff;
-    if (exponent >= 1) target[exponent - 1] = (coefficient >> 16) & 0xff;
-    return 0;
-}
-
-static void mine_thread(int tid, const uint8_t header[76],
+static void mine_thread(int tid, const uint8_t header_prefix[76],
                         const uint8_t target[32],
                         uint32_t start_nonce) {
     uint8_t hash[32];
     uint8_t local_header[80];
-    std::memcpy(local_header, header, 76);
+    std::memcpy(local_header, header_prefix, 76);
 
     for (uint32_t nonce = start_nonce; nonce < 0xffffffff && !g_found.load(); ++nonce) {
         local_header[76] = nonce & 0xff;
@@ -283,81 +504,46 @@ static void mine_thread(int tid, const uint8_t header[76],
     }
 }
 
-static BlockTemplate parse_template(const std::string &json) {
-    BlockTemplate tmpl;
-    tmpl.version = static_cast<int>(extract_json_int(json, "version"));
-    tmpl.prev_blockhash = extract_json_string(json, "previousblockhash");
-    tmpl.merkleroot = extract_json_string(json, "merkleroot");
-    tmpl.curtime = static_cast<uint32_t>(extract_json_int(json, "curtime"));
-
-    std::string bits_str = extract_json_string(json, "bits");
-    if (!bits_str.empty()) tmpl.bits = static_cast<uint32_t>(std::stoul(bits_str, nullptr, 16));
-
-    // Extract coinbase transaction hex from the first transaction
-    size_t coinbase_pos = json.find("\"coinbasetxn\"");
-    if (coinbase_pos != std::string::npos) {
-        tmpl.coinbase_tx_hex = extract_json_string(json.substr(coinbase_pos, 2000), "data");
-    } else {
-        size_t txs_pos = json.find("\"transactions\"");
-        if (txs_pos != std::string::npos) {
-            size_t data_pos = json.find("\"data\"", txs_pos);
-            if (data_pos != std::string::npos) {
-                size_t q1 = json.find('"', data_pos + 6);
-                size_t q2 = json.find('"', q1 + 1);
-                if (q1 != std::string::npos && q2 != std::string::npos)
-                    tmpl.coinbase_tx_hex = json.substr(q1 + 1, q2 - q1 - 1);
-            }
-        }
-    }
-    return tmpl;
-}
-
-static std::vector<uint8_t> build_header(const BlockTemplate &tmpl, uint32_t nonce) {
+static std::vector<uint8_t> build_header_bytes(const BlockTemplate &tmpl,
+                                               uint32_t nonce,
+                                               const uint8_t merkle_root[32]) {
     std::vector<uint8_t> header(80);
-    // version (LE)
     header[0] = tmpl.version & 0xff;
     header[1] = (tmpl.version >> 8) & 0xff;
     header[2] = (tmpl.version >> 16) & 0xff;
     header[3] = (tmpl.version >> 24) & 0xff;
 
-    // prev block hash (LE)
     auto prev = hex_decode(tmpl.prev_blockhash);
     std::reverse(prev.begin(), prev.end());
     std::copy(prev.begin(), prev.end(), header.begin() + 4);
 
-    // merkle root (LE)
-    auto merkle = hex_decode(tmpl.merkleroot);
-    std::reverse(merkle.begin(), merkle.end());
-    std::copy(merkle.begin(), merkle.end(), header.begin() + 36);
+    std::copy(merkle_root, merkle_root + 32, header.begin() + 36);
 
-    // timestamp (LE)
     header[68] = tmpl.curtime & 0xff;
     header[69] = (tmpl.curtime >> 8) & 0xff;
     header[70] = (tmpl.curtime >> 16) & 0xff;
     header[71] = (tmpl.curtime >> 24) & 0xff;
 
-    // bits (LE)
     header[72] = tmpl.bits & 0xff;
     header[73] = (tmpl.bits >> 8) & 0xff;
     header[74] = (tmpl.bits >> 16) & 0xff;
     header[75] = (tmpl.bits >> 24) & 0xff;
 
-    // nonce (LE)
     header[76] = nonce & 0xff;
     header[77] = (nonce >> 8) & 0xff;
     header[78] = (nonce >> 16) & 0xff;
     header[79] = (nonce >> 24) & 0xff;
-
     return header;
 }
 
-static std::string assemble_block(const BlockTemplate &tmpl, uint32_t nonce,
-                                  const std::vector<std::string> &extra_txs) {
-    auto header = build_header(tmpl, nonce);
+static std::string assemble_block_hex(const BlockTemplate &tmpl,
+                                      uint32_t nonce,
+                                      const uint8_t merkle_root[32],
+                                      const std::vector<uint8_t> &coinbase_tx) {
+    const auto header = build_header_bytes(tmpl, nonce, merkle_root);
     std::string block = hex_encode(header.data(), header.size());
 
-    // transaction count (varint)
-    size_t tx_count = 1 + extra_txs.size();
+    const size_t tx_count = 1 + tmpl.transactions.size();
     if (tx_count < 0xfd) {
         block += hex_encode(reinterpret_cast<const uint8_t *>(&tx_count), 1);
     } else {
@@ -365,8 +551,8 @@ static std::string assemble_block(const BlockTemplate &tmpl, uint32_t nonce,
         block += hex_encode(vi, 3);
     }
 
-    block += tmpl.coinbase_tx_hex;
-    for (const auto &tx : extra_txs) block += tx;
+    block += hex_encode(coinbase_tx.data(), coinbase_tx.size());
+    for (const auto &tx : tmpl.transactions) block += tx.data_hex;
     return block;
 }
 
@@ -380,61 +566,97 @@ int main(int argc, char *argv[]) {
     WSAStartup(MAKEWORD(2, 2), &wsaData);
 #endif
 
-    std::string config_path = (argc > 1) ? argv[1] : "config.json";
+    const std::string config_path = (argc > 1) ? argv[1] : "config.json";
     Config cfg;
     cfg.load(config_path);
 
+    if (cfg.mining_address.empty()) {
+        std::cerr << "ERROR: No payout address. Set mining.address in config.json.\n";
+        return 1;
+    }
+
     std::cout << "Elektron Net Miner (C++)\n";
-    std::cout << "RPC: " << cfg.rpc_url << "\n";
+    std::cout << "RPC:     " << cfg.rpc_url << "\n";
+    std::cout << "Address: " << cfg.mining_address << "\n";
     std::cout << "Threads: " << cfg.threads << "\n";
 
     RpcClient rpc(cfg.rpc_url, cfg.rpc_user, cfg.rpc_password);
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
-    while (true) {
+    std::vector<uint8_t> script_pubkey;
+    try {
+        script_pubkey = address_to_scriptpubkey(rpc, cfg.mining_address);
+    } catch (const std::exception &e) {
+        std::cerr << "ERROR: " << e.what() << "\n";
+        return 1;
+    }
+
+    do {
         try {
             std::cout << "\nFetching block template...\n";
-            std::string tmpl_json = rpc.call("getblocktemplate", {"{\"rules\":[\"segwit\"]}"});
+            const std::string tmpl_json = rpc.call("getblocktemplate", {"{\"rules\":[\"segwit\"]}"});
 
             if (tmpl_json.find("\"error\":") != std::string::npos &&
-                tmpl_json.find("\"error\":null") == std::string::npos) {
+                tmpl_json.find("\"error\":null") == std::string::npos &&
+                tmpl_json.find("\"error\": null") == std::string::npos) {
                 std::cerr << "RPC error: " << tmpl_json << "\n";
                 std::this_thread::sleep_for(std::chrono::seconds(5));
                 continue;
             }
 
             BlockTemplate tmpl = parse_template(tmpl_json);
-            if (tmpl.bits == 0) {
+            if (tmpl.bits == 0 || tmpl.height <= 0) {
                 std::cerr << "Failed to parse block template.\n";
                 std::this_thread::sleep_for(std::chrono::seconds(5));
                 continue;
             }
 
-            std::cout << "Target bits: " << std::hex << tmpl.bits << std::dec << "\n";
+            if (tmpl.required_outputs.empty()) {
+                std::cerr << "WARNING: Template has no coinbase_required_outputs — block would be invalid.\n";
+            } else {
+                std::cout << "Required coinbase outputs: " << tmpl.required_outputs.size() << "\n";
+            }
+
+            std::vector<uint8_t> coinbase_tx;
+            std::vector<uint8_t> coinbase_no_witness;
+            build_coinbase_tx(tmpl, script_pubkey, coinbase_tx, coinbase_no_witness);
+
+            uint8_t coinbase_txid[32];
+            sha256d(coinbase_no_witness.data(), coinbase_no_witness.size(), coinbase_txid);
+
+            std::vector<std::vector<uint8_t>> merkle_hashes;
+            merkle_hashes.emplace_back(coinbase_txid, coinbase_txid + 32);
+            for (const auto &tx : tmpl.transactions) {
+                auto h = hex_decode(tx.txid);
+                std::reverse(h.begin(), h.end());
+                merkle_hashes.push_back(std::move(h));
+            }
+            const std::vector<uint8_t> merkle_root = compute_merkle_root(std::move(merkle_hashes));
+
+            std::cout << "Height: " << tmpl.height << "  bits: " << std::hex << tmpl.bits << std::dec << "\n";
 
             uint8_t target[32];
             bits_to_target(tmpl.bits, target);
             std::cout << "Target: " << hex_encode(target, 32) << "\n";
 
-            auto header = build_header(tmpl, 0);
-            uint8_t raw_header[76];
-            std::copy(header.begin(), header.end(), raw_header);
+            uint8_t header_prefix[76];
+            const auto header0 = build_header_bytes(tmpl, 0, merkle_root.data());
+            std::copy(header0.begin(), header0.begin() + 76, header_prefix);
 
             g_found = false;
             g_nonce_found = 0;
 
             std::vector<std::thread> threads;
             for (int i = 0; i < cfg.threads; ++i) {
-                threads.emplace_back(mine_thread, i, raw_header, target, i);
+                threads.emplace_back(mine_thread, i, header_prefix, target, static_cast<uint32_t>(i));
             }
-
             for (auto &t : threads) t.join();
 
             if (g_found.load()) {
-                uint32_t nonce = g_nonce_found.load();
+                const uint32_t nonce = g_nonce_found.load();
                 std::cout << "Submitting block with nonce=" << nonce << "\n";
-                std::string block_hex = assemble_block(tmpl, nonce, {});
-                std::string result = rpc.call("submitblock", {"\"" + block_hex + "\""});
+                const std::string block_hex = assemble_block_hex(tmpl, nonce, merkle_root.data(), coinbase_tx);
+                const std::string result = rpc.call("submitblock", {"\"" + block_hex + "\""});
                 std::cout << "Submit result: " << result << "\n";
             } else {
                 std::cout << "No nonce found (template expired?).\n";
@@ -444,9 +666,9 @@ int main(int argc, char *argv[]) {
             std::this_thread::sleep_for(std::chrono::seconds(5));
         }
 
-        std::cout << "Press Ctrl+C to stop, or waiting 1s before next round...\n";
+        if (!cfg.continuous) break;
         std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
+    } while (true);
 
     curl_global_cleanup();
 #if defined(_WIN32)
