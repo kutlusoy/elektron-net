@@ -187,11 +187,10 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock()
     // increasing its length would reduce the space they can use and may break
     // existing clients.
     coinbaseTx.vin[0].scriptSig = CScript() << nHeight;
-    if (m_options.include_dummy_extranonce) {
+    if (m_options.include_dummy_extranonce && coinbaseTx.vin[0].scriptSig.size() < 2) {
         // For blocks at heights <= 16, the BIP34-encoded height alone is only
         // one byte. Consensus requires coinbase scriptSigs to be at least two
-        // bytes long (bad-cb-length), so tests and regtest include a dummy
-        // extraNonce (OP_0)
+        // bytes long (bad-cb-length), so include a dummy extraNonce (OP_0).
         coinbaseTx.vin[0].scriptSig << OP_0;
     }
     coinbase_tx.script_sig_prefix = coinbaseTx.vin[0].scriptSig;

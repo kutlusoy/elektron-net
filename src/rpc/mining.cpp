@@ -1061,6 +1061,7 @@ static RPCMethod getblocktemplate()
             required_outputs.push_back(std::move(entry));
         }
         result.pushKV("coinbase_required_outputs", required_outputs);
+        result.pushKV("coinbase_script_sig_prefix", HexStr(coinbase.script_sig_prefix));
         // Backward-compatible witness commitment field for legacy miners.
         for (const CTxOut& out : coinbase.required_outputs) {
             if (out.scriptPubKey.size() >= 6 &&

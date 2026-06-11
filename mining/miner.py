@@ -196,16 +196,14 @@ def _build_coinbase_tx(template, script_pubkey):
     """Build a valid coinbase transaction from a GBT template and payout script."""
     height = template['height']
 
-    # BIP34: block height as the first push in scriptSig
-    # NOTE: Elektron Net uses ONLY the height in scriptSig prefix (no extra tag).
-    # The node appends any coinbaseaux data itself in GenerateCoinbaseCommitment().
-    script_sig = _script_num(height)
-
-    # For blocks at heights <= 16, the BIP34-encoded height alone is only
-    # one byte. Consensus requires coinbase scriptSigs to be at least two
-    # bytes long (bad-cb-length), so we pad with a dummy OP_0.
-    if len(script_sig) < 2:
-        script_sig += bytes([0x00])  # OP_0
+    # Use the exact prefix from getblocktemplate so UTXO attestation matches.
+    prefix_hex = template.get('coinbase_script_sig_prefix')
+    if prefix_hex:
+        script_sig = bytes.fromhex(prefix_hex)
+    else:
+        script_sig = _script_num(height)
+        if len(script_sig) < 2:
+            script_sig += bytes([0x00])  # OP_0 — bad-cb-length guard
 
     # --- inputs ---
     inputs = (bytes(32) +                          # prevout.hash (null)

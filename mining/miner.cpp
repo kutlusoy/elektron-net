@@ -316,6 +316,7 @@ struct BlockTemplate {
     uint32_t curtime{0};
     uint32_t bits{0};
     std::string target_hex;
+    std::string script_sig_prefix_hex;
     std::vector<TxOutTemplate> required_outputs;
     std::string default_witness_commitment;
     std::vector<GbtTransaction> transactions;
@@ -379,6 +380,7 @@ static BlockTemplate parse_template(const std::string &json) {
     const std::string bits_str = extract_json_string(body, "bits");
     if (!bits_str.empty()) tmpl.bits = static_cast<uint32_t>(std::stoul(bits_str, nullptr, 16));
     tmpl.target_hex = extract_json_string(body, "target");
+    tmpl.script_sig_prefix_hex = extract_json_string(body, "coinbase_script_sig_prefix");
     tmpl.required_outputs = parse_required_outputs(body);
     tmpl.default_witness_commitment = extract_json_string(body, "default_witness_commitment");
     tmpl.transactions = parse_transactions(body);
@@ -401,8 +403,12 @@ static void build_coinbase_tx(const BlockTemplate &tmpl,
                               std::vector<uint8_t> &tx_out,
                               std::vector<uint8_t> &tx_no_witness_out) {
     std::vector<uint8_t> script_sig;
-    append_script_num(script_sig, tmpl.height);
-    if (script_sig.size() < 2) script_sig.push_back(0x00); // OP_0 — bad-cb-length guard
+    if (!tmpl.script_sig_prefix_hex.empty()) {
+        script_sig = hex_decode(tmpl.script_sig_prefix_hex);
+    } else {
+        append_script_num(script_sig, tmpl.height);
+        if (script_sig.size() < 2) script_sig.push_back(0x00); // OP_0 — bad-cb-length guard
+    }
 
     std::vector<uint8_t> outputs;
     auto append_u64_le = [](std::vector<uint8_t> &buf, uint64_t v) {
@@ -710,12 +716,11 @@ int main(int argc, char *argv[]) {
                 std::cout << "Submitting block with nonce=" << nonce << "\n";
                 const std::string block_hex = assemble_block_hex(tmpl, nonce, merkle_root.data(), coinbase_tx);
                 const std::string submit_resp = rpc.call("submitblock", {json_quote_string(block_hex)});
-                const std::string reject = extract_json_string(submit_resp, "result");
-                if (reject.empty() &&
-                    (submit_resp.find("\"result\":null") != std::string::npos ||
-                     submit_resp.find("\"result\": null") != std::string::npos)) {
+                if (submit_resp.find("\"result\":null") != std::string::npos ||
+                    submit_resp.find("\"result\": null") != std::string::npos) {
                     std::cout << "Block accepted.\n";
-                } else if (!reject.empty()) {
+                } else if (const std::string reject = extract_json_string(submit_resp, "result");
+                           !reject.empty()) {
                     std::cout << "Block submit result: " << reject << "\n";
                 } else {
                     std::cout << "Submit response: " << submit_resp << "\n";
