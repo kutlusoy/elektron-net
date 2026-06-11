@@ -2288,12 +2288,54 @@ script_verify_flags GetBlockScriptFlags(const CBlockIndex& block_index, const Ch
 }
 
 
+static bool IsCoinbaseUTXOAttestationOutput(const CTxOut& out, int nHeight)
+{
+    CScript::const_iterator pc = out.scriptPubKey.begin();
+    opcodetype opcode;
+    std::vector<unsigned char> data;
+
+    if (!out.scriptPubKey.GetOp(pc, opcode, data) || opcode != OP_RETURN) {
+        return false;
+    }
+
+    if (!out.scriptPubKey.GetOp(pc, opcode, data)) return false;
+    int attestation_height;
+    if (opcode == OP_0) {
+        attestation_height = 0;
+    } else if (opcode >= OP_1 && opcode <= OP_16) {
+        attestation_height = opcode - (OP_1 - 1);
+    } else if (!data.empty()) {
+        try {
+            attestation_height = CScriptNum(data, true, 5).getint();
+        } catch (const scriptnum_error&) {
+            return false;
+        }
+    } else {
+        return false;
+    }
+
+    if (!out.scriptPubKey.GetOp(pc, opcode, data)) return false;
+    return attestation_height == nHeight && data.size() == 32;
+}
+
 std::optional<uint256> ComputeBlockUTXOAttestationHash(const CBlock& block, int nHeight, CCoinsView& base_view, node::BlockManager& blockman)
 {
     CCoinsViewCache view{&base_view};
     CTxUndo undo_dummy;
     for (const auto& tx : block.vtx) {
-        UpdateCoins(*tx, view, undo_dummy, nHeight);
+        if (tx->IsCoinBase()) {
+            // Attestation OP_RETURN is embedded after the hash is computed; exclude it so the
+            // coinbase txid (and reward outpoint) match the template used during mining.
+            CMutableTransaction mtx(*tx);
+            mtx.vout.erase(
+                std::remove_if(mtx.vout.begin(), mtx.vout.end(),
+                    [&](const CTxOut& out) { return IsCoinbaseUTXOAttestationOutput(out, nHeight); }),
+                mtx.vout.end());
+            const CTransactionRef mtx_ref{MakeTransactionRef(std::move(mtx))};
+            UpdateCoins(*mtx_ref, view, undo_dummy, nHeight);
+        } else {
+            UpdateCoins(*tx, view, undo_dummy, nHeight);
+        }
     }
     const auto stats = kernel::ComputeUTXOStats(
         kernel::CoinStatsHashType::HASH_SERIALIZED,
@@ -2361,17 +2403,21 @@ bool ValidateUTXOCheckpoint(const CBlock& block, int nHeight, CCoinsView& view, 
         return false;
     }
 
-    auto stats = kernel::ComputeUTXOStats(
-        kernel::CoinStatsHashType::HASH_SERIALIZED,
-        &view, blockman);
-    if (!stats) {
+    // Recompute from the parent UTXO view (view's backend), not the post-connect cache.
+    // The attestation is computed before the OP_RETURN is added to the coinbase.
+    CCoinsView* base_view{&view};
+    if (auto* cache = dynamic_cast<CCoinsViewCache*>(&view)) {
+        base_view = &cache->GetBackend();
+    }
+    const auto computed_hash = ComputeBlockUTXOAttestationHash(block, nHeight, *base_view, blockman);
+    if (!computed_hash) {
         state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "bad-utxo-attestation-compute");
         return false;
     }
-    if (stats->hashSerialized != *attestation_hash) {
+    if (*computed_hash != *attestation_hash) {
         state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "bad-utxo-attestation",
             strprintf("UTXO attestation mismatch at height %d: expected %s, got %s",
-                nHeight, attestation_hash->ToString(), stats->hashSerialized.ToString()));
+                nHeight, attestation_hash->ToString(), computed_hash->ToString()));
         return false;
     }
     if (nHeight % MANDATORY_PRUNE_DEPTH == 0) {

@@ -594,7 +594,9 @@ int main(int argc, char *argv[]) {
     do {
         try {
             std::cout << "\nFetching block template...\n";
-            const std::string tmpl_json = rpc.call("getblocktemplate", {"{\"rules\":[\"segwit\"]}"});
+            const std::string gbt_params =
+                "{\"rules\":[\"segwit\"],\"coinbaseaddress\":\"" + cfg.mining_address + "\"}";
+            const std::string tmpl_json = rpc.call("getblocktemplate", {"\"" + gbt_params + "\""});
 
             if (tmpl_json.find("\"error\":") != std::string::npos &&
                 tmpl_json.find("\"error\":null") == std::string::npos &&

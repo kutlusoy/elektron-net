@@ -11,6 +11,44 @@
 #include <util/trace.h>
 
 #include <map>
+#include <vector>
+
+namespace {
+
+class CCoinsViewCacheCursorImpl final : public CCoinsViewCursor
+{
+    std::vector<std::pair<COutPoint, Coin>> m_entries;
+    size_t m_index{0};
+
+public:
+    CCoinsViewCacheCursorImpl(std::vector<std::pair<COutPoint, Coin>> entries, const uint256& block_hash)
+        : CCoinsViewCursor(block_hash), m_entries(std::move(entries)) {}
+
+    bool GetKey(COutPoint& key) const override
+    {
+        if (m_index >= m_entries.size()) return false;
+        key = m_entries[m_index].first;
+        return true;
+    }
+
+    bool GetValue(Coin& coin) const override
+    {
+        if (m_index >= m_entries.size()) return false;
+        coin = m_entries[m_index].second;
+        return true;
+    }
+
+    bool Valid() const override { return m_index < m_entries.size(); }
+
+    void Next() override
+    {
+        if (m_index < m_entries.size()) {
+            ++m_index;
+        }
+    }
+};
+
+} // namespace
 
 TRACEPOINT_SEMAPHORE(utxocache, add);
 TRACEPOINT_SEMAPHORE(utxocache, spent);
@@ -20,6 +58,22 @@ CoinsViewEmpty& CoinsViewEmpty::Get()
 {
     static CoinsViewEmpty instance;
     return instance;
+}
+
+void CCoinsView::ForEachUnspent(const std::function<bool(const COutPoint&, const Coin&)>& fn) const
+{
+    const std::unique_ptr<CCoinsViewCursor> pcursor{Cursor()};
+    if (!pcursor) return;
+    while (pcursor->Valid()) {
+        COutPoint key;
+        Coin coin;
+        if (pcursor->GetKey(key) && pcursor->GetValue(coin)) {
+            if (!fn(key, coin)) {
+                break;
+            }
+        }
+        pcursor->Next();
+    }
 }
 
 std::optional<Coin> CCoinsViewCache::PeekCoin(const COutPoint& outpoint) const
@@ -177,7 +231,7 @@ bool CCoinsViewCache::HaveCoinInCache(const COutPoint &outpoint) const {
     return (it != cacheCoins.end() && !it->second.coin.IsSpent());
 }
 
-void CCoinsViewCache::ForEachUnspent(const std::function<bool(const COutPoint&, const Coin&)>& fn) const
+std::map<COutPoint, Coin> CCoinsViewCache::FetchEffectiveUTXOs() const
 {
     std::map<COutPoint, Coin> utxos;
 
@@ -201,11 +255,27 @@ void CCoinsViewCache::ForEachUnspent(const std::function<bool(const COutPoint&, 
         }
     }
 
-    for (const auto& [outpoint, coin] : utxos) {
+    return utxos;
+}
+
+void CCoinsViewCache::ForEachUnspent(const std::function<bool(const COutPoint&, const Coin&)>& fn) const
+{
+    for (const auto& [outpoint, coin] : FetchEffectiveUTXOs()) {
         if (!fn(outpoint, coin)) {
             break;
         }
     }
+}
+
+std::unique_ptr<CCoinsViewCursor> CCoinsViewCache::Cursor() const
+{
+    const auto utxos = FetchEffectiveUTXOs();
+    std::vector<std::pair<COutPoint, Coin>> entries;
+    entries.reserve(utxos.size());
+    for (const auto& [outpoint, coin] : utxos) {
+        entries.emplace_back(outpoint, coin);
+    }
+    return std::make_unique<CCoinsViewCacheCursorImpl>(std::move(entries), GetBestBlock());
 }
 
 uint256 CCoinsViewCache::GetBestBlock() const {

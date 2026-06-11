@@ -472,7 +472,10 @@ def main():
     while True:
         try:
             print("\nFetching block template...")
-            template = rpc.call('getblocktemplate', {'rules': ['segwit']})
+            template = rpc.call('getblocktemplate', {
+                'rules': ['segwit'],
+                'coinbaseaddress': args.address,
+            })
         except Exception as e:
             print(f"Failed to get block template: {e}")
             time.sleep(5)

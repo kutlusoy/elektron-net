@@ -634,15 +634,7 @@ public:
     void forEachCoin(const std::function<bool(const COutPoint&, const Coin&)>& fn) override
     {
         LOCK(::cs_main);
-        auto pcursor = chainman().ActiveChainstate().CoinsDB().Cursor();
-        while (pcursor->Valid()) {
-            COutPoint key;
-            Coin coin;
-            if (pcursor->GetKey(key) && pcursor->GetValue(coin)) {
-                if (!fn(key, coin)) break;
-            }
-            pcursor->Next();
-        }
+        chainman().ActiveChainstate().CoinsTip().ForEachUnspent(fn);
     }
     double guessVerificationProgress(const uint256& block_hash) override
     {

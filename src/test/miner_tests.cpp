@@ -823,9 +823,9 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity)
             txCoinbase.vout.resize(1); // Ignore the (optional) segwit commitment added by CreateNewBlock
             txCoinbase.vout[0].scriptPubKey = CScript();
             block.vtx[0] = MakeTransactionRef(txCoinbase);
-            // Elektron Net: UTXO attestation (OP_RETURN does not change the committed hash).
+            // Elektron Net: UTXO attestation (committed before OP_RETURN is added to coinbase).
             if (const auto hash = ComputeBlockUTXOAttestationHash(
-                    block, current_height + 1, Assert(m_node.chainman)->ActiveChainstate().CoinsDB(),
+                    block, current_height + 1, Assert(m_node.chainman)->ActiveChainstate().CoinsTip(),
                     m_node.chainman->m_blockman)) {
                 CMutableTransaction cb(*block.vtx[0]);
                 CTxOut out;

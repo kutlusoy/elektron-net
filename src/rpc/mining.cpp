@@ -643,6 +643,7 @@ static RPCMethod getblocktemplate()
                     {"str", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "other client side supported softfork deployment"},
                 }},
                 {"longpollid", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "delay processing request until the result would vary significantly from the \"longpollid\" of a prior template"},
+                {"coinbaseaddress", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "payout address for the coinbase reward output; required for correct UTXO attestation when mining externally"},
                 {"data", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED, "proposed block data to check, encoded in hexadecimal; valid only for mode=\"proposal\""},
             },
             },
@@ -719,6 +720,7 @@ static RPCMethod getblocktemplate()
     std::string strMode = "template";
     UniValue lpval = NullUniValue;
     std::set<std::string> setClientRules;
+    CScript coinbase_output_script{CScript() << OP_TRUE};
     if (!request.params[0].isNull())
     {
         const UniValue& oparam = request.params[0].get_obj();
@@ -763,6 +765,15 @@ static RPCMethod getblocktemplate()
                 const UniValue& v = aClientRules[i];
                 setClientRules.insert(v.get_str());
             }
+        }
+
+        const UniValue& coinbaseaddress = oparam.find_value("coinbaseaddress");
+        if (coinbaseaddress.isStr()) {
+            const CTxDestination dest = DecodeDestination(coinbaseaddress.get_str());
+            if (!IsValidDestination(dest)) {
+                throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid coinbaseaddress");
+            }
+            coinbase_output_script = GetScriptForDestination(dest);
         }
     }
 
@@ -867,8 +878,10 @@ static RPCMethod getblocktemplate()
     // Update block
     static CBlockIndex* pindexPrev;
     static int64_t time_start;
+    static CScript cached_coinbase_output_script;
     static std::unique_ptr<BlockTemplate> block_template;
     if (!pindexPrev || pindexPrev->GetBlockHash() != tip ||
+        coinbase_output_script != cached_coinbase_output_script ||
         (mempool.GetTransactionsUpdated() != nTransactionsUpdatedLast && GetTime() - time_start > 5))
     {
         // Clear pindexPrev so future calls make a new block, despite any failures from here on
@@ -883,7 +896,10 @@ static RPCMethod getblocktemplate()
         // a delay to each getblocktemplate call. This differs from typical
         // long-lived IPC usage, where the overhead is paid only when creating
         // the initial template.
-        block_template = miner.createNewBlock({.include_dummy_extranonce = true}, /*cooldown=*/false);
+        block_template = miner.createNewBlock({
+            .coinbase_output_script = coinbase_output_script,
+            .include_dummy_extranonce = true,
+        }, /*cooldown=*/false);
         if (!block_template) {
             throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to create new block (UTXO attestation error)");
         }
@@ -891,6 +907,7 @@ static RPCMethod getblocktemplate()
 
         // Need to update only after we know createNewBlock succeeded
         pindexPrev = pindexPrevNew;
+        cached_coinbase_output_script = coinbase_output_script;
     }
     CHECK_NONFATAL(pindexPrev);
     CBlock block{block_template->getBlock()};

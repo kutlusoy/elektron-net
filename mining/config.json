@@ -5,7 +5,7 @@
     "password": "pass"
   },
   "mining": {
-    "address": "be1qu7x3hsa4tjewsvej7sync8cmwmqndhu7230vx0",
+    "address": "be1q4x6nals2alr4v34t3eklp9wztvwkjk3q4vn980",
     "threads": 4,
     "target_spacing": 60,
     "continuous": true

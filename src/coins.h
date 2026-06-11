@@ -22,6 +22,7 @@
 #include <cstdint>
 
 #include <functional>
+#include <map>
 #include <unordered_map>
 
 /**
@@ -338,6 +339,12 @@ public:
     //! Get a cursor to iterate over the whole state. Implementations may return nullptr.
     virtual std::unique_ptr<CCoinsViewCursor> Cursor() const = 0;
 
+    /**
+     * Iterate unspent outputs in COutPoint sort order.
+     * CCoinsViewCache overrides this; other views use Cursor().
+     */
+    virtual void ForEachUnspent(const std::function<bool(const COutPoint&, const Coin&)>& fn) const;
+
     //! Estimate database size
     virtual size_t EstimateSize() const = 0;
 };
@@ -364,6 +371,7 @@ public:
         for (auto it{cursor.Begin()}; it != cursor.End(); it = cursor.NextAndMaybeErase(*it)) { }
     }
     std::unique_ptr<CCoinsViewCursor> Cursor() const override { return {}; }
+    void ForEachUnspent(const std::function<bool(const COutPoint&, const Coin&)>& fn) const override {}
     size_t EstimateSize() const override { return 0; }
 };
 
@@ -377,6 +385,7 @@ public:
     explicit CCoinsViewBacked(CCoinsView* in_view) : base{Assert(in_view)} {}
 
     void SetBackend(CCoinsView& in_view) { base = &in_view; }
+    CCoinsView& GetBackend() const { return *Assert(base); }
 
     std::optional<Coin> GetCoin(const COutPoint& outpoint) const override { return base->GetCoin(outpoint); }
     std::optional<Coin> PeekCoin(const COutPoint& outpoint) const override { return base->PeekCoin(outpoint); }
@@ -420,6 +429,8 @@ protected:
     /* Fetch the coin from base. Used for cache misses in FetchCoin. */
     virtual std::optional<Coin> FetchCoinFromBase(const COutPoint& outpoint) const;
 
+    std::map<COutPoint, Coin> FetchEffectiveUTXOs() const;
+
 public:
     CCoinsViewCache(CCoinsView* in_base, bool deterministic = false);
 
@@ -435,9 +446,7 @@ public:
     uint256 GetBestBlock() const override;
     void SetBestBlock(const uint256& block_hash);
     void BatchWrite(CoinsViewCacheCursor& cursor, const uint256& block_hash) override;
-    std::unique_ptr<CCoinsViewCursor> Cursor() const override {
-        throw std::logic_error("CCoinsViewCache cursor iteration not supported.");
-    }
+    std::unique_ptr<CCoinsViewCursor> Cursor() const override;
 
     /**
      * Check if we have the given utxo already loaded in this cache.
@@ -446,11 +455,7 @@ public:
      */
     bool HaveCoinInCache(const COutPoint &outpoint) const;
 
-    /**
-     * Iterate the effective unspent UTXO set (cache layered on base), in COutPoint
-     * sort order. Used when cursor iteration on CCoinsViewCache is unavailable.
-     */
-    void ForEachUnspent(const std::function<bool(const COutPoint&, const Coin&)>& fn) const;
+    void ForEachUnspent(const std::function<bool(const COutPoint&, const Coin&)>& fn) const override;
 
     /**
      * Return a reference to Coin in the cache, or coinEmpty if not found. This is

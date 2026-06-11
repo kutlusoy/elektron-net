@@ -99,7 +99,9 @@ static constexpr int MAX_SCRIPTCHECK_THREADS{15};
 class CBlock;
 class CCoinsView;
 class BlockValidationState;
-/** Compute the UTXO attestation hash after connecting all transactions in a block. */
+/** Compute the UTXO attestation hash after connecting all transactions in a block.
+ *  Coinbase attestation OP_RETURN outputs are excluded (hash is committed before they are added). */
+/** @param base_view Must be the active chain UTXO view (e.g. CoinsTip()), not the raw DB. */
 std::optional<uint256> ComputeBlockUTXOAttestationHash(const CBlock& block, int nHeight, CCoinsView& base_view, node::BlockManager& blockman);
 /** Parse OP_RETURN UTXO attestation from a coinbase at the expected height. */
 std::optional<uint256> ExtractCoinbaseUTXOAttestation(const CTransaction& coinbase, int nHeight);
