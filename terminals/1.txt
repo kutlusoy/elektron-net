@@ -3,7 +3,7 @@ pid: 25084
 cwd: "C:\Users\Kutlusoy\Documents\GitHub\elektron-net"
 command: "Set-Location \"C:\\Users\\Kutlusoy\\Documents\\GitHub\\elektron-net\"; $env:VCPKG_ROOT = \"C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\VC\\vcpkg\"; $cmake = \"C:\\Program Files\\Microsoft Visual Studio\\18\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe\"; & $cmake -B build --preset vs2026-static -DBUILD_GUI=OFF 2>&1 | Select-Object -Last 30"
 started_at: 2026-06-11T09:46:47.586Z
-running_for_ms: 12785001 
+running_for_ms: 86400006 
 ---
 -- Configuring done (3982.7s)  Preprocessor defined macros ......... _WIN32_WINNT=0x0A00 _WIN32_IE=0x0A00 WIN32_LEAN_AND_MEAN NOMINMAX _UNICODE 
 
@@ -41,3 +41,9 @@ NOTE: The summary above may not exactly match the final applied build flags
       To see the exact flags applied, build with the --verbose option.
 Treat compiler warnings as errors ..... OFF
 Use ccache for compiling .............. OFF
+
+---
+exit_code: -1
+elapsed_ms: 86400006
+ended_at: 2026-06-12T09:51:48.784Z
+---
