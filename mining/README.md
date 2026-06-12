@@ -204,49 +204,55 @@ The Python miner automatically detects and supports:
 
 ## For build with dynamic DLL
 ### Select folder
-cd C:\Users\<username>\Desktop\Elektron\mining
+```cd C:\Users\<username>\Desktop\Elektron\mining
+```
 
 ### Dependencies (if not installed)
-& "C:\Program Files\Microsoft Visual Studio\18\Community\VC\vcpkg\vcpkg.exe" install --triplet x64-windows
+```& "C:\Program Files\Microsoft Visual Studio\18\Community\VC\vcpkg\vcpkg.exe" install --triplet x64-windows
+```
 
 ### Build-Folder
-rm -Recurse -Force build -ErrorAction SilentlyContinue
+```rm -Recurse -Force build -ErrorAction SilentlyContinue
 mkdir build
 cd build
+```
 
 ### CMake
-cmake .. `
+```cmake .. `
   -DCMAKE_TOOLCHAIN_FILE="C:\Program Files\Microsoft Visual Studio\18\Community\VC\vcpkg\scripts\buildsystems\vcpkg.cmake" `
   -DVCPKG_TARGET_TRIPLET=x64-windows `
   -DCMAKE_BUILD_TYPE=Release
-
+```
 
 ### Build
-cmake --build . --config Release
-
+```cmake --build . --config Release
+```
 
 ## For build with static exe
 ### Select folder
-cd C:\Users\<username>\Desktop\Elektron\mining
+```cd C:\Users\<username>\Desktop\Elektron\mining
+```
 
 ### Dependencies (if not installed)
-& "C:\Program Files\Microsoft Visual Studio\18\Community\VC\vcpkg\vcpkg.exe" install --triplet x64-windows-static
+```& "C:\Program Files\Microsoft Visual Studio\18\Community\VC\vcpkg\vcpkg.exe" install --triplet x64-windows-static
+```
 
 ### Build-Folder
-rm -Recurse -Force build -ErrorAction SilentlyContinue
+```rm -Recurse -Force build -ErrorAction SilentlyContinue
 mkdir build
 cd build
+```
 
 ### CMake
-cmake .. `
+```cmake .. `
   -DCMAKE_TOOLCHAIN_FILE="C:\Program Files\Microsoft Visual Studio\18\Community\VC\vcpkg\scripts\buildsystems\vcpkg.cmake" `
   -DVCPKG_TARGET_TRIPLET=x64-windows-static `
   -DCMAKE_BUILD_TYPE=Release
-
+```
 
 ### Build
-cmake --build . --config Release
-
+```cmake --build . --config Release
+```
 
 ### Usage
 
