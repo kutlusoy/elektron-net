@@ -206,6 +206,7 @@ The Python miner automatically detects and supports:
 
 ```bash
 cd mining
+& "C:\Program Files\Microsoft Visual Studio\18\Community\VC\vcpkg\vcpkg.exe" install
 mkdir build && cd build
 cmake ..
 cmake --build .
