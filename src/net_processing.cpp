@@ -6595,7 +6595,9 @@ bool PeerManagerImpl::SendMessages(CNode& node)
         std::vector<CInv> vGetData;
         // Elektron Net: for small chains (< MIN_BLOCKS_TO_KEEP), allow downloading blocks from limited peers too,
         // because every peer that has the headers also has all blocks when the chain is small.
-        bool allow_limited_download = m_chainman.m_best_header && m_chainman.m_best_header->nHeight < static_cast<int>(MIN_BLOCKS_TO_KEEP);
+        bool allow_limited_download = m_chainman.m_best_header &&
+            (m_chainman.m_best_header->nHeight - m_chainman.ActiveChain().Height()) <
+            static_cast<int>(MANDATORY_PRUNE_DEPTH);
 
         // Elektron Net: if we are downloading a snapshot for bootstrap, do NOT
         // request historical blocks from peers. Those blocks are pruned away
