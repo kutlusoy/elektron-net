@@ -82,9 +82,10 @@ std::optional<ConfigError> InitConfig(ArgsManager& args, SettingsAbortFn setting
                           << "# seednode=seed0.eleknet.org\n"
                           << "seednode=seed0.eleknet.org\n"
                           << "\n"
-                          << "# Manually add a permanent node (disables automatic discovery for this peer).\n"
+                          << "# Manually add a permanent node the first know nodes.\n"
+                          << "addnode=kutlusoy.dynv6.net:8333\n"
                           << "addnode=188.20.182.78:8333\n"
-                          << "addnode=kutlusoy.dynv6.com:8333\n"
+                          << 
                           << "\n"
                           << "# Accept incoming P2P connections (required for a public node).\n"
                           << "listen=1\n"
