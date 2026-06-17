@@ -170,7 +170,7 @@ Once a minimum-difficulty block is found, the target immediately returns to the 
 | Competitive impact | Lowers barrier to entry | Neutral — all miners use same template |
 | Purpose | Test mining without hardware | **Prevent chain stall after hashrate shock** |
 
-Because the node automatically updates the block template’s `nBits` field when the delay threshold is crossed, **ASIC firmware and hash-only miners need no changes**. Pool backends and GBT miners **must** include every output in `coinbase_required_outputs` (witness commitment + UTXO attestation) — see [`doc/mining-pool-integration.md`](doc/mining-pool-integration.md). Omitting the attestation produces blocks rejected with `missing-utxo-attestation`.
+Because the node automatically updates the block template’s `nBits` field when the delay threshold is crossed, **ASIC firmware and hash-only miners need no changes**. Pool backends and GBT miners **must** include every output in `coinbase_required_outputs` (witness commitment + UTXO attestation) — see [`doc-elektron/mining-pool-integration.md`](doc-elektron/mining-pool-integration.md). Omitting the attestation produces blocks rejected with `missing-utxo-attestation`.
 
 #### 3.3.2 Consensus Properties
 
@@ -325,11 +325,11 @@ While the sync gap to the target checkpoint is **≤ 197,280 blocks**, the node 
 6. Activation (`MaybeActivateAutomaticSnapshot`) requires the `.hash` sidecar, verifies it against the on-chain coinbase attestation when the checkpoint block is on disk, and calls `PopulateAndValidateSnapshot` with `expected_utxo_hash` so deserialized content must match the sidecar hash.
 7. Sync the remaining blocks from the checkpoint to the current tip (at most 197,280 blocks).
 
-No trusted third party. No manual file download. No full historical sync after the first checkpoint. The entire bootstrap is peer-to-peer and cryptographically verified at three layers: sidecar hash, on-chain attestation, and post-load content hash. See [`doc/BITCOIN_CORE_DIFF.md`](doc/BITCOIN_CORE_DIFF.md) §2.3 and [`doc/AUDIT_PRUNING_SNAPSHOT.md`](doc/AUDIT_PRUNING_SNAPSHOT.md) for the full security model.
+No trusted third party. No manual file download. No full historical sync after the first checkpoint. The entire bootstrap is peer-to-peer and cryptographically verified at three layers: sidecar hash, on-chain attestation, and post-load content hash. See [`doc-elektron/BITCOIN_CORE_DIFF.md`](doc-elektron/BITCOIN_CORE_DIFF.md) §2.3 and [`doc-elektron/AUDIT_PRUNING_SNAPSHOT.md`](doc-elektron/AUDIT_PRUNING_SNAPSHOT.md) for the full security model.
 
 #### 4.3.3 Mining Template Contract
 
-`getblocktemplate` exposes `coinbase_required_outputs`: an array of outputs the miner **must** include in the coinbase (witness commitment + UTXO attestation). The reference miners in `mining/miner.py` and `mining/miner.cpp` consume this field. Pool operators integrating Stratum must follow [`doc/mining-pool-integration.md`](doc/mining-pool-integration.md). Any mining software that ignores `coinbase_required_outputs` will produce blocks rejected by the network.
+`getblocktemplate` exposes `coinbase_required_outputs`: an array of outputs the miner **must** include in the coinbase (witness commitment + UTXO attestation). The reference miners in `mining/miner.py` and `mining/miner.cpp` consume this field. Pool operators integrating Stratum must follow [`doc-elektron/mining-pool-integration.md`](doc-elektron/mining-pool-integration.md). Any mining software that ignores `coinbase_required_outputs` will produce blocks rejected by the network.
 
 ### 4.4 Storage Projection
 
@@ -352,7 +352,7 @@ Recovery follows the **Pocket philosophy**: your seed finds your pocket (the cur
 4. Outputs matching derived addresses are credited; balance is spendable immediately.
 5. **Transaction history before the 137-day pruning window is not recoverable** from the network — by design. `rescanblockchain` beyond the prune height still fails; reload the wallet to trigger UTXO scan.
 
-This is built into the node; no manual UTXO download or `-reindex` is required on pruned nodes. Wallet vendors and integrators should read [`doc/BITCOIN_CORE_DIFF.md`](doc/BITCOIN_CORE_DIFF.md) §2.6 and §9.3.
+This is built into the node; no manual UTXO download or `-reindex` is required on pruned nodes. Wallet vendors and integrators should read [`doc-elektron/BITCOIN_CORE_DIFF.md`](doc-elektron/BITCOIN_CORE_DIFF.md) §2.6 and §9.3.
 
 ---
 

@@ -51,10 +51,10 @@ See `The Blind Spot of Digital Money.docx` and `WHITEPAPER.md`.
 ### Differences from Bitcoin Core
 
 Every deliberate protocol and code change vs upstream Bitcoin Core is documented in
-[`doc/BITCOIN_CORE_DIFF.md`](doc/BITCOIN_CORE_DIFF.md) (file-by-file, new functions,
+[`doc-elektron/BITCOIN_CORE_DIFF.md`](doc-ekeltron/BITCOIN_CORE_DIFF.md) (file-by-file, new functions,
 removed behaviour, network parameters).
 
-Mining pool operators (Stratum / ASIC): see [`doc/mining-pool-integration.md`](doc/mining-pool-integration.md).
+Mining pool operators (Stratum / ASIC): see [`doc-elektron/mining-pool-integration.md`](doc/mining-pool-integration.md).
 
 License
 -------
