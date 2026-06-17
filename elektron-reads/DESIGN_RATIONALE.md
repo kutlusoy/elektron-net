@@ -20,9 +20,9 @@ secured by many small, individual participants, with privacy built in by the
 simple act of forgetting.
 
 This document explains the *why*. The *how* lives in
-[`BITCOIN_CORE_DIFF.md`](BITCOIN_CORE_DIFF.md), the *philosophy* in
+[`BITCOIN_CORE_DIFF.md`](../docs/BITCOIN_CORE_DIFF.md), the *philosophy* in
 [`WHITEPAPER.md`](../WHITEPAPER.md), and the *audit* in
-[`AUDIT_PRUNING_SNAPSHOT.md`](AUDIT_PRUNING_SNAPSHOT.md).
+[`AUDIT_PRUNING_SNAPSHOT.md`](../docs/AUDIT_PRUNING_SNAPSHOT.md).
 
 ---
 
@@ -305,9 +305,9 @@ Peer-to-Peer-Bargeldsystem, gesichert von vielen kleinen, individuellen
 Teilnehmern, mit Privatsphäre durch das schlichte Vergessen.
 
 Dieses Dokument erklärt das *Warum*. Das *Wie* steht in
-[`BITCOIN_CORE_DIFF.md`](BITCOIN_CORE_DIFF.md), die *Philosophie* im
+[`BITCOIN_CORE_DIFF.md`](../docs/BITCOIN_CORE_DIFF.md), die *Philosophie* im
 [`WHITEPAPER.md`](../WHITEPAPER.md), das *Audit* in
-[`AUDIT_PRUNING_SNAPSHOT.md`](AUDIT_PRUNING_SNAPSHOT.md).
+[`AUDIT_PRUNING_SNAPSHOT.md`](../docs/AUDIT_PRUNING_SNAPSHOT.md).
 
 ---
 
