@@ -10,7 +10,7 @@ Elektron Net is a minimal, focused fork of Bitcoin Core. It preserves Bitcoin's 
 1. **Block time reduced to 60 seconds** — faster confirmation latency without altering the economic model.
 2. **Mandatory 137-day pruning** — transaction history is mathematically erased after α⁻¹ days, leaving only headers, checkpoints, and the current UTXO set.
 
-Every block carries an on-chain UTXO attestation (37 bytes); full snapshot *files* are written only every 137 days. See §4.3 and [`doc/BITCOIN_CORE_DIFF.md`](doc/BITCOIN_CORE_DIFF.md) for the complete implementation diff vs Bitcoin Core.
+Every block carries an on-chain UTXO attestation (37 bytes); full snapshot *files* are written only every 137 days. See §4.3 and [`doc-elektron/BITCOIN_CORE_DIFF.md`](doc-elektron/BITCOIN_CORE_DIFF.md) for the complete implementation diff vs Bitcoin Core.
 
 Everything else remains Bitcoin Core. The SHA-256d proof-of-work, the 21-million supply cap, the halving rhythm, and the Nakamoto consensus are untouched.
 

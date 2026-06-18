@@ -164,10 +164,10 @@ In `src/net_processing.cpp` (snapshot download state):
 | `mining/generate_address.py` | Address helper |
 | `mining/GENESIS.md`, `mining/README.md` | Mining docs |
 | `src/test/elektron_simulation.cpp` | Pruning/snapshot/attestation tests |
-| `doc/AUDIT_PRUNING_SNAPSHOT.md` | Internal audit |
-| `doc/BITCOIN_CORE_DIFF.md` | This document |
-| `doc/mining-pool-integration.md` | **Pool / Stratum / GBT integrator guide** |
-| `doc/hardfork-v3.0.1-stoic-awakening.md` | Stoic Awakening spec |
+| `doc-elektron/AUDIT_PRUNING_SNAPSHOT.md` | Internal audit |
+| `doc-elektron/BITCOIN_CORE_DIFF.md` | This document |
+| `doc-elektron/mining-pool-integration.md` | **Pool / Stratum / GBT integrator guide** |
+| `doc-elektron/hardfork-v3.0.1-stoic-awakening.md` | Stoic Awakening spec |
 | `WHITEPAPER.md`, `right-to-be-forgotten.md` | Project documentation |
 
 ---
@@ -517,7 +517,7 @@ Service bit **`NODE_SNAPSHOT` (1<<12)** indicates a peer can serve a verified ch
 
 ## 9. Integrator Guide (Pools, Wallets, GBT Software)
 
-This section is the **entry point for external developers**. Detailed pool steps live in [`doc/mining-pool-integration.md`](mining-pool-integration.md).
+This section is the **entry point for external developers**. Detailed pool steps live in [`doc-elektron/mining-pool-integration.md`](mining-pool-integration.md).
 
 ### 9.1 Mining pools & Stratum backends — **must change**
 
@@ -585,10 +585,10 @@ Wallet vendors integrating against `elektrond` RPC need no new RPC methods for U
 | Document | Audience | Contents |
 |----------|----------|----------|
 | [`WHITEPAPER.md`](../WHITEPAPER.md) | Everyone | Protocol philosophy, Pocket model, 137-day pruning |
-| [`doc/BITCOIN_CORE_DIFF.md`](BITCOIN_CORE_DIFF.md) | C++ / Bitcoin devs | **This file** — full implementation diff |
-| [`doc/mining-pool-integration.md`](mining-pool-integration.md) | **Pools, Stratum devs** | GBT fields, coinbase layout, Stratum splitting |
-| [`doc/AUDIT_PRUNING_SNAPSHOT.md`](AUDIT_PRUNING_SNAPSHOT.md) | Auditors | Security paths, scenario analysis |
-| [`doc/hardfork-v3.0.1-stoic-awakening.md`](hardfork-v3.0.1-stoic-awakening.md) | Miners | Stoic Awakening detail |
+| [`doc-elektron/BITCOIN_CORE_DIFF.md`](BITCOIN_CORE_DIFF.md) | C++ / Bitcoin devs | **This file** — full implementation diff |
+| [`doc-elektron/mining-pool-integration.md`](mining-pool-integration.md) | **Pools, Stratum devs** | GBT fields, coinbase layout, Stratum splitting |
+| [`doc-elektron/AUDIT_PRUNING_SNAPSHOT.md`](AUDIT_PRUNING_SNAPSHOT.md) | Auditors | Security paths, scenario analysis |
+| [`doc-elektron/hardfork-v3.0.1-stoic-awakening.md`](hardfork-v3.0.1-stoic-awakening.md) | Miners | Stoic Awakening detail |
 | [`mining/README.md`](../mining/README.md) | Miners | Reference miner setup |
 | [`mining/GENESIS.md`](../mining/GENESIS.md) | Core devs | Genesis constants |
 
