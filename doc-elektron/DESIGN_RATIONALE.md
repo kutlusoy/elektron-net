@@ -20,9 +20,9 @@ secured by many small, individual participants, with privacy built in by the
 simple act of forgetting.
 
 This document explains the *why*. The *how* lives in
-[`BITCOIN_CORE_DIFF.md`](../doc/BITCOIN_CORE_DIFF.md), the *philosophy* in
+[`BITCOIN_CORE_DIFF.md`](BITCOIN_CORE_DIFF.md), the *philosophy* in
 [`WHITEPAPER.md`](../WHITEPAPER.md), and the *audit* in
-[`AUDIT_PRUNING_SNAPSHOT.md`](../doc/AUDIT_PRUNING_SNAPSHOT.md).
+[`AUDIT_PRUNING_SNAPSHOT.md`](AUDIT_PRUNING_SNAPSHOT.md).
 
 ---
 

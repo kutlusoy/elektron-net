@@ -23,7 +23,7 @@ ASICs only hash block headers. The **pool builds the coinbase** (or a GBT-capabl
 
 ## 2. Elektron-specific GBT fields
 
-Standard Bitcoin `getblocktemplate` plus Elektron extensions:
+Standard Bitcoin `getblocktemplate` plus Elektron Net extensions:
 
 ```json
 {
@@ -112,7 +112,7 @@ The hash in `vout[2]` will appear identical across empty blocks — this is corr
 - **Format:** `OP_RETURN 0x24 0xaa21a9ed <32-byte commitment>` (38-byte `scriptPubKey`)
 - Computed as `SHA256d(witness_root_hash || witness_reserved_value)`
 - `witness_reserved_value` is the 32-byte zero stack element on `vin[0]`'s witness
-- Standard Bitcoin behaviour — Elektron does not modify this
+- Standard Bitcoin behaviour — Elektron Net does not modify this
 
 ### 3.4 Reference (Python)
 
@@ -157,7 +157,7 @@ Recommendation: fetch a fresh GBT template for every new block, and re-apply `co
 | Block reward (start) | 5 ELEK |
 | Stoic Awakening | from height 1, after >120 s gap → `powLimit` |
 
-Pool backend: use an **Elektron node** (not Bitcoin Core) as the template source.
+Pool backend: use an **Elektron Net node** (not Bitcoin Core) as the template source.
 
 ---
 
@@ -251,15 +251,15 @@ No pool required; full block reward goes to your own address.
 
 ---
 
-## 9. Migration checklist (Bitcoin pool → Elektron)
+## 9. Migration checklist (Bitcoin pool → Elektron Net)
 
-- [ ] Elektron node (v4.0+) as backend, fresh chain
+- [ ] Elektron Net node (v4.0+) as backend, fresh chain
 - [ ] GBT: parse `coinbase_required_outputs` and include both entries in coinbase, **in the order received** (UTXO attestation first, witness commitment second)
 - [ ] Coinbase layout: `vout[0]` payout, `vout[1]` UTXO attestation, `vout[2]` witness commitment
 - [ ] Set `nLockTime = height - 1`
 - [ ] Recompute Merkle root with the final coinbase
 - [ ] Include Segwit witness stack (one 32-byte zero element on `vin[0]`)
-- [ ] Do not assume Bitcoin `powLimit` / genesis — use Elektron chain parameters
+- [ ] Do not assume Bitcoin `powLimit` / genesis — use Elektron Net chain parameters
 - [ ] Test with `submitblock` and `getrawtransaction` before enabling ASICs
 - [ ] `PROTOCOL_VERSION` 70017 — do not use legacy Bitcoin peers as template source
 
@@ -279,4 +279,4 @@ No pool required; full block reward goes to your own address.
 
 For coinbase structure questions: always compare `getblocktemplate` from your running node against the reference miner output first, and confirm the actual mined block layout with `getrawtransaction <coinbase-txid> true <blockhash>`.
 
-**Wallet vendors:** Elektron does not require `-reindex` on pruned nodes — balances recover via UTXO-set scan at wallet load. See [`BITCOIN_CORE_DIFF.md` §2.6 / §9.3](BITCOIN_CORE_DIFF.md).
+**Wallet vendors:** Elektron Net does not require `-reindex` on pruned nodes — balances recover via UTXO-set scan at wallet load. See [`BITCOIN_CORE_DIFF.md` §2.6 / §9.3](BITCOIN_CORE_DIFF.md).

@@ -1,4 +1,4 @@
-# Hard Fork Documentation: Elektron Net v3.0.1 (Stoic Awakening)
+# (OBSOLETE) Hard Fork Documentation: Elektron Net v3.0.1 (Stoic Awakening)
 
 ## Document Information
 - **Version:** v3.0.1
