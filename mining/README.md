@@ -25,7 +25,7 @@ The node reads `bitcoin.conf` (the filename is still inherited from upstream Bit
 On **Windows** the file belongs in:
 
 ```
-%LOCALAPPDATA%\Bitcoin\bitcoin.conf
+%LOCALAPPDATA%\Elektron\bitcoin.conf
 ```
 
 (If the `Elektron` folder does not exist yet, create it manually.)
