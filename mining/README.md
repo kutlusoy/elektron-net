@@ -28,7 +28,7 @@ On **Windows** the file belongs in:
 %LOCALAPPDATA%\Bitcoin\bitcoin.conf
 ```
 
-(If the `Bitcoin` folder does not exist yet, create it manually.)
+(If the `Elektron` folder does not exist yet, create it manually.)
 
 Minimal configuration for local solo-mining:
 
@@ -90,7 +90,7 @@ ASIC firmware does **not** need changes. **Pool backends** must include
 `coinbase_required_outputs` from `getblocktemplate` in every coinbase
 (witness commitment + per-block UTXO attestation).
 
-Full integration guide: [`doc/mining-pool-integration.md`](../doc/mining-pool-integration.md)
+Full integration guide: [`doc-elektron/mining-pool-integration.md`](../doc-elektron/mining-pool-integration.md)
 
 ---
 
