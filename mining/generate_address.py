@@ -253,7 +253,7 @@ def main():
 
     if args.output is None:
         ts = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
-        args.output = f"wallet_{ts}.txt"
+        args.output = f"wallet_elektron-net_{ts}.txt"
 
     keys = []
     print(f"Generating {args.count} Elektron Net address(es)...")
