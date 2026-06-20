@@ -4,7 +4,7 @@ name: Build Windows Installer
 on:
   push:
     tags:
-      - 'v*'
+      - 'Elektron Net Release v*'
   workflow_dispatch:
 
 jobs:
