@@ -9,7 +9,7 @@ on:
 
 jobs:
   build-windows:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
@@ -94,7 +94,7 @@ jobs:
             --prefix staging \
             --strip
 
-      # ── NSIS Installer erstellen  ──────────────────────────────────
+      # ── NSIS Installer erstellen ───────────────────────────────────
       - name: Build NSIS installer
         run: |
           cmake --build build --target deploy
