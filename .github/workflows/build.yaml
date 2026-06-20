@@ -116,6 +116,18 @@ jobs:
             find build -name "*.exe"
           fi
 
+      # ── Portable-ZIP erstellen ────────────────────────────────────
+      - name: Build portable zip
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PORTABLE_DIR="portable/Elektron Net"
+          mkdir -p "$PORTABLE_DIR"
+          cp staging/bin/*.exe "$PORTABLE_DIR"/
+          cd portable
+          zip -r "../elektron-net-windows-${VERSION}_portable.zip" "Elektron Net"
+          cd ..
+          ls -la "elektron-net-windows-${VERSION}_portable.zip"
+
       # ── Artefakte hochladen ───────────────────────────────────────
       - name: Upload installer
         uses: actions/upload-artifact@v4
@@ -123,7 +135,7 @@ jobs:
           name: elektron-net-windows-${{ steps.version.outputs.version }}_setup
           path: |
             build/**/elektron-net-windows-*_setup.exe
-            build/**/*.zip
+            elektron-net-windows-*_portable.zip
           if-no-files-found: warn
 
       # ── Release-Asset anhängen (nur bei Tag) ─────────────────────
@@ -135,6 +147,6 @@ jobs:
           prerelease: ${{ contains(steps.version.outputs.version, '-rc') }}
           files: |
             build/**/elektron-net-windows-*_setup.exe
-            staging/bin/*.exe
+            elektron-net-windows-*_portable.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
