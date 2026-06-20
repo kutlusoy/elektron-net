@@ -72,14 +72,14 @@ jobs:
       - name: Build depends
         run: |
           cd depends
-          make HOST=x86_64-w64-mingw32 -j$(nproc) NO_QT=1
+          make HOST=x86_64-w64-mingw32 -j$(nproc)
 
       # ── Elektron Net kompilieren ───────────────────────────────────
       - name: Configure (CMake)
         run: |
           cmake -B build \
             --toolchain depends/x86_64-w64-mingw32/toolchain.cmake \
-            -DBUILD_GUI=OFF \
+            -DBUILD_GUI=ON \
             -DENABLE_WALLET=ON \
             -DCMAKE_BUILD_TYPE=Release
 

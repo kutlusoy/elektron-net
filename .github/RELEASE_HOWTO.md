@@ -62,6 +62,12 @@ git tag v4.0.1
 git push origin v4.0.1
 ```
 
+Wenn es mal fehlschlägt tag löschen und neu setzten:
+
+```bash
+git tag -d v4.0.1 && git push origin :v4.0.1 && git tag v4.0.1 && git push origin v4.0.1
+```
+
 > ⚠️ Tag-Name muss mit `v` beginnen, sonst startet der Workflow nicht!
 
 ### Schritt 4 – Build verfolgen
