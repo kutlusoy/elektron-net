@@ -5,6 +5,7 @@ on:
   push:
     tags:
       - 'v*'
+      - 'elektron-net-windows-v*'
   workflow_dispatch:
 
 jobs:
