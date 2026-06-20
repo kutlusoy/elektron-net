@@ -52,7 +52,7 @@ Var StartMenuGroup
 !insertmacro MUI_LANGUAGE English
 
 # Installer attributes
-InstallDir $PROGRAMFILES64\@CLIENT_NAME@
+InstallDir "$PROGRAMFILES64\@CLIENT_NAME@"
 CRCCheck force
 XPStyle on
 BrandingText " "
@@ -95,23 +95,23 @@ Section -post SEC0001
     WriteUninstaller $INSTDIR\uninstall.exe
     !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
     CreateDirectory $SMPROGRAMS\$StartMenuGroup
-    CreateShortcut "$SMPROGRAMS\$StartMenuGroup\$(^Name).lnk" $INSTDIR\@BITCOIN_GUI_NAME@@EXEEXT@
+    CreateShortcut "$SMPROGRAMS\$StartMenuGroup\$(^Name).lnk" "$INSTDIR\@BITCOIN_GUI_NAME@@EXEEXT@"
     CreateShortcut "$SMPROGRAMS\$StartMenuGroup\@CLIENT_NAME@ (testnet).lnk" "$INSTDIR\@BITCOIN_GUI_NAME@@EXEEXT@" "-testnet" "$INSTDIR\@BITCOIN_GUI_NAME@@EXEEXT@" 1
     CreateShortcut "$SMPROGRAMS\$StartMenuGroup\@CLIENT_NAME@ (test signet).lnk" "$INSTDIR\@BITCOIN_GUI_NAME@@EXEEXT@" "-signet" "$INSTDIR\@BITCOIN_GUI_NAME@@EXEEXT@" 2
     CreateShortcut "$SMPROGRAMS\$StartMenuGroup\@CLIENT_NAME@ (testnet4).lnk" "$INSTDIR\@BITCOIN_GUI_NAME@@EXEEXT@" "-testnet4" "$INSTDIR\@BITCOIN_GUI_NAME@@EXEEXT@" 3
-    CreateShortcut "$SMPROGRAMS\$StartMenuGroup\Uninstall $(^Name).lnk" $INSTDIR\uninstall.exe
+    CreateShortcut "$SMPROGRAMS\$StartMenuGroup\Uninstall $(^Name).lnk" "$INSTDIR\uninstall.exe"
     !insertmacro MUI_STARTMENU_WRITE_END
     WriteRegStr HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name)" DisplayName "$(^Name)"
     WriteRegStr HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name)" DisplayVersion "@CLIENT_VERSION_STRING@"
     WriteRegStr HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name)" Publisher "${COMPANY}"
     WriteRegStr HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name)" URLInfoAbout "${URL}"
-    WriteRegStr HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name)" DisplayIcon $INSTDIR\@BITCOIN_GUI_NAME@@EXEEXT@
-    WriteRegStr HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name)" UninstallString $INSTDIR\uninstall.exe
+    WriteRegStr HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name)" DisplayIcon "$INSTDIR\@BITCOIN_GUI_NAME@@EXEEXT@"
+    WriteRegStr HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name)" UninstallString "$INSTDIR\uninstall.exe"
     WriteRegDWORD HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name)" NoModify 1
     WriteRegDWORD HKCU "SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\$(^Name)" NoRepair 1
     WriteRegStr HKCR "@CLIENT_TARNAME@" "URL Protocol" ""
     WriteRegStr HKCR "@CLIENT_TARNAME@" "" "URL:@CLIENT_NAME@"
-    WriteRegStr HKCR "@CLIENT_TARNAME@\DefaultIcon" "" $INSTDIR\@BITCOIN_GUI_NAME@@EXEEXT@
+    WriteRegStr HKCR "@CLIENT_TARNAME@\DefaultIcon" "" "$INSTDIR\@BITCOIN_GUI_NAME@@EXEEXT@"
     WriteRegStr HKCR "@CLIENT_TARNAME@\shell\open\command" "" '"$INSTDIR\@BITCOIN_GUI_NAME@@EXEEXT@" "%1"'
 
     # Lingering since fb2b05b1259d3e69e6e675adfa30b429424c7625 which removed the suffix
@@ -143,13 +143,13 @@ done${UNSECTION_ID}:
 
 # Uninstaller sections
 Section /o -un.Main UNSEC0000
-    Delete /REBOOTOK $INSTDIR\@BITCOIN_WRAPPER_NAME@@EXEEXT@
-    Delete /REBOOTOK $INSTDIR\@BITCOIN_GUI_NAME@@EXEEXT@
-    Delete /REBOOTOK $INSTDIR\COPYING.txt
-    Delete /REBOOTOK $INSTDIR\readme.txt
-    Delete /REBOOTOK $INSTDIR\bitcoin.conf
-    RMDir /r /REBOOTOK $INSTDIR\share
-    RMDir /r /REBOOTOK $INSTDIR\daemon
+    Delete /REBOOTOK "$INSTDIR\@BITCOIN_WRAPPER_NAME@@EXEEXT@"
+    Delete /REBOOTOK "$INSTDIR\@BITCOIN_GUI_NAME@@EXEEXT@"
+    Delete /REBOOTOK "$INSTDIR\COPYING.txt"
+    Delete /REBOOTOK "$INSTDIR\readme.txt"
+    Delete /REBOOTOK "$INSTDIR\bitcoin.conf"
+    RMDir /r /REBOOTOK "$INSTDIR\share"
+    RMDir /r /REBOOTOK "$INSTDIR\daemon"
     DeleteRegValue HKCU "${REGKEY}\Components" Main
 SectionEnd
 
@@ -161,16 +161,16 @@ Section -un.post UNSEC0001
     Delete /REBOOTOK "$SMPROGRAMS\$StartMenuGroup\@CLIENT_NAME@ (testnet4).lnk"
     Delete /REBOOTOK "$SMPROGRAMS\$StartMenuGroup\@CLIENT_NAME@ (test signet).lnk"
     Delete /REBOOTOK "$SMSTARTUP\@CLIENT_NAME@.lnk"
-    Delete /REBOOTOK $INSTDIR\uninstall.exe
-    Delete /REBOOTOK $INSTDIR\debug.log
-    Delete /REBOOTOK $INSTDIR\db.log
+    Delete /REBOOTOK "$INSTDIR\uninstall.exe"
+    Delete /REBOOTOK "$INSTDIR\debug.log"
+    Delete /REBOOTOK "$INSTDIR\db.log"
     DeleteRegValue HKCU "${REGKEY}" StartMenuGroup
     DeleteRegValue HKCU "${REGKEY}" Path
     DeleteRegKey /IfEmpty HKCU "${REGKEY}\Components"
     DeleteRegKey /IfEmpty HKCU "${REGKEY}"
     DeleteRegKey HKCR "@CLIENT_TARNAME@"
-    RmDir /REBOOTOK $SMPROGRAMS\$StartMenuGroup
-    RmDir /REBOOTOK $INSTDIR
+    RmDir /REBOOTOK "$SMPROGRAMS\$StartMenuGroup"
+    RmDir /REBOOTOK "$INSTDIR"
     Push $R0
     StrCpy $R0 $StartMenuGroup 1
     StrCmp $R0 ">" no_smgroup
