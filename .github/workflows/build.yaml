@@ -62,6 +62,13 @@ jobs:
           key: depends-win64-${{ hashFiles('depends/**') }}
           restore-keys: depends-win64-
 
+      - name: Fix depends script permissions
+        run: |
+          cd depends
+          chmod +x config.guess config.sub gen_id
+          # Falls weitere Hilfsskripte ohne +x committet wurden:
+          find . -maxdepth 2 -type f \( -name 'config.guess' -o -name 'config.sub' -o -name 'gen_id' \) -exec chmod +x {} +
+
       - name: Build depends
         run: |
           cd depends
