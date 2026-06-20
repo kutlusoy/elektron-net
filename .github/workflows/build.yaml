@@ -5,8 +5,10 @@ on:
   push:
     tags:
       - 'v*'
-      - 'elektron-net-windows-v*'
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build-windows:
