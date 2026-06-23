@@ -4,6 +4,7 @@
 **Date:** June 23, 2026
 **Audience:** Pool operators, Stratum backend developers, integrators of any kind
 **Reference implementation:** [`mining/miner.py`](../mining/miner.py) — treat this file as the ground truth
+**Reference pool:** [`elektron-net-pool`](https://github.com/kutlusoy/elektron-net-pool) — `MiningJob.ts` mirrors `miner.py` byte for byte
 **See also:** [`BITCOIN_CORE_DIFF.md`](BITCOIN_CORE_DIFF.md), [`WHITEPAPER.md`](../WHITEPAPER.md) §4.3
 
 > **READ THIS FIRST.** Most pool integration failures we have seen come from
@@ -20,15 +21,26 @@
 > `bad-utxo-attestation`. There is no exception. This document explains why
 > and how to integrate accordingly.
 
+> **NEW IN 4.0.1 — hobby-miner compatibility.** The previous revision claimed
+> there was no pool-side way to keep firmwares that reject empty `extranonce1`
+> (NerdMiner V2, Bitaxe, NerdAxe, ESP-Miner, …) connected without breaking the
+> UTXO attestation. That was wrong. The two Stratum slots can be decoupled:
+> advertise a **non-empty `extranonce1`** so the firmware accepts the subscribe
+> reply, while keeping **`extranonce2_size = 0`** so the worker iterates
+> nothing and cannot splice into `scriptSig`. The coinbase the pool actually
+> submits is still built from `coinbase_script_sig_prefix` verbatim, so
+> attestation is unaffected. See §3.5 and §3.7. The reference pool ships this
+> behaviour by default.
+
 ---
 
 ## 1. Who needs to change what?
 
 | Role | Changes required? | Effort |
 |------|-------------------|--------|
-| **ASIC firmware** (Antminer, Whatsminer, NerdMiner, Bitaxe, …) | **None to the binary** — but see §3.7 about the Stratum settings the firmware sees | — |
+| **ASIC firmware** (Antminer, Whatsminer, NerdMiner, Bitaxe, …) | **None to the binary** — the pool now advertises a non-empty `extranonce1` so even strict firmwares stay connected (§3.7) | — |
 | **ASIC operators** (worker config) | None — pool URL / worker name as usual | — |
-| **Mining pool** (Stratum backend) | **Yes — substantial** | Coinbase construction + Stratum advertisement |
+| **Mining pool** (Stratum backend) | **Yes — substantial** | Coinbase construction + Stratum advertisement (§3, §5) |
 | **GBT miners** (cgminer, bfgminer, custom software) | **Yes** | Read `coinbase_required_outputs`, use `coinbase_script_sig_prefix` verbatim |
 | **In‑node mining** (`generatetoaddress`, `miner.py`, `miner.cpp`) | None — already compliant | — |
 
@@ -187,28 +199,42 @@ splice `extranonce1`, with both bytes ending up **inside `scriptSig`**.
 On Elektron Net, **this breaks the UTXO attestation**. There is no way
 to splice anything into `scriptSig` and have the node accept the block.
 
-The only viable Stratum configuration for Elektron Net is therefore:
+The viable Stratum configuration for Elektron Net therefore decouples
+the two extranonce slots and treats them differently:
 
 | Stratum field | Value | Effect |
 |---|---|---|
-| `extranonce1` (in subscribe response) | `""` (empty hex string) | Pool splices nothing |
-| `extranonce2_size` (in subscribe response) | `0` | Worker iterates nothing in the coinbase |
+| `extranonce1` (in subscribe response) | **Non‑empty random hex** (4 bytes / 8 hex chars, per‑session) | Cosmetic / session id only — pool **never splices it into the coinbase**. Required because some firmwares disconnect on empty (§3.7). |
+| `extranonce2_size` (in subscribe response) | **`0`** | Worker iterates nothing in the coinbase. This is what actually protects the attestation. |
 | `coinb1` (in `mining.notify`) | The **complete** non‑witness coinbase serialization | Worker treats it as the coinbase |
 | `coinb2` (in `mining.notify`) | `""` (empty hex string) | Nothing follows the worker's (empty) splice |
 
-With both extranonce sizes set to `0`, the canonical Stratum equation
+With `extranonce2_size = 0`, the canonical Stratum equation
 
 ```
 coinbase = coinb1 + extranonce1 + extranonce2 + coinb2
 ```
 
-degenerates to
+degenerates on the worker side to
 
 ```
 coinbase = coinb1
 ```
 
-— which is **exactly** the bytes `miner.py` emits.
+because the worker never iterates and produces zero bytes for both
+extranonce slots — regardless of what string was sent as `extranonce1`
+in the subscribe response. **The pool must never read the value of
+`extranonce1` back from the subscribe response and splice it into the
+coinbase it serializes.** It is a session label on the wire, nothing more.
+The coinbase the pool actually submits is exactly the bytes `miner.py`
+emits.
+
+**Why this works without breaking consensus:** the byte string sent in
+the `extranonce1` slot of the subscribe response is *only* used by the
+worker firmware in the formula above. When `extranonce2_size = 0` and
+the pool's coinbase builder ignores `extranonce1`, the value has no
+path into `scriptSig`. It functions purely as a session/notify channel
+identifier. UTXO attestation is therefore preserved.
 
 The worker's only sources of header‑search entropy are then:
 
@@ -244,28 +270,85 @@ These are the four ways we have seen pools "lose" blocks to
 4. **Do not reuse stale templates across tip changes.** The attestation
    hash changes every block. On a new tip, fetch a fresh GBT for every
    active worker and push a clean job with `clean_jobs=true`.
+5. **Do not advertise a non-zero `extranonce2_size`** to "stay
+   Stratum-compatible". The moment the worker starts iterating an
+   extranonce2 of any length, the coinbase mutates per iteration and
+   `bad-utxo-attestation` returns. Use the §3.5 decoupling instead:
+   non-empty `extranonce1` for firmware acceptance, `extranonce2_size = 0`
+   for consensus safety.
+6. **Do not feed the wire-level `extranonce1` value back into your
+   coinbase builder.** It is a session label, not coinbase material.
+   The reference pool emits a random 4-byte hex string per connection
+   for the subscribe response and the coinbase builder ignores that
+   string entirely.
 
-### 3.7 ASIC firmware compatibility caveat
+### 3.7 ASIC and hobby-miner firmware compatibility
 
-A small number of ASIC firmwares hard‑require a **non‑empty** `extranonce1`
-in the subscribe response and will close the TCP socket immediately on
-an empty value. Two important points:
+ESP32-class hobby miners (NerdMiner V2, Bitaxe, NerdAxe, NerdQAxe,
+ESP-Miner) and a handful of older ASIC firmwares **hard-require a
+non-empty `extranonce1`** in the subscribe response. Sending an empty
+string causes them to close the TCP socket immediately after subscribe,
+which manifests in pool logs as a tight loop:
 
-- The Elektron Net consensus rule is not negotiable. If the firmware
-  truly requires non‑empty `extranonce1`, *and* the pool sends those
-  bytes, *and* the firmware splices them into the coinbase, the resulting
-  block will be rejected. There is no pool‑side trick that simultaneously
-  satisfies the firmware's expectation and the node's attestation.
-- For ASIC firmware that disconnects on empty `extranonce1`, either:
-  - Update the firmware to one that respects `extranonce2_size = 0` and
-    does not splice into scriptSig when `extranonce1` is empty (most
-    modern firmwares already do this), or
-  - Use GBT direct mining (`mining/miner.py`, `mining/miner.cpp`) for
-    the workers that cannot be reconfigured.
+```
+New client ID: , userAgent=NerdMiner, ::ffff:192.168.x.x:nnnnn
+Client disconnected, hadError?:false
+New client ID: , userAgent=NerdMiner, ::ffff:192.168.x.x:nnnnn+1
+Client disconnected, hadError?:false
+...
+```
 
-Stratum v2 (BIP not yet ratified) makes header‑only mining a first‑class
-mode and avoids this problem entirely; once firmwares ship Stratum v2
-support, Elektron pools should prefer it.
+(Empty session id, then instant disconnect, repeated per reconnection
+attempt.)
+
+**This is fixable on the pool side alone, without touching the
+firmware or the consensus rule.** The fix is exactly the §3.5
+decoupling:
+
+- Generate a per-connection random 4-byte hex string (8 hex chars).
+- Send it as the `extranonce1` slot of the subscribe response **and** as
+  the `mining.notify` channel id.
+- Keep `extranonce2_size = 0`.
+- Build the coinbase from `coinbase_script_sig_prefix` verbatim, with no
+  reference to that hex string.
+
+The firmware sees a non-empty `extranonce1`, accepts the subscribe
+reply, and starts mining. Because `extranonce2_size = 0` it iterates no
+extranonce — so the coinbase the pool serializes for `submitblock` is
+byte-identical to what `miner.py` would produce, and the node accepts
+the block.
+
+**This is the reference pool's default behaviour as of
+`elektron-net-pool` June 2026.** Operators inheriting older pool builds
+should verify that:
+
+- `subscribe` reply has a non-empty `extranonce1` (look at the second
+  string in `result`, not just the notify channel id).
+- `subscribe` reply has `extranonce2_size = 0` (third entry in `result`).
+- The coinbase serializer reads from `coinbase_script_sig_prefix` and
+  not from any per-session value.
+
+A useful operational tell: each new connection should produce a log line
+of the form `New client ID: <8 hex chars>, userAgent=..., mode=HOBBY|NORMAL`.
+If the hex string is empty, the pool is on the broken pre-4.1 wiring
+and hobby miners will not stay connected.
+
+For pools that want fine-grained control, the reference implementation
+exposes:
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `HOBBY_MINER_USER_AGENTS` | `NerdMiner,NerdminerV2,nerdminer,Bitaxe,NerdAxe,NerdQAxe,ESP-Miner` | Substring allow-list (case-insensitive) used to mark a session as hobby-class. |
+| `HOBBY_MINER_DIFFICULTY` | `0.001` | Starting `mining.set_difficulty` for matched sessions — ESP32 devices at a few tens of kH/s need this low so shares actually arrive before the pool's dead-client timer fires. |
+
+Sessions whose `userAgent` does not match the list still benefit from
+the §3.5 wiring (modern ASICs accept non-empty `extranonce1` too); the
+allow-list only affects the starting difficulty.
+
+Stratum v2 (BIP not yet ratified) makes header-only mining a
+first-class mode and avoids any of this. Once firmwares ship Stratum v2
+support, Elektron pools should prefer it, but Stratum v1 with the §3.5
+decoupling is already a full solution for the v1 firmware fleet.
 
 ---
 
@@ -290,8 +373,8 @@ Pool backend: connect to an **Elektron Net node** (not Bitcoin Core).
 
 ## 5. Implementation steps in a Bitcoin‑style pool codebase
 
-The exact paths below assume the public‑pool / `elektron-net-pool`
-NestJS layout, but the conceptual steps apply to any pool backend.
+The exact paths below assume the `elektron-net-pool` NestJS layout, but
+the conceptual steps apply to any pool backend.
 
 ### 5.1 RPC client (`bitcoin-rpc.service.ts`)
 
@@ -319,6 +402,8 @@ const height = jobTemplate.blockData.height;
 
 const scriptSig = jobTemplate.coinbase_script_sig_prefix;
 // NOTHING ELSE goes in here. See §3.2.
+// In particular: do NOT read the per-session extranonce1 value from
+// the subscribe response into this builder. extranonce1 is wire-only.
 
 const cb = new Transaction();
 cb.version = 2;
@@ -339,18 +424,27 @@ Verify the produced coinbase serialization is byte‑identical to what
 
 ### 5.4 Stratum wiring
 
-- `mining.subscribe` response: `extranonce1 = ""`, `extranonce2_size = 0`
-- `mining.notify`: `coinb1 = <full non-witness coinbase hex>`, `coinb2 = ""`
+- `mining.subscribe` response:
+  - `extranonce1` = a **non-empty** per-session random hex string
+    (4 bytes / 8 hex chars in the reference pool — see `stratum.constants.ts`,
+    `SUBSCRIBE_SESSION_ID_BYTES`).
+  - `extranonce2_size` = `0`.
+  - `mining.notify` subscription id = the same hex string (so the worker
+    has a stable channel tag across `mining.set_difficulty` updates).
+- `mining.notify`: `coinb1 = <full non-witness coinbase hex>`, `coinb2 = ""`.
 - `mining.submit` handling: ignore the `extranonce2` field positionally
-  (worker may still send something); do not use it in coinbase
-  reconstruction.
+  (worker may still send something, e.g. empty string); do not use it
+  in coinbase reconstruction.
+- The per-session `extranonce1` value **must never be read into the
+  coinbase builder**. Keep it as a connection-scoped session identifier
+  and use it only for logging, dedup, and the wire-level fields above.
 
 ### 5.5 Block assembly & submission
 
 When a worker submits a header that meets the network target:
 
 1. Take the coinbase you already built for this template (it is
-   immutable — the worker did not change it).
+   immutable — the worker did not change it, because `extranonce2_size = 0`).
 2. Recompute the merkle root from the coinbase's non‑witness txid and
    the template's `merkle_branch`.
 3. Build the 80‑byte header with the worker's `nVersion`,
@@ -370,8 +464,15 @@ reason. See §6 for the meanings.
   invalidate the template's attestation. Handle pool fees off‑chain
   (per‑payout deductions in the database, not in the coinbase).
 - Per‑connection GBT calls (one per worker, every block) put nontrivial
-  load on the node's RPC. Plan for `bitcoind`/`elektrond` capacity
-  accordingly; tune `STRATUM_MAX_CONNECTIONS_PER_LISTENER` to match.
+  load on the node's RPC. Plan for `elektrond` capacity accordingly;
+  tune `STRATUM_MAX_CONNECTIONS_PER_LISTENER` to match.
+- For hobby-miner fleets, set `HOBBY_MINER_DIFFICULTY` low enough that
+  a typical device (a NerdMiner V2 around 50 kH/s, a Bitaxe Ultra
+  around 500 GH/s) submits at least one share per 60 s block. Diff
+  `0.001` is the reference default and works for both.
+- Log line discipline: emit `mode=HOBBY|NORMAL` on subscribe and on
+  every `mining.submit` so operators can confirm at a glance which
+  code path each device follows.
 
 ---
 
@@ -381,11 +482,19 @@ reason. See §6 for the meanings.
 |---|---|---|
 | `null` / `""` | Block accepted. | — |
 | `missing-utxo-attestation` | `vout` of coinbase does not contain an `OP_RETURN <height> <32-byte hash>` for the current height. | Append `coinbase_required_outputs[0]` correctly. |
-| `bad-utxo-attestation` | Hash in `vout[1]` does not match the post‑block UTXO state the node recomputes. | scriptSig differs from `coinbase_script_sig_prefix`, or you re‑used a stale template, or you reordered/modified `vout[1..N]`. See §3.2 and §3.6. |
+| `bad-utxo-attestation` | Hash in `vout[1]` does not match the post‑block UTXO state the node recomputes. | scriptSig differs from `coinbase_script_sig_prefix` (most common: extranonce was spliced in because `extranonce2_size > 0` or the pool fed `extranonce1` into the coinbase), or you re‑used a stale template, or you reordered/modified `vout[1..N]`. See §3.2, §3.5 and §3.6. |
 | `bad-utxo-attestation-compute` | Transient internal error. | Refetch GBT and retry. |
 | `bad-cb-length` | `scriptSig` is shorter than 2 bytes. | At heights < 17, append a single `0x00` (OP_0) after the BIP34 height push, as `miner.py` does. |
 | `bad-cb-amount` | Coinbase outputs sum exceeds `coinbasevalue`. | Recompute `vout[0].value`. |
 | `bad-txnmrklroot` | Header merkle root doesn't match block transactions. | Recompute merkle from your final coinbase txid + template `merkle_branch`. |
+
+In addition, the following **non-consensus** symptom is worth listing
+here because it is the single most reported pool integration problem
+and is not a `submitblock` rejection at all:
+
+| Symptom | Meaning | Fix |
+|---|---|---|
+| Hobby miner (NerdMiner / Bitaxe / NerdAxe / ESP-Miner) connects, logs `userAgent=...`, then disconnects within ~10 ms — repeated forever | Subscribe reply contains an empty `extranonce1` slot. The firmware rejects the reply and closes the socket. | Apply §3.5 / §3.7 — send a non-empty random per-session hex string as `extranonce1`, keep `extranonce2_size = 0`. |
 
 ---
 
@@ -418,13 +527,32 @@ Run these in order. Each step must succeed before moving on.
    `coinbase_script_sig_prefix` inside `vin[0].scriptSig`. There must
    be none.
 
-5. **End‑to‑end Stratum**
+5. **Subscribe reply shape**
+   Capture a real `mining.subscribe` exchange (`tcpdump` or a Stratum
+   log) and confirm the reply matches:
+   ```json
+   {"id":N,"error":null,"result":[[["mining.notify","<8 hex>"]],"<8 hex>",0]}
+   ```
+   The two `<8 hex>` values must be the same per session, both
+   non-empty, and the trailing integer must be `0` (extranonce2_size).
+
+6. **Hobby-miner connectivity (only if you operate hobby miners)**
+   Point a real NerdMiner V2 or Bitaxe at the pool. The pool log must
+   show:
+   ```
+   New client ID: <8 hex>, userAgent=NerdMiner, mode=HOBBY, ::ffff:...
+   mining.notify -> <8 hex> job=... height=... diff=0.001 ...
+   mining.submit <- <8 hex> mode=HOBBY job=... ntime=... nonce=...
+   ```
+   No immediate disconnect, shares arriving within ~minutes.
+
+7. **End‑to‑end Stratum**
    Connect a Stratum worker (`cgminer --userpass …`,
    `python -m bitaxe`, or a real ASIC). Verify `mining.notify` carries
    the full coinbase as `coinb1`. Verify the worker accepts subscribe
    with `extranonce2_size = 0`.
 
-6. **Real block acceptance**
+8. **Real block acceptance**
    Wait for a worker submit that meets the network target. Verify
    `submitblock` returns `null`. Inspect the on‑chain block:
    ```bash
@@ -484,12 +612,21 @@ real workers:
 - [ ] `nSequence = 0xFFFFFFFE`
 - [ ] Coinbase witness = single 32‑byte zero item on `vin[0]`
 - [ ] Merkle root recomputed from final coinbase non‑witness txid
-- [ ] Stratum advertises `extranonce1 = ""`, `extranonce2_size = 0`
+- [ ] Stratum subscribe reply advertises **non-empty** per-session
+      `extranonce1` (8 hex chars recommended) and `extranonce2_size = 0`
+- [ ] Coinbase builder ignores the wire-level `extranonce1` value
+      (it is session metadata, not coinbase material)
 - [ ] `mining.notify` sends full non‑witness coinbase as `coinb1`,
       empty `coinb2`
+- [ ] Hobby-miner allow-list configured (`HOBBY_MINER_USER_AGENTS`)
+      with a sensibly low `HOBBY_MINER_DIFFICULTY` (≤ 0.001 for
+      ESP32-class devices)
+- [ ] Subscribe and submit log lines carry a `mode=HOBBY|NORMAL` tag
 - [ ] No dev/pool fee output in coinbase (fees are off‑chain)
 - [ ] `PROTOCOL_VERSION` 70017
-- [ ] All seven steps in §7 pass on a private regtest before mainnet rollout
+- [ ] All eight steps in §7 pass on a private regtest before mainnet rollout
+- [ ] At least one real NerdMiner or Bitaxe verified to stay connected
+      and submit shares against staging before production rollout
 
 ---
 
@@ -499,6 +636,10 @@ real workers:
 |-------|------|
 | **Reference miner (Python)** — the ground truth for coinbase layout | [`mining/miner.py`](../mining/miner.py) |
 | Reference miner (C++) — same logic in C++ | [`mining/miner.cpp`](../mining/miner.cpp) |
+| **Reference pool coinbase builder** — TypeScript 1:1 mirror of `miner.py` | [`elektron-net-pool/src/models/MiningJob.ts`](https://github.com/kutlusoy/elektron-net-pool/blob/main/src/models/MiningJob.ts) |
+| **Reference pool Stratum wiring** — subscribe/notify/submit handlers | [`elektron-net-pool/src/models/StratumV1Client.ts`](https://github.com/kutlusoy/elektron-net-pool/blob/main/src/models/StratumV1Client.ts) |
+| **Reference pool subscribe response** — non-empty `extranonce1`, `extranonce2_size = 0` | [`elektron-net-pool/src/models/stratum-messages/SubscriptionMessage.ts`](https://github.com/kutlusoy/elektron-net-pool/blob/main/src/models/stratum-messages/SubscriptionMessage.ts) |
+| **Reference pool wire constants** — `SUBSCRIBE_SESSION_ID_BYTES`, `EXTRANONCE2_SIZE_BYTES` | [`elektron-net-pool/src/models/stratum.constants.ts`](https://github.com/kutlusoy/elektron-net-pool/blob/main/src/models/stratum.constants.ts) |
 | GBT output (node) | `src/rpc/mining.cpp` |
 | Coinbase build order (node) | `src/node/miner.cpp` |
 | Attestation validation | `src/validation.cpp` |
@@ -511,28 +652,89 @@ Python miner for the same template, your pool is wrong.
 
 ---
 
-## Appendix A — Why §3.5 in the previous doc revision was misleading
+## Appendix A — Why §3.5 in earlier doc revisions was misleading
 
-Earlier versions of this document described the conventional Stratum v1
-arrangement (`extranonce` lives inside `scriptSig`) without explicitly
-noting that it is **incompatible with Elektron Net's UTXO attestation**.
-That phrasing led at least one pool integrator to reserve an extranonce
+**Revisions ≤ 3.x** described the conventional Stratum v1 arrangement
+(`extranonce` lives inside `scriptSig`) without explicitly noting that
+it is **incompatible with Elektron Net's UTXO attestation**. That
+phrasing led at least one pool integrator to reserve an extranonce
 hole inside `scriptSig`, which broke the attestation on every submitted
 block.
 
-To prevent this from happening again:
+**Revision 4.0** corrected the consensus story but advised
+`extranonce1 = ""` on the wire. That instruction, while consensus-safe,
+caused all hobby-miner firmwares that hard-require a non-empty
+`extranonce1` (NerdMiner V2, Bitaxe, NerdAxe, ESP-Miner) to disconnect
+immediately after subscribe. Operators of those fleets concluded —
+incorrectly — that Elektron Net was simply incompatible with their
+hardware and that a separate "compatibility proxy" would have to be
+built and maintained alongside the pool.
 
-- §3.2 of this revision states the rule in absolute terms: scriptSig is
-  exactly the GBT prefix, period.
+**Revision 4.1 (this document)** clarifies that the two Stratum slots
+can and must be decoupled:
+
+- `extranonce1` on the subscribe reply is a **session label** —
+  non-empty random hex, ignored by the coinbase builder.
+- `extranonce2_size = 0` is the **consensus-safety knob** — keeps the
+  worker from iterating anything into the coinbase.
+
+Set together, they satisfy both the firmware (non-empty `extranonce1`)
+and the node (coinbase byte-identical to `miner.py`). The reference
+pool (`elektron-net-pool`, June 2026) ships this behaviour as default
+and the migration checklist in §11 makes it explicit.
+
+To prevent regressions:
+
+- §3.2 of this revision states the consensus rule in absolute terms:
+  scriptSig is exactly the GBT prefix, period.
 - §3.5 spells out the Stratum configuration that follows from §3.2:
-  `extranonce_size = 0` on both sides, full coinbase in `coinb1`.
+  non-empty `extranonce1` for wire compatibility, `extranonce2_size = 0`
+  for consensus safety, full coinbase in `coinb1`.
 - §3.6 explicitly lists "do not append extranonce padding to scriptSig"
-  as the first pitfall.
+  and "do not feed `extranonce1` back into the coinbase" as pitfalls.
+- §3.7 documents the hobby-miner disconnect symptom and the exact
+  pool-side fix.
 - §6 maps `bad-utxo-attestation` directly to "scriptSig differs from
-  `coinbase_script_sig_prefix`" so a debugging operator finds the cause
-  immediately.
+  `coinbase_script_sig_prefix`" so a debugging operator finds the
+  cause immediately, and includes the hobby-miner disconnect loop as
+  a separately listed non-consensus symptom.
 
-The conceptual mistake is easy to make because Bitcoin pools have done
-the "extranonce inside scriptSig" thing for a decade. Elektron Net
-trades that flexibility for the per‑block UTXO attestation. There is no
-way to keep both.
+The conceptual mistakes underlying revisions ≤ 4.0 are easy to make
+because Bitcoin pools have done the "extranonce inside scriptSig" thing
+for a decade, and because no other chain decouples the `extranonce1`
+slot from coinbase content. Elektron Net trades that flexibility for
+the per-block UTXO attestation; revision 4.1 documents the exact
+pattern that keeps Stratum v1 firmware compatibility on top of it.
+
+---
+
+## Appendix B — Why a separate "compatibility proxy" is unnecessary
+
+A previously circulated design proposal recommended building a
+standalone Stratum proxy in front of the pool to translate between
+"hobby-miner Stratum" (non-empty `extranonce1`, classical merkle
+splicing) and "Elektron Net Stratum" (empty extranonces, full coinbase
+in `coinb1`). The proposal was based on the assumption that the two
+were fundamentally incompatible.
+
+They are not. The §3.5 decoupling — non-empty `extranonce1` as session
+label, `extranonce2_size = 0` as the consensus-safety knob — closes
+the gap in the pool itself. No additional process, no extra TCP hop,
+no separate codebase to maintain.
+
+The reference pool's actual delta against a "pre-hobby-miner" pool
+build is small:
+
+1. Allocate a non-zero number of random bytes for the per-session id
+   (`SUBSCRIBE_SESSION_ID_BYTES = 4` in the reference) — *not* the
+   extranonce splice size, which stays at `0`.
+2. Emit that hex string in the subscribe reply as both the notify
+   channel id and the `extranonce1` slot.
+3. Allow-list hobby userAgents and tune their starting difficulty
+   downward so a ~50 kH/s ESP32 device actually submits shares before
+   the dead-client timeout.
+
+That is the entire scope. Coinbase construction, template management,
+RPC submission, and the rest of the pool stack are unchanged — they
+were already consensus-correct in revision 4.0. Skip the proxy; ship
+the three changes above.
