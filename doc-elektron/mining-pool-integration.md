@@ -1,16 +1,12 @@
 # Elektron Net — Mining Pool Integration Guide
 
-**Version:** 4.0.1 
+- **Version:** 4.0.1 
+- **Date:** June 23, 2026 
+- **Audience:** Pool operators, Stratum backend developers, integrators of any kind 
+- **Reference implementation:** [`mining/miner.py`](../mining/miner.py) — treat this file as the ground truth 
+- **Reference pool:** [`elektron-net-pool`](https://github.com/kutlusoy/elektron-net-pool) — `MiningJob.ts` mirrors `miner.py` byte for byte 
+- **See also:** [`BITCOIN_CORE_DIFF.md`](BITCOIN_CORE_DIFF.md), [`WHITEPAPER.md`](../WHITEPAPER.md) §4.3
 
-**Date:** June 23, 2026 
-
-**Audience:** Pool operators, Stratum backend developers, integrators of any kind 
-
-**Reference implementation:** [`mining/miner.py`](../mining/miner.py) — treat this file as the ground truth 
-
-**Reference pool:** [`elektron-net-pool`](https://github.com/kutlusoy/elektron-net-pool) — `MiningJob.ts` mirrors `miner.py` byte for byte 
-
-**See also:** [`BITCOIN_CORE_DIFF.md`](BITCOIN_CORE_DIFF.md), [`WHITEPAPER.md`](../WHITEPAPER.md) §4.3
 
 > **READ THIS FIRST.** Most pool integration failures we have seen come from
 > appending bytes to the coinbase `scriptSig`. If you remember nothing else
