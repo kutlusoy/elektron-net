@@ -1,0 +1,3 @@
+Color: #1A9BF7
+color2:#4BC2F9
+e: #ffffff / Arial / 10°
