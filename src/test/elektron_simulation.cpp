@@ -43,13 +43,14 @@ BOOST_AUTO_TEST_CASE(checkpoint_and_snapshot_mechanism)
     auto& chainstate = chainman.ActiveChainstate();
     CChain& chain = chainman.ActiveChain();
 
-    LOCK(::cs_main);
-
     // Verify mandatory prune depth constant
     BOOST_CHECK_EQUAL(MANDATORY_PRUNE_DEPTH, 197280U);
 
-    // Mine a few more blocks to get a usable UTXO set
+    // Mine a few more blocks to get a usable UTXO set. ProcessNewBlock() (called via
+    // mineBlocks -> CreateAndProcessBlock) asserts cs_main is NOT held by the caller.
     mineBlocks(10);
+
+    LOCK(::cs_main);
     BOOST_CHECK_EQUAL(chain.Height(), 110);
 
     // The first automatic checkpoint would be at height 197,280.
@@ -59,25 +60,32 @@ BOOST_AUTO_TEST_CASE(checkpoint_and_snapshot_mechanism)
     const CBlockIndex* tip = chain.Tip();
     BOOST_REQUIRE(tip != nullptr);
 
-    // Every block (height > 0) must carry a UTXO attestation in the coinbase.
-    const auto stats = kernel::ComputeUTXOStats(
-        kernel::CoinStatsHashType::HASH_SERIALIZED,
-        &chainstate.CoinsTip(), chainman.m_blockman);
-    BOOST_REQUIRE(stats);
-
+    // Every block (height > 0) must carry a UTXO attestation in the coinbase. Compute it
+    // via the same production function used by mining/validation (ComputeBlockUTXOAttestationHash),
+    // rather than hardcoding HASH_SERIALIZED, so this test passes regardless of whether
+    // regtest's MuhashAttestationActivationHeight has been reached (see chainparams.cpp).
     CMutableTransaction attested_coinbase;
     attested_coinbase.vin.resize(1);
     attested_coinbase.vin[0].prevout.SetNull();
-    attested_coinbase.vout.resize(2);
+    attested_coinbase.vout.resize(1);
     attested_coinbase.vout[0].nValue = 50 * COIN;
     attested_coinbase.vout[0].scriptPubKey = CScript() << OP_TRUE;
-    attested_coinbase.vout[1].nValue = 0;
-    attested_coinbase.vout[1].scriptPubKey = CScript() << OP_RETURN << tip->nHeight << stats->hashSerialized;
     CBlock attested_block;
-    attested_block.vtx.push_back(MakeTransactionRef(std::move(attested_coinbase)));
+    attested_block.vtx.push_back(MakeTransactionRef(attested_coinbase));
+
+    const auto attestation_hash = ComputeBlockUTXOAttestationHash(
+        attested_block, tip->nHeight, chainstate.CoinsTip(), chainman.m_blockman,
+        chainman.GetConsensus(), &chainstate.UTXOMuHash());
+    BOOST_REQUIRE(attestation_hash);
+
+    attested_coinbase.vout.resize(2);
+    attested_coinbase.vout[1].nValue = 0;
+    attested_coinbase.vout[1].scriptPubKey = CScript() << OP_RETURN << tip->nHeight << *attestation_hash;
+    attested_block.vtx[0] = MakeTransactionRef(std::move(attested_coinbase));
 
     BlockValidationState state;
-    BOOST_CHECK(ValidateUTXOCheckpoint(attested_block, tip->nHeight, chainstate.CoinsTip(), chainman.m_blockman, state));
+    BOOST_CHECK(ValidateUTXOCheckpoint(attested_block, tip->nHeight, chainstate.CoinsTip(), chainman.m_blockman, state,
+                                        chainman.GetConsensus(), &chainstate.UTXOMuHash()));
     BOOST_CHECK(state.IsValid());
 
     CMutableTransaction missing_coinbase;
@@ -90,8 +98,57 @@ BOOST_AUTO_TEST_CASE(checkpoint_and_snapshot_mechanism)
     missing_block.vtx.push_back(MakeTransactionRef(std::move(missing_coinbase)));
 
     BlockValidationState missing_state;
-    BOOST_CHECK(!ValidateUTXOCheckpoint(missing_block, tip->nHeight, chainstate.CoinsTip(), chainman.m_blockman, missing_state));
+    BOOST_CHECK(!ValidateUTXOCheckpoint(missing_block, tip->nHeight, chainstate.CoinsTip(), chainman.m_blockman, missing_state,
+                                         chainman.GetConsensus(), &chainstate.UTXOMuHash()));
     BOOST_CHECK(!missing_state.IsValid());
+}
+
+/**
+ * doc-elektron/fix-report-utxo-attestation-scalability.md §5 "Correctness": the
+ * incrementally-maintained accumulator (kernel::UTXOMuHashState, updated per-block from
+ * ConnectBlock/DisconnectBlock) must exactly match a from-scratch full-set MUHASH scan.
+ */
+BOOST_AUTO_TEST_CASE(muhash_accumulator_matches_full_scan)
+{
+    auto& chainman = *m_node.chainman;
+    auto& chainstate = chainman.ActiveChainstate();
+
+    mineBlocks(10);
+
+    LOCK(::cs_main);
+    const uint256 incremental_hash = chainstate.UTXOMuHash().GetHash();
+    const auto full_scan = kernel::ComputeUTXOStats(
+        kernel::CoinStatsHashType::MUHASH, &chainstate.CoinsTip(), chainman.m_blockman);
+    BOOST_REQUIRE(full_scan);
+    BOOST_CHECK_EQUAL(incremental_hash.ToString(), full_scan->hashSerialized.ToString());
+}
+
+/**
+ * doc-elektron/fix-report-utxo-attestation-scalability.md §5 "Reorg correctness": after
+ * disconnecting blocks, the accumulator must return to bit-for-bit the same state it had
+ * before those blocks were connected (Remove must be a true inverse of Insert across the
+ * real undo-data code path, not just in isolation).
+ */
+BOOST_AUTO_TEST_CASE(muhash_accumulator_survives_reorg)
+{
+    auto& chainman = *m_node.chainman;
+    auto& chainstate = chainman.ActiveChainstate();
+
+    mineBlocks(5);
+    const uint256 ancestor_hash = WITH_LOCK(::cs_main, return chainstate.UTXOMuHash().GetHash());
+
+    mineBlocks(3);
+    BOOST_CHECK(WITH_LOCK(::cs_main, return chainstate.UTXOMuHash().GetHash()) != ancestor_hash);
+
+    {
+        LOCK2(chainman.GetMutex(), chainstate.MempoolMutex());
+        BlockValidationState state_dummy{};
+        for (int i = 0; i < 3; ++i) {
+            BOOST_REQUIRE(chainstate.DisconnectTip(state_dummy, nullptr));
+        }
+    }
+
+    BOOST_CHECK_EQUAL(WITH_LOCK(::cs_main, return chainstate.UTXOMuHash().GetHash()).ToString(), ancestor_hash.ToString());
 }
 
 BOOST_AUTO_TEST_CASE(automatic_snapshot_file_creation)
@@ -394,9 +451,9 @@ BOOST_AUTO_TEST_CASE(prune_range_respects_mandatory_depth)
     auto& chainman = *m_node.chainman;
     auto& chainstate = chainman.ActiveChainstate();
 
-    LOCK(::cs_main);
-
     mineBlocks(50);
+
+    LOCK(::cs_main);
     const CBlockIndex* tip = chainman.ActiveChain().Tip();
     BOOST_REQUIRE(tip != nullptr);
     int tip_height = tip->nHeight;

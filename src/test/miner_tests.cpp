@@ -826,7 +826,8 @@ BOOST_AUTO_TEST_CASE(CreateNewBlock_validity)
             // Elektron Net: UTXO attestation (committed before OP_RETURN is added to coinbase).
             if (const auto hash = ComputeBlockUTXOAttestationHash(
                     block, current_height + 1, Assert(m_node.chainman)->ActiveChainstate().CoinsTip(),
-                    m_node.chainman->m_blockman)) {
+                    m_node.chainman->m_blockman, m_node.chainman->GetConsensus(),
+                    &Assert(m_node.chainman)->ActiveChainstate().UTXOMuHash())) {
                 CMutableTransaction cb(*block.vtx[0]);
                 CTxOut out;
                 out.nValue = 0;

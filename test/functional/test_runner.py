@@ -262,6 +262,7 @@ BASE_SCRIPTS = [
     'rpc_getblockfrompeer.py',
     'rpc_invalidateblock.py',
     'feature_utxo_set_hash.py',
+    'feature_muhash_attestation_activation.py',
     'feature_rbf.py',
     'mempool_packages.py',
     'mempool_package_limits.py',

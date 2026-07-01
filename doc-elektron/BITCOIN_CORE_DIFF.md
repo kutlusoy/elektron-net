@@ -2,8 +2,8 @@
 
 **Version:** 4.0.0  
 **Base:** Bitcoin Core (C++20 fork)  
-**Last updated:** 2026-06-11  
-**Companion docs:** [`WHITEPAPER.md`](../WHITEPAPER.md), [`mining-pool-integration.md`](mining-pool-integration.md), [`AUDIT_PRUNING_SNAPSHOT.md`](AUDIT_PRUNING_SNAPSHOT.md), [`hardfork-v3.0.1-stoic-awakening.md`](hardfork-v3.0.1-stoic-awakening.md)
+**Last updated:** 2026-07-01  
+**Companion docs:** [`WHITEPAPER.md`](../WHITEPAPER.md), [`mining-pool-integration.md`](mining-pool-integration.md), [`AUDIT_PRUNING_SNAPSHOT.md`](AUDIT_PRUNING_SNAPSHOT.md), [`hardfork-v3.0.1-stoic-awakening.md`](hardfork-v3.0.1-stoic-awakening.md), [`fix-report-utxo-attestation-scalability.md`](fix-report-utxo-attestation-scalability.md), [`CHANGELOG-muhash-attestation.md`](CHANGELOG-muhash-attestation.md)
 
 This document lists **every deliberate divergence** from upstream Bitcoin Core, organized from protocol fundamentals outward to tooling and tests. Files with only branding or string changes are grouped separately.
 
@@ -51,12 +51,17 @@ This document lists **every deliberate divergence** from upstream Bitcoin Core, 
 ### 2.2 Per-block UTXO attestation
 
 - **Every block** at height > 0 must include in coinbase:  
-  `OP_RETURN <height> <HASH_SERIALIZED(UTXO after block connect)>`.
+  `OP_RETURN <height> <attestation hash (32 bytes)>`.
 - Genesis (height 0) has no attestation.
 - Validation errors: `missing-utxo-attestation`, `bad-utxo-attestation`, `bad-utxo-attestation-compute`.
 - **`ConnectBlock`**: attestation failure returns `false` (invalid block) — not `FatalError` (node keeps running).
 - **`CreateNewBlock` / GBT**: if attestation hash cannot be computed, template creation returns `nullptr` / RPC error (no silent omission).
-- Miners receive the required output via GBT `coinbase_required_outputs` (`src/rpc/mining.cpp`).
+- Miners receive the required output via GBT `coinbase_required_outputs` (`src/rpc/mining.cpp`). The 32-byte hash format is unchanged by the dual algorithm below — pools following this contract need no changes.
+- **Dual algorithm, height-gated** (`Consensus::Params::MuhashAttestationActivationHeight`, `src/consensus/params.h`; see `doc-elektron/fix-report-utxo-attestation-scalability.md` and `doc-elektron/CHANGELOG-muhash-attestation.md` for the full design/implementation history):
+  - Below the activation height (or when the height is `-1`, disabled): `HASH_SERIALIZED` — a full rescan of the UTXO set after connecting the block (`kernel::ComputeUTXOStats`, `src/kernel/coinstats.cpp`). This is the only algorithm ever used on **mainnet** (`MuhashAttestationActivationHeight = -1`, permanently, until a separate decision is made).
+  - At/after the activation height: an **incrementally-maintained MuHash accumulator** (`kernel::UTXOMuHashState`, `src/kernel/utxo_muhash.h`), updated per-block from `ConnectBlock`/`DisconnectBlock` and persisted alongside the chainstate (`CCoinsViewDB::WriteUTXOMuHashState`, `src/txdb.cpp`). Cost is bounded by the coins touched in the block being processed, not by total UTXO set size — this removes a per-block cost that otherwise scales with the UTXO set (see the fix report for the concrete threshold math).
+  - Current activation heights (`src/kernel/chainparams.cpp`): **mainnet `-1` (disabled)**, testnet/testnet4 `50000` (placeholder — verify against the live tip before deploying), regtest `10` (fixed, exercised by every regtest run).
+  - `ComputeBlockUTXOAttestationHash()` picks the algorithm transparently based on height; callers (`ValidateUTXOCheckpoint`, `CreateNewBlock`) are unaffected either way.
 
 ### 2.3 Checkpoint snapshot files (every 197,280 blocks)
 
@@ -109,6 +114,8 @@ Triggered automatically in `CWallet::AttachChain()` when `chain.havePruned()` an
 | `NODE_SNAPSHOT` | `src/protocol.h` | Service bit `1 << 12` |
 | `CURRENCY_UNIT` | `src/policy/feerate.h` | `"ELEK"` |
 | `COIN` | `src/consensus/amount.h` | 10⁸ leptons per ELEK |
+| `Consensus::Params::MuhashAttestationActivationHeight` | `src/consensus/params.h` | `-1` disabled (mainnet); per-network heights in `src/kernel/chainparams.cpp` (see §2.2) |
+| `DB_UTXO_MUHASH` | `src/txdb.cpp` | Coins-DB key (`'U'`) for the persisted MuHash accumulator |
 
 ### 3.2 New P2P message types
 
@@ -125,9 +132,11 @@ Defined in `src/protocol.h`; handlers in `src/net_processing.cpp`.
 
 | Function | File | Purpose |
 |----------|------|---------|
-| `ComputeBlockUTXOAttestationHash()` | `src/validation.cpp` | Simulate block connect; return UTXO hash for attestation |
+| `ComputeBlockUTXOAttestationHash()` | `src/validation.cpp` | Return UTXO attestation hash: full rescan pre-activation, incremental MuHash clone post-activation |
 | `ExtractCoinbaseUTXOAttestation()` | `src/validation.cpp` | Parse `OP_RETURN` attestation from coinbase at height |
 | `ValidateUTXOCheckpoint()` | `src/validation.cpp` | Consensus: verify coinbase attestation every block |
+| `Chainstate::EnsureUTXOMuHashLoaded()` / `Chainstate::UTXOMuHash()` | `src/validation.h/.cpp` | Lazy-load (or one-time rebuild) and expose the persistent MuHash accumulator |
+| `kernel::UTXOMuHashState` | `src/kernel/utxo_muhash.h` | Incrementally-maintained MuHash commitment to the full UTXO set |
 | `WriteAutomaticSnapshot()` | `src/validation.cpp` | Write `.dat` + `.hash` at checkpoint heights; abort if hash write fails |
 | `PopulateAndValidateSnapshot(..., expected_utxo_hash)` | `src/validation.cpp` | Load snapshot; verify content hash against sidecar / attestation |
 | `DirectorySize()` | `src/util/fs_helpers.cpp` | Recursive directory size (GUI disk display) |

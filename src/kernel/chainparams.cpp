@@ -95,6 +95,10 @@ public:
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = false;
         consensus.MinDifficultyActivationHeight = 1; // Stoic Awakening active from block 1 (v4.0 genesis restart)
+        // MuHash UTXO attestation (doc-elektron/fix-report-utxo-attestation-scalability.md):
+        // deliberately left disabled (-1) on mainnet. Only testnet/testnet4/regtest carry a
+        // real activation height while this is being exercised; see doc-elektron/CHANGELOG-muhash-attestation.md.
+        consensus.MuhashAttestationActivationHeight = -1;
         consensus.enforce_BIP94 = false;
         consensus.fPowNoRetargeting = false;
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].bit = 28;
@@ -187,6 +191,11 @@ public:
         consensus.nPowTargetTimespan = 2016 * 60; // 1.4 days
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = true;
+        // MuHash UTXO attestation test activation (doc-elektron/fix-report-utxo-attestation-scalability.md,
+        // doc-elektron/CHANGELOG-muhash-attestation.md). NOT active on mainnet. This placeholder height
+        // must be verified against the live testnet tip before deployment -- bump it if the network has
+        // already passed it, so no running node crosses the activation height before it has the new code.
+        consensus.MuhashAttestationActivationHeight = 50000;
         consensus.enforce_BIP94 = false;
         consensus.fPowNoRetargeting = false;
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].bit = 28;
@@ -266,6 +275,8 @@ public:
         consensus.nPowTargetTimespan = 2016 * 60; // 1.4 days
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = true;
+        // See CTestNetParams::MuhashAttestationActivationHeight above -- same caveat applies.
+        consensus.MuhashAttestationActivationHeight = 50000;
         consensus.enforce_BIP94 = true;
         consensus.fPowNoRetargeting = false;
 
@@ -459,6 +470,9 @@ public:
         consensus.nPowTargetTimespan = 2016 * 60; // 1.4 days
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = true;
+        // MuHash UTXO attestation: fixed low activation height so the switchover is
+        // exercised in every regtest run / functional test (see fix-report §5).
+        consensus.MuhashAttestationActivationHeight = 10;
         consensus.enforce_BIP94 = opts.enforce_bip94;
         consensus.fPowNoRetargeting = true;
 

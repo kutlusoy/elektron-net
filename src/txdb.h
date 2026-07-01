@@ -10,6 +10,7 @@
 #include <dbwrapper.h>
 #include <kernel/caches.h>
 #include <kernel/cs_main.h>
+#include <kernel/utxo_muhash.h>
 #include <sync.h>
 #include <util/fs.h>
 
@@ -47,6 +48,14 @@ public:
     std::vector<uint256> GetHeadBlocks() const override;
     void BatchWrite(CoinsViewCacheCursor& cursor, const uint256& block_hash) override;
     std::unique_ptr<CCoinsViewCursor> Cursor() const override;
+
+    //! Elektron Net: persist the incrementally-maintained UTXO MuHash accumulator
+    //! alongside the coins DB. `tip_hash` is stored so a stale/missing entry (e.g.
+    //! after a crash between this write and the coins batch write, or the first run
+    //! of a node upgrading to this feature) can be detected on load and rebuilt.
+    bool WriteUTXOMuHashState(const kernel::UTXOMuHashState& state, const uint256& tip_hash);
+    //! Returns false if no (or a stale) entry is found; caller should rebuild.
+    bool ReadUTXOMuHashState(kernel::UTXOMuHashState& state, uint256& tip_hash) const;
 
     //! Whether an unsupported database format is used.
     bool NeedsUpgrade();

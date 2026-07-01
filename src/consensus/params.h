@@ -121,6 +121,10 @@ struct Params {
     bool enforce_BIP94;
     bool fPowNoRetargeting;
     int MinDifficultyActivationHeight = -1;
+    /** Block height at which per-block UTXO attestation switches from a full
+     * HASH_SERIALIZED rescan to the incrementally-maintained MuHash
+     * accumulator. -1 = never active (default; used on mainnet for now). */
+    int MuhashAttestationActivationHeight = -1;
     int64_t nPowTargetSpacing;
     int64_t nPowTargetTimespan;
     std::chrono::seconds PowTargetSpacing() const

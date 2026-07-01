@@ -1,9 +1,9 @@
 # Fix Report: Per-Block UTXO Attestation Cost Scales With UTXO Set Size
 
-**Status:** Confirmed via code review. Complexity re-assessed and re-verified directly against this codebase (see §7).
+**Status:** Phase 1 (incremental accumulator) + Phase 3 (activation height gate) **implemented**, 2026-07-01, on branch `MuHash`. Active on testnet/testnet4/regtest only, at low/placeholder heights for testing; **mainnet stays disabled** (`MuhashAttestationActivationHeight = -1`) until a separate decision is made. Phase 2 (snapshot metadata embedding) and Phase 4 (P2P protocol-version gate) remain deferred — see `doc-elektron/CHANGELOG-muhash-attestation.md` for the full implementation log and what was and wasn't included in this pass. The analysis and recommendations below (§1–§8) are the original design record and are left as-is.
 **Severity:** Not urgent to *activate*, but the implementation itself should start now; see §1.1 for concrete cost/threshold data showing this becomes a hard chain-halt problem well below Bitcoin's current scale.
-**Affected files:** `src/validation.cpp`, `src/node/miner.cpp`, `src/kernel/coinstats.h`, `src/kernel/coinstats.cpp`, `src/index/coinstatsindex.cpp` (reference implementation), `src/crypto/muhash.h`
-**Related:** `doc-elektron/AUDIT_PRUNING_SNAPSHOT.md`, `BITCOIN_CORE_DIFF.md` §2.2, §2.3, §9.4, `doc-elektron/fix-report-snapshot-bootstrap-trust.md`
+**Affected files:** `src/validation.cpp`, `src/validation.h`, `src/node/miner.cpp`, `src/kernel/coinstats.h`, `src/kernel/coinstats.cpp`, `src/kernel/utxo_muhash.h`, `src/consensus/params.h`, `src/kernel/chainparams.cpp`, `src/txdb.h`, `src/txdb.cpp`, `src/index/coinstatsindex.cpp` (reference implementation), `src/crypto/muhash.h`
+**Related:** `doc-elektron/AUDIT_PRUNING_SNAPSHOT.md`, `BITCOIN_CORE_DIFF.md` §2.2, §2.3, §9.4, `doc-elektron/fix-report-snapshot-bootstrap-trust.md`, `doc-elektron/CHANGELOG-muhash-attestation.md`
 
 ---
 
