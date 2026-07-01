@@ -219,7 +219,7 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock()
         tx.vout.push_back(out);
         pblock->vtx[0] = MakeTransactionRef(std::move(tx));
         coinbase_tx.required_outputs.push_back(out);
-        if (nHeight % MANDATORY_PRUNE_DEPTH == 0) {
+        if (nHeight % static_cast<int>(chainparams.GetConsensus().MandatoryPruneDepth) == 0) {
             LogInfo("CreateNewBlock(): added UTXO checkpoint at height %d, hash=%s\n",
                     nHeight, hash->ToString());
         } else {

@@ -12,8 +12,15 @@ This file is a dated, chronological log of the changes made in this pass, in the
 
 **New consensus parameter.** `Consensus::Params::MuhashAttestationActivationHeight` (`src/consensus/params.h`), same `-1`-disabled sentinel convention as the existing `MinDifficultyActivationHeight`. Set per network in `src/kernel/chainparams.cpp`:
 - Mainnet: `-1` (disabled — explicit, will not change as a side effect of this pass).
-- Testnet / Testnet4: `50000` (placeholder — **must be checked against the live tip before deployment**; bump if already surpassed, see the comment at the call site).
-- Regtest: `10` (fixed, so the switchover is exercised in every regtest run / functional test, per the fix report's own testing recommendation).
+- Testnet / Testnet4: `5000` (revised same-day from an initial `50000` placeholder — the network is confirmed still near height 0, so `5000` gives a real testing window without an unnecessarily long wait; **still verify against the live tip before deployment** if time has passed).
+- Regtest: `50` (revised same-day from an initial `10` — high enough to leave a visible pre-activation window for manual testing, still fast for CI).
+
+**Checkpoint interval made per-network too.** The existing automatic-UTXO-snapshot / P2P-bootstrap checkpoint interval (previously the single hardcoded global `MANDATORY_PRUNE_DEPTH = 197280` in `src/validation.h`, used directly by `WriteAutomaticSnapshot`, `ValidateUTXOCheckpoint`'s log-level split, `Chainstate::GetPruneRange`, and several `net_processing.cpp` snapshot-bootstrap calculations) is now a new `Consensus::Params::MandatoryPruneDepth` field (default `197280`, matching the still-present `MANDATORY_PRUNE_DEPTH` constant, which now only serves as that default/mainnet reference value — not something requested by the original fix report, but needed so the checkpoint/snapshot cycle can actually be exercised while testing MuHash activation on testnet/regtest, rather than only after 197,280 blocks). All 9 real (non-comment) call sites already had `Consensus::Params`/`ChainstateManager` access in scope, so this was a mechanical read-from-params change, not a redesign. Per network:
+- Mainnet: `197280` (unchanged).
+- Testnet / Testnet4: `7000`.
+- Regtest: `100`.
+
+Disk-pruning thresholds (`nPruneAfterHeight`, a separate, pre-existing mechanism) were left untouched.
 
 **New incremental UTXO MuHash accumulator.** `src/kernel/utxo_muhash.h`: `kernel::UTXOMuHashState`, a thin wrapper around the existing `MuHash3072` type (`src/crypto/muhash.h`) that reuses the existing `ApplyCoinHash`/`RemoveCoinHash` helpers (`src/kernel/coinstats.cpp`) already used by `CoinStatsIndex` — no new per-coin serialization logic was written.
 

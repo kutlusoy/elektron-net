@@ -2178,22 +2178,22 @@ void PeerManagerImpl::MaybeRequestSnapshot()
     if (!best_header) return;
 
     const int header_height = best_header->nHeight;
-    if (header_height < static_cast<int>(MANDATORY_PRUNE_DEPTH)) {
+    const int checkpoint_interval = static_cast<int>(m_chainman.GetConsensus().MandatoryPruneDepth);
+    if (header_height < checkpoint_interval) {
         return; // first checkpoint not yet reached on the network — sync like Bitcoin Core
     }
 
-    if (header_height - tip_height < static_cast<int>(MANDATORY_PRUNE_DEPTH)) {
+    if (header_height - tip_height < checkpoint_interval) {
         return; // normal IBD is still possible within the trailing window
     }
 
     // Compute the most recent checkpoint height that is not ahead of the
     // best header.  A new node must bootstrap from the latest checkpoint so
-    // that it only needs to download the (at most) MANDATORY_PRUNE_DEPTH
+    // that it only needs to download the (at most) MandatoryPruneDepth
     // blocks that follow the snapshot.  If we used the tip_height, a node
     // starting at height 0 would request checkpoint 197280 and then need
     // blocks 197281+ — most of which are already pruned away.
-    int target_height = (header_height / static_cast<int>(MANDATORY_PRUNE_DEPTH))
-                        * static_cast<int>(MANDATORY_PRUNE_DEPTH);
+    int target_height = (header_height / checkpoint_interval) * checkpoint_interval;
     if (target_height == 0) return;
 
     const CBlockIndex* checkpoint = best_header->GetAncestor(target_height);
@@ -5250,7 +5250,7 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
                  checkpoint_hash.ToString(), pfrom.GetId());
         const CBlockIndex* checkpoint_index = m_chainman.m_blockman.LookupBlockIndex(checkpoint_hash);
         if (checkpoint_index && checkpoint_index->nHeight > 0 &&
-            checkpoint_index->nHeight % MANDATORY_PRUNE_DEPTH == 0) {
+            checkpoint_index->nHeight % static_cast<int>(m_chainman.GetConsensus().MandatoryPruneDepth) == 0) {
             // Only advertise if we actually have the snapshot file
             auto maybe_path = FindSnapshotFile(checkpoint_hash);
             if (maybe_path) {
@@ -6593,11 +6593,12 @@ bool PeerManagerImpl::SendMessages(CNode& node)
         // Message: getdata (blocks)
         //
         std::vector<CInv> vGetData;
+        const int checkpoint_interval = static_cast<int>(m_chainman.GetConsensus().MandatoryPruneDepth);
         // Elektron Net: for small chains (< MIN_BLOCKS_TO_KEEP), allow downloading blocks from limited peers too,
         // because every peer that has the headers also has all blocks when the chain is small.
         bool allow_limited_download = m_chainman.m_best_header &&
             (m_chainman.m_best_header->nHeight - m_chainman.ActiveChain().Height()) <
-            static_cast<int>(MANDATORY_PRUNE_DEPTH);
+            checkpoint_interval;
 
         // Elektron Net: if we are downloading a snapshot for bootstrap, do NOT
         // request historical blocks from peers. Those blocks are pruned away
@@ -6617,12 +6618,11 @@ bool PeerManagerImpl::SendMessages(CNode& node)
         if (m_chainman.IsInitialBlockDownload() && m_chainman.m_best_header) {
             const int header_height = m_chainman.m_best_header->nHeight;
             const int active_height = m_chainman.ActiveChain().Height();
-            if (header_height >= static_cast<int>(MANDATORY_PRUNE_DEPTH)) {
-                const int target_height = (header_height / static_cast<int>(MANDATORY_PRUNE_DEPTH))
-                                          * static_cast<int>(MANDATORY_PRUNE_DEPTH);
+            if (header_height >= checkpoint_interval) {
+                const int target_height = (header_height / checkpoint_interval) * checkpoint_interval;
                 if (active_height < target_height) {
                     const int sync_gap = target_height - active_height;
-                    const bool gap_exceeds_retention = sync_gap > static_cast<int>(MANDATORY_PRUNE_DEPTH);
+                    const bool gap_exceeds_retention = sync_gap > checkpoint_interval;
                     bool have_local_snapshot = false;
                     if (const CBlockIndex* target_index = m_chainman.m_best_header->GetAncestor(target_height)) {
                         have_local_snapshot = FindSnapshotFile(target_index->GetBlockHash()).has_value();

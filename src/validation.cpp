@@ -2493,7 +2493,7 @@ bool ValidateUTXOCheckpoint(const CBlock& block, int nHeight, CCoinsView& view, 
                 nHeight, attestation_hash->ToString(), computed_hash->ToString()));
         return false;
     }
-    if (nHeight % MANDATORY_PRUNE_DEPTH == 0) {
+    if (nHeight % static_cast<int>(params.MandatoryPruneDepth) == 0) {
         LogInfo("Validated UTXO checkpoint at height %d, hash=%s\n",
                 nHeight, attestation_hash->ToString());
     } else {
@@ -2509,7 +2509,8 @@ bool ValidateUTXOCheckpoint(const CBlock& block, int nHeight, CCoinsView& view, 
  */
 void WriteAutomaticSnapshot(Chainstate& chainstate, int nHeight, const CBlockIndex* pindex, bool force)
 {
-    if (!force && (nHeight <= 0 || nHeight % MANDATORY_PRUNE_DEPTH != 0)) {
+    const unsigned int checkpoint_interval = chainstate.m_chainman.GetConsensus().MandatoryPruneDepth;
+    if (!force && (nHeight <= 0 || nHeight % static_cast<int>(checkpoint_interval) != 0)) {
         return; // Not a checkpoint block
     }
 
@@ -6788,9 +6789,9 @@ std::pair<int, int> Chainstate::GetPruneRange(int last_height_can_prune) const
     }
 
     int max_prune = std::max<int>(
-        0, m_chain.Height() - static_cast<int>(MANDATORY_PRUNE_DEPTH));
+        0, m_chain.Height() - static_cast<int>(m_chainman.GetConsensus().MandatoryPruneDepth));
 
-    // last block to prune is the lesser of (caller-specified height, MANDATORY_PRUNE_DEPTH from the tip)
+    // last block to prune is the lesser of (caller-specified height, MandatoryPruneDepth from the tip)
     //
     // While you might be tempted to prune the background chainstate more
     // aggressively (i.e. fewer MIN_BLOCKS_TO_KEEP), this won't work with index

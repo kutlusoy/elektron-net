@@ -5,7 +5,7 @@
 """
 Test the MuHash UTXO attestation activation (Elektron Net consensus change).
 
-Regtest's MuhashAttestationActivationHeight is fixed at 10 (see
+Regtest's MuhashAttestationActivationHeight is fixed at 50 (see
 src/kernel/chainparams.cpp) specifically so this switchover is continuously
 exercised in CI, per doc-elektron/fix-report-utxo-attestation-scalability.md
 §5. Every block still carries a per-block UTXO attestation OP_RETURN in its
@@ -34,7 +34,7 @@ from test_framework.util import (
     assert_greater_than,
 )
 
-MUHASH_ACTIVATION_HEIGHT = 10  # src/kernel/chainparams.cpp: CRegTestParams
+MUHASH_ACTIVATION_HEIGHT = 50  # src/kernel/chainparams.cpp: CRegTestParams
 
 
 class MuhashAttestationActivationTest(BitcoinTestFramework):

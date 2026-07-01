@@ -75,7 +75,12 @@ class SignalInterrupt;
 
 /** Block files containing a block-height within MIN_BLOCKS_TO_KEEP of ActiveChain().Tip() will not be pruned. */
 static const unsigned int MIN_BLOCKS_TO_KEEP = 2880; // ~2 days at 60s block time
-/** Mandatory prune depth: 137 days (197,280 blocks at 60s). */
+/** Mandatory prune depth: 137 days (197,280 blocks at 60s) on mainnet.
+ *  This is the mainnet value and the default Consensus::Params::MandatoryPruneDepth
+ *  is initialized to; testnet/testnet4/regtest override that field to a much lower
+ *  value (see src/kernel/chainparams.cpp) so the checkpoint cycle is actually
+ *  observable there. Consensus/checkpoint code should read
+ *  Consensus::Params::MandatoryPruneDepth, not this constant, except where noted. */
 static const unsigned int MANDATORY_PRUNE_DEPTH = 197280;
 static const signed int DEFAULT_CHECKBLOCKS = 6;
 static constexpr int DEFAULT_CHECKLEVEL{3};

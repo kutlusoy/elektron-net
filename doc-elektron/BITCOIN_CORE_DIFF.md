@@ -41,12 +41,12 @@ This document lists **every deliberate divergence** from upstream Bitcoin Core, 
 
 ### 2.1 Mandatory 137-day pruning
 
-- Constant: `MANDATORY_PRUNE_DEPTH = 197280` (`src/validation.h`).
-- All nodes prune block files older than 197,280 blocks from the tip, **regardless of disk space** (`src/node/blockstorage.cpp`).
+- Constant: `MANDATORY_PRUNE_DEPTH = 197280` (`src/validation.h`) — this is now specifically the **mainnet value and default** that `Consensus::Params::MandatoryPruneDepth` (`src/consensus/params.h`) initializes to; testnet/testnet4/regtest override that field to a much lower value so the checkpoint cycle in §2.3 is actually observable without mining 197,280 blocks (see §2.3 and `doc-elektron/CHANGELOG-muhash-attestation.md`). All consensus/checkpoint code reads `Consensus::Params::MandatoryPruneDepth`, not the bare constant.
+- All nodes prune block files older than the network's checkpoint interval from the tip, **regardless of disk space** (`src/node/blockstorage.cpp`).
 - User `-prune=<GB>` is **ignored**; nodes always use manual pruning mode with depth-based retention (`src/node/blockmanager_args.cpp`, `src/init.cpp`).
 - `-txindex` is incompatible (same as Bitcoin, but pruning is always on).
 - `MIN_BLOCKS_TO_KEEP = 2880` (~2 days at 60 s) — safety buffer before mandatory depth (`src/validation.h`).
-- `nPruneAfterHeight = 197280` on mainnet (`src/kernel/chainparams.cpp`) — pruning **starts at the first checkpoint**, not after a 274-day grace period. There is no `2 × MANDATORY_PRUNE_DEPTH` delay.
+- `nPruneAfterHeight = 197280` on mainnet (`src/kernel/chainparams.cpp`) — pruning **starts at the first checkpoint**, not after a 274-day grace period. There is no `2 × MandatoryPruneDepth` delay. (`nPruneAfterHeight` is a separate, disk-pruning-only mechanism and was not changed for testnet/testnet4/regtest as part of the checkpoint-interval work below.)
 
 ### 2.2 Per-block UTXO attestation
 
@@ -60,11 +60,12 @@ This document lists **every deliberate divergence** from upstream Bitcoin Core, 
 - **Dual algorithm, height-gated** (`Consensus::Params::MuhashAttestationActivationHeight`, `src/consensus/params.h`; see `doc-elektron/fix-report-utxo-attestation-scalability.md` and `doc-elektron/CHANGELOG-muhash-attestation.md` for the full design/implementation history):
   - Below the activation height (or when the height is `-1`, disabled): `HASH_SERIALIZED` — a full rescan of the UTXO set after connecting the block (`kernel::ComputeUTXOStats`, `src/kernel/coinstats.cpp`). This is the only algorithm ever used on **mainnet** (`MuhashAttestationActivationHeight = -1`, permanently, until a separate decision is made).
   - At/after the activation height: an **incrementally-maintained MuHash accumulator** (`kernel::UTXOMuHashState`, `src/kernel/utxo_muhash.h`), updated per-block from `ConnectBlock`/`DisconnectBlock` and persisted alongside the chainstate (`CCoinsViewDB::WriteUTXOMuHashState`, `src/txdb.cpp`). Cost is bounded by the coins touched in the block being processed, not by total UTXO set size — this removes a per-block cost that otherwise scales with the UTXO set (see the fix report for the concrete threshold math).
-  - Current activation heights (`src/kernel/chainparams.cpp`): **mainnet `-1` (disabled)**, testnet/testnet4 `50000` (placeholder — verify against the live tip before deploying), regtest `10` (fixed, exercised by every regtest run).
+  - Current activation heights (`src/kernel/chainparams.cpp`): **mainnet `-1` (disabled)**, testnet/testnet4 `5000` (verify against the live tip before deploying if time has passed), regtest `50` (fixed, exercised by every regtest run, high enough to leave a visible pre-activation window for manual testing).
   - `ComputeBlockUTXOAttestationHash()` picks the algorithm transparently based on height; callers (`ValidateUTXOCheckpoint`, `CreateNewBlock`) are unaffected either way.
 
-### 2.3 Checkpoint snapshot files (every 197,280 blocks)
+### 2.3 Checkpoint snapshot files (every `Consensus::Params::MandatoryPruneDepth` blocks — 197,280 on mainnet)
 
+- Checkpoint interval is now **per-network** (see §2.1): mainnet `197280`, testnet/testnet4 `7000`, regtest `100` — so the automatic snapshot cycle below can actually be observed while testing on testnet/regtest, not just after 197,280 blocks.
 - On-disk `.dat` + `.hash` sidecar written **only** at checkpoint heights (`WriteAutomaticSnapshot`).
 - If `.hash` sidecar write fails, the `.dat` file is **removed** (snapshot unusable without hash).
 - Uses AssumeUTXO serialization; **no** hardcoded `assumeutxo` entries in `chainparams` for automatic snapshots.
@@ -115,6 +116,7 @@ Triggered automatically in `CWallet::AttachChain()` when `chain.havePruned()` an
 | `CURRENCY_UNIT` | `src/policy/feerate.h` | `"ELEK"` |
 | `COIN` | `src/consensus/amount.h` | 10⁸ leptons per ELEK |
 | `Consensus::Params::MuhashAttestationActivationHeight` | `src/consensus/params.h` | `-1` disabled (mainnet); per-network heights in `src/kernel/chainparams.cpp` (see §2.2) |
+| `Consensus::Params::MandatoryPruneDepth` | `src/consensus/params.h` | Defaults to `197280` (mainnet); `7000` testnet/testnet4, `100` regtest (see §2.1/§2.3) |
 | `DB_UTXO_MUHASH` | `src/txdb.cpp` | Coins-DB key (`'U'`) for the persisted MuHash accumulator |
 
 ### 3.2 New P2P message types
