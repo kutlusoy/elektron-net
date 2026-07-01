@@ -216,7 +216,7 @@ public:
         pchMessageStart[2] = 0x09;
         pchMessageStart[3] = 0x07;
         nDefaultPort = 18333;
-        nPruneAfterHeight = 1000;
+        nPruneAfterHeight = 7000; // matches MandatoryPruneDepth above -- pruning starts at the first checkpoint, same principle as mainnet
         m_assumed_blockchain_size = 245;
         m_assumed_chain_state_size = 19;
 
@@ -299,7 +299,7 @@ public:
         pchMessageStart[2] = 0x3f;
         pchMessageStart[3] = 0x28;
         nDefaultPort = 48333;
-        nPruneAfterHeight = 1000;
+        nPruneAfterHeight = 7000; // matches MandatoryPruneDepth above -- see CTestNetParams
         m_assumed_blockchain_size = 31;
         m_assumed_chain_state_size = 2;
 
@@ -498,7 +498,7 @@ public:
         pchMessageStart[2] = 0xb5;
         pchMessageStart[3] = 0xda;
         nDefaultPort = 18444;
-        nPruneAfterHeight = opts.fastprune ? 100 : 1000;
+        nPruneAfterHeight = 100; // matches MandatoryPruneDepth above -- pruning starts at the first checkpoint
         m_assumed_blockchain_size = 0;
         m_assumed_chain_state_size = 0;
 
