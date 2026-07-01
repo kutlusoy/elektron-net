@@ -59,6 +59,17 @@ Verified live with the corrected `nPruneAfterHeight` values: fresh regtest node,
 
 ---
 
+## 2026-07-01 (same day, follow-up: faster testnet/testnet4 values for local iteration)
+
+At the user's request: all local testing happens against testnet/testnet4 chainparams (not against the live public testnet), so there is no need for the earlier `5000`/`7000` values, which exist mainly to leave headroom on a network other operators might already be running. Lowered for quicker local turnaround:
+- Testnet / testnet4 `MuhashAttestationActivationHeight`: `5000` → `250`.
+- Testnet / testnet4 `MandatoryPruneDepth`: `7000` → `300`.
+- Testnet / testnet4 `nPruneAfterHeight`: `7000` → `300` (kept aligned with `MandatoryPruneDepth`, same principle as the earlier fix).
+
+Regtest values (`50` / `100` / `100`) and mainnet (`-1` / `197280` / `197280`, all untouched) are unaffected. If these testnet/testnet4 chainparams are ever pointed at the actual public testnet (multiple independent operators, not just local testing), the activation height must be re-verified against the live tip first — a value already passed by the real chain would fork any node still on old software the moment it upgrades.
+
+---
+
 ## Deferred (not part of this pass)
 
 - **Phase 2 (snapshot metadata embedding):** `WriteAutomaticSnapshot()` still always performs a full `HASH_SERIALIZED` pass for the checkpoint snapshot file itself; the accumulator's state is not yet embedded in snapshot metadata for bootstrap nodes to skip a from-scratch rebuild. Not needed for this pass: activation is testnet/regtest-only, at heights far below the checkpoint interval (`MANDATORY_PRUNE_DEPTH`), so no node exercised by this change will reach a checkpoint boundary in the course of testing it.
