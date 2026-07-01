@@ -70,6 +70,78 @@ Regtest values (`50` / `100` / `100`) and mainnet (`-1` / `197280` / `197280`, a
 
 ---
 
+## 2026-07-01 (same day, critical fix: P2P snapshot-bootstrap messages were wire-broken on every network)
+
+**Not part of the MuHash change itself, but found while verifying it end-to-end**, and severe enough to fix immediately per the user's request. Two-node live test: node A mined to height 1100 (`-fastprune`, `MandatoryPruneDepth=100`) and pruned (`pruneheight=865`, matching the user's own independently-reproduced regtest run). Node B connected fresh via real P2P (`-connect`), synced headers to 1100/1100 immediately, but **stayed stuck at `blocks: 0` indefinitely** — the exact symptom the user reported and asked about ("Funktioniert der sync ... nach dem pruning und snapshot wirklich?").
+
+**Root cause**, found with `-debug=net` on both nodes:
+```
+Node B: [net] sending getutxosnapshot (32 bytes) peer=0
+Node A: [net] received: getutxosnaps (32 bytes) peer=0
+Node A: [net] Unknown message type "getutxosnaps" from peer=0
+```
+`NetMsgType::GETUTXOSNAPSHOT` (`src/protocol.h`) was defined as the string `"getutxosnapshot"` — **15 characters**, exceeding `CMessageHeader::MESSAGE_TYPE_SIZE` (12 bytes), a long-standing Bitcoin P2P wire-protocol constant every message type name must fit in (all of Bitcoin's own message names are ≤12 chars: `getheaders`, `sendheaders`, etc.). `NetMsgType::GETSNAPSHOTDATA` (`"getsnapshotdata"`, also 15 chars) had the same problem; `UTXOSNAPSHOT`/`SNAPSHOTDATA` (both exactly 12 chars) were fine.
+
+Two different failure modes depending on transport, both traced in the source:
+- **V2 (BIP324) transport — silent corruption, not just truncation.** `V2Transport::SetMessageToSend` (`src/net.cpp:1504-1506`) allocates a fixed 12-byte slot for the type string and `std::copy`s the full type string into it with **no length check** — for a 15-character name this overflows into the payload's first 3 bytes. The receiver reads back a mangled 12-byte type (`"getutxosnaps"`), fails to match any known handler, and silently drops the message. This is what happened in the live test (peer connected with `transport: v2`).
+- **V1 (legacy) transport — hard crash.** `CMessageHeader::CMessageHeader` (`src/protocol.cpp:10-19`) has `assert(msg_type[i] == 0)` after copying up to `MESSAGE_TYPE_SIZE` bytes — a >12-char message type triggers an **assertion failure**, i.e. any node that ever tried to send `GETUTXOSNAPSHOT`/`GETSNAPSHOTDATA` over a V1 connection would have crashed outright.
+
+Net effect: **the entire P2P UTXO-snapshot bootstrap mechanism (§2.3 of `BITCOIN_CORE_DIFF.md`) has never worked, on any network** (mainnet/testnet/testnet4/regtest — this is a wire-protocol constant, not chainparams-dependent) — a pruned node has had no way to serve a fresh peer past its prune point since this feature was written, and any V1 peer that tried would crash.
+
+**Fix** (`src/protocol.h`): shortened both names to fit the 12-byte limit — `GETUTXOSNAPSHOT`: `"getutxosnapshot"` → `"getutxosnap"` (11 chars), `GETSNAPSHOTDATA`: `"getsnapshotdata"` → `"getsnapdata"` (11 chars). No other code changes needed: all call sites reference the `NetMsgType::` C++ constants, not the raw strings, so this is a self-contained, minimal fix. `UTXOSNAPSHOT`/`SNAPSHOTDATA` left unchanged (already valid).
+
+**Re-verified live with the fix**, same two-node setup (node A pruned past height 865, tip 1100; fresh node B connecting via P2P) — the message now arrived intact, but this uncovered five more, previously entirely untested, bugs in the same P2P snapshot-bootstrap path (§2.3 `BITCOIN_CORE_DIFF.md`). Each was found, fixed, and re-verified live before moving to the next, per the user's "sofort beheben und protokollieren" instruction. All five are below, in the order they were hit.
+
+### Bug 2: `GETUTXOSNAPSHOT` handler used `cs_main`-protected data without holding `cs_main`
+
+After the bug-1 fix, node A crashed processing node B's (now correctly-named) request:
+```
+Assertion failed: lock cs_main not held in ./node/blockstorage.cpp:213
+```
+The `GETUTXOSNAPSHOT` handler in `src/net_processing.cpp` called `m_chainman.m_blockman.LookupBlockIndex(checkpoint_hash)` with no lock held. Fixed by wrapping the lookup in a scoped `LOCK(cs_main)` block, extracting just the two booleans/height needed (`checkpoint_height`, `is_checkpoint`) before releasing the lock — the same pattern already used by other message handlers in the same file (e.g. `GETBLOCKS`).
+
+### Bug 3: `SNAPSHOTDATA` receiver left an `AutoFile` open across a scope its destructor can't tolerate
+
+After the bug-2 fix, node B (the receiver of snapshot chunks) crashed:
+```
+./streams.h:401 AutoFile::~AutoFile(): Assertion 'IsNull()' failed.
+```
+`AutoFile`'s destructor asserts the file was explicitly closed if anything was written to it (`m_was_written`). Of the four `AutoFile` usages in `net_processing.cpp`'s snapshot code, only the one in the `SNAPSHOTDATA` handler (writing a downloaded chunk to the temp file) was missing an explicit `.fclose()` before the object went out of scope and before the subsequent `fs::rename()` of the completed file. Fixed by adding the `.fclose()` call (with a warning log if it fails) right after the write, before checking `AddRange`/renaming.
+
+### Bug 4: `MaybeActivateAutomaticSnapshot` also used `cs_main`-protected data without holding `cs_main`
+
+After the bug-3 fix, node B crashed again with the *same* assertion message as bug 2 (`lock cs_main not held ... blockstorage.cpp:213`), but from a different call site — the plain assertion text doesn't include a backtrace, so this needed `gdb -batch -x cmds.txt ./bin/elektrond` (`run <args>`; `bt`; `thread apply all bt`; `quit`) to identify. The backtrace showed `MaybeActivateAutomaticSnapshot` (`src/init.cpp`), called from a `CScheduler::Repeat` wrapper — i.e. this function runs every 30 seconds for as long as the node is in IBD, not just once at startup as an earlier grep-only read had assumed. It had the same unlocked `LookupBlockIndex` call as bug 2. Fixed the same way: `WITH_LOCK(::cs_main, return chainman.m_blockman.LookupBlockIndex(...))`.
+
+### Bug 5: automatic snapshot activation was not idempotent — retried every 30s, crashing on the second attempt
+
+After the bug-4 fix, node B crashed a third time, differently:
+```
+Fatal LevelDB error: IO error: lock /tmp/node-b/regtest/chainstate_snapshot/LOCK: already held by process
+```
+`MaybeActivateAutomaticSnapshot` runs every 30 seconds while `IsInitialBlockDownload()` is true, which it can remain for a while even *after* a successful activation. The function had no guard against re-activating an already-activated snapshot, so the very next scheduled run tried to open a second LevelDB handle on the same `chainstate_snapshot/` directory the first (still-open) activation already held.
+
+Two fix attempts were tried and **both failed live** before landing on the working one:
+1. Checking `chainman.CurrentChainstate()->m_from_snapshot_blockhash` before attempting activation — rebuilt, retested, crashed identically on the next 30s cycle (the debug.log still showed a second "attempting activation" line).
+2. Checking `chainman.ActiveChain().Tip()`'s height/hash against the snapshot filename — same result, still crashed.
+
+Both approaches relied on introspecting `ChainstateManager`'s current chainstate selection, which (as bug 6 below makes clear in hindsight) was not behaving as expected at this point in the investigation. The working fix instead avoids chainstate introspection entirely: a function-local `static uint256 s_activated_snapshot_hash` (safe because this function has exactly one production call site and is never invoked from unit tests) is checked against the hash parsed out of the snapshot filename (`<height>-<hash>.dat`) before attempting activation, and set immediately after `ActivateSnapshot()` succeeds. Rebuilt, retested — held stable through 3+ scheduler cycles (~180s) with no re-activation attempt and no crash.
+
+### Bug 6: successful activation still left the node reporting `blocks: 0` forever
+
+With bugs 1–5 fixed, node B no longer crashed, and the snapshot activated exactly once — but `getblockchaininfo`/`getblockcount` stayed stuck at `blocks: 0`, `initialblockdownload: true`, `bestblockhash` = genesis, indefinitely, even though the debug.log clearly showed `"[snapshot] Successfully activated snapshot at height 1100"`. This is very likely the actual mechanism behind the user's original bug report (a second GUI peer "stuck, not syncing" after pruning/snapshots) — the message-truncation bug (bug 1) meant that scenario never even got this far before, so this bug was previously unreachable and untested.
+
+First hypothesis (wrong, tried and reverted): that `ActivateSnapshot()` never called `ActivateBestChain()` on the new chainstate, so its tip was never actually moved to the snapshot block. Adding an explicit `chainman.ActivateBestChains()` call after activation was rebuilt and retested — **no change**, still stuck at `blocks: 0`. This ruled out that theory: `PopulateAndValidateSnapshot()` already calls `snapshot_chainstate.m_chain.SetTip(*snapshot_start_block)` directly, so the snapshot chainstate's own tip was correct all along.
+
+**Actual root cause:** `MaybeActivateAutomaticSnapshot` (`src/init.cpp`), after a successful activation, called `chainman.HistoricalChainstate()->SetTargetBlock(nullptr)` to abandon the now-useless old (pre-snapshot) IBD chainstate — background validation can never complete for it since the historical blocks it would need are pruned on every peer. But `ChainstateManager::CurrentChainstate()` (`src/validation.h`) selects the *first* chainstate in `m_chainstates` that has no `m_target_blockhash` — and `m_chainstates` is ordered `[old IBD chainstate, new snapshot chainstate]` (`AddChainstate()` appends the new one to the end). Clearing the IBD chainstate's target left *both* chainstates target-less, so `CurrentChainstate()` — and therefore `ActiveChainstate()`, and therefore every RPC that reports chain height — kept resolving to the old, still-at-genesis IBD chainstate instead of the snapshot chainstate, forever.
+
+Fix: instead of merely clearing the old chainstate's target, delete it outright via `chainman.DeleteChainstate()` — the same cleanup already used a few lines earlier in `ChainstateManager::ActivateSnapshot()` when replacing an old snapshot with a newer one (`src/validation.cpp` ~line 6003). Deleting it removes the ambiguity completely: only the snapshot chainstate remains, so `CurrentChainstate()` resolves to it unambiguously.
+
+This surfaced a second, latent bug in `ChainstateManager::DeleteChainstate()` itself (`src/validation.cpp` ~line 6663): it unconditionally dereferenced `prev_chainstate->m_mempool->size()`, assuming the chainstate being deleted currently owns the mempool. That assumption holds when deleting an old *snapshot* chainstate (which does hold the swapped-in mempool at that point) but not for the old IBD chainstate here, whose mempool was already swapped away to the new snapshot chainstate inside `AddChainstate()` during activation — leaving it `nullptr`. In this Debug build (asserts active), this would have been a null-pointer dereference. Fixed by only performing the mempool hand-off when `prev_chainstate->m_mempool` is non-null; the pre-existing (snapshot-replacement) call site is unaffected since its mempool is always present.
+
+**Final live verification** (all six fixes together): fresh two-node regtest run, node A at height 1100 (pruned to 865), node B connecting cold via real P2P. Node B: synced headers instantly, requested and downloaded the snapshot, activated it in a single attempt (`grep -c "attempting activation" debug.log` → `1`), logged `"[snapshot] Discarded old pre-snapshot chainstate"`, and `getblockchaininfo` correctly reported `"blocks": 1100` with `bestblockhash` identical to node A's tip. No crashes, no warnings, no errors in either node's `debug.log` or stderr across the full test.
+
+---
+
 ## Deferred (not part of this pass)
 
 - **Phase 2 (snapshot metadata embedding):** `WriteAutomaticSnapshot()` still always performs a full `HASH_SERIALIZED` pass for the checkpoint snapshot file itself; the accumulator's state is not yet embedded in snapshot metadata for bootstrap nodes to skip a from-scratch rebuild. Not needed for this pass: activation is testnet/regtest-only, at heights far below the checkpoint interval (`MANDATORY_PRUNE_DEPTH`), so no node exercised by this change will reach a checkpoint boundary in the course of testing it.
