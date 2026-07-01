@@ -1935,6 +1935,37 @@ void Chainstate::InitCoinsCache(size_t cache_size_bytes)
     m_coins_views->InitCache();
 }
 
+void Chainstate::EnsureUTXOMuHashLoaded()
+{
+    AssertLockHeld(::cs_main);
+    if (m_utxo_muhash_loaded) return;
+
+    const uint256 best_block = CoinsDB().GetBestBlock();
+    uint256 loaded_tip_hash;
+    kernel::UTXOMuHashState loaded;
+    if (CoinsDB().ReadUTXOMuHashState(loaded, loaded_tip_hash) && loaded_tip_hash == best_block) {
+        m_utxo_muhash = std::move(loaded);
+        m_utxo_muhash_loaded = true;
+        return;
+    }
+
+    // Cold start: either this is the first time this feature has run on this chainstate,
+    // or the persisted state is stale (e.g. a crash between this write and the coins
+    // batch write). Rebuild with a single full pass over the current UTXO set -- exactly
+    // as expensive as one `gettxoutsetinfo muhash` call, and never repeated afterwards.
+    LogInfo("[muhash] Building UTXO MuHash accumulator from the current UTXO set (one-time)\n");
+    kernel::UTXOMuHashState fresh;
+    CoinsDB().ForEachUnspent([&](const COutPoint& outpoint, const Coin& coin) {
+        fresh.AddCoin(outpoint, coin);
+        return true;
+    });
+    m_utxo_muhash = std::move(fresh);
+    m_utxo_muhash_loaded = true;
+    if (!best_block.IsNull()) {
+        CoinsDB().WriteUTXOMuHashState(m_utxo_muhash, best_block);
+    }
+}
+
 // Lock-free: depends on `m_cached_is_ibd`, which is latched by `UpdateIBDStatus()`.
 bool ChainstateManager::IsInitialBlockDownload() const noexcept
 {
@@ -2180,6 +2211,10 @@ DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIn
     AssertLockHeld(::cs_main);
     bool fClean = true;
 
+    // Elektron Net: keep the incremental UTXO MuHash accumulator in lockstep with the
+    // real UTXO set on reorg too; see the matching commit step in ConnectBlock.
+    EnsureUTXOMuHashLoaded();
+
     CBlockUndo blockUndo;
     if (!m_blockman.ReadBlockUndo(blockUndo, *pindex)) {
         LogError("DisconnectBlock(): failure reading undo data\n");
@@ -2219,6 +2254,7 @@ DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIn
                         fClean = false; // transaction output mismatch
                     }
                 }
+                if (is_spent) m_utxo_muhash.RemoveCoin(out, coin);
             }
         }
 
@@ -2235,6 +2271,10 @@ DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIn
                 int res = ApplyTxInUndo(std::move(txundo.vprevout[j]), view, out);
                 if (res == DISCONNECT_FAILED) return DISCONNECT_FAILED;
                 fClean = fClean && res != DISCONNECT_UNCLEAN;
+                // Re-read from view rather than trusting the (possibly height-adjusted,
+                // see ApplyTxInUndo) undo record directly, so this always matches exactly
+                // what was actually restored to the UTXO set.
+                m_utxo_muhash.AddCoin(out, view.AccessCoin(out));
             }
             // At this point, all of txundo.vprevout should have been moved out.
         }
@@ -2318,21 +2358,53 @@ static bool IsCoinbaseUTXOAttestationOutput(const CTxOut& out, int nHeight)
     return attestation_height == nHeight && data.size() == 32;
 }
 
-std::optional<uint256> ComputeBlockUTXOAttestationHash(const CBlock& block, int nHeight, CCoinsView& base_view, node::BlockManager& blockman)
+//! Elektron Net: strip the attestation OP_RETURN (if any) from a coinbase, so its txid
+//! (and the outpoints of its other outputs) match the template used during mining --
+//! the attestation is embedded only after the hash it commits to has been computed.
+static CTransactionRef StripAttestationOutput(const CTransaction& tx, int nHeight)
 {
+    if (!tx.IsCoinBase()) return nullptr;
+    CMutableTransaction mtx(tx);
+    mtx.vout.erase(
+        std::remove_if(mtx.vout.begin(), mtx.vout.end(),
+            [&](const CTxOut& out) { return IsCoinbaseUTXOAttestationOutput(out, nHeight); }),
+        mtx.vout.end());
+    return MakeTransactionRef(std::move(mtx));
+}
+
+std::optional<uint256> ComputeBlockUTXOAttestationHash(const CBlock& block, int nHeight, CCoinsView& base_view, node::BlockManager& blockman,
+                                                         const Consensus::Params& params, const kernel::UTXOMuHashState* tip_muhash)
+{
+    if (tip_muhash && IsMuhashAttestationActive(nHeight, params)) {
+        // Incremental path: clone the (cheap, few-hundred-byte) tip accumulator and apply
+        // only this block's coin changes, instead of rescanning the whole UTXO set.
+        // base_view is read-only here -- used only for point lookups of spent coins, via
+        // a throwaway cache that is never flushed.
+        kernel::UTXOMuHashState candidate{*tip_muhash};
+        CCoinsViewCache lookup_view{&base_view};
+        for (const auto& tx : block.vtx) {
+            const CTransactionRef stripped{StripAttestationOutput(*tx, nHeight)};
+            const CTransaction& cur_tx = stripped ? *stripped : *tx;
+            if (!cur_tx.IsCoinBase()) {
+                for (const CTxIn& txin : cur_tx.vin) {
+                    const Coin& coin = lookup_view.AccessCoin(txin.prevout);
+                    if (coin.IsSpent()) return std::nullopt; // should not happen; inputs were already checked
+                    candidate.RemoveCoin(txin.prevout, coin);
+                }
+            }
+            for (size_t o = 0; o < cur_tx.vout.size(); ++o) {
+                if (cur_tx.vout[o].scriptPubKey.IsUnspendable()) continue;
+                candidate.AddCoin(COutPoint(cur_tx.GetHash(), o), Coin(cur_tx.vout[o], nHeight, cur_tx.IsCoinBase()));
+            }
+        }
+        return candidate.GetHash();
+    }
+
     CCoinsViewCache view{&base_view};
     CTxUndo undo_dummy;
     for (const auto& tx : block.vtx) {
-        if (tx->IsCoinBase()) {
-            // Attestation OP_RETURN is embedded after the hash is computed; exclude it so the
-            // coinbase txid (and reward outpoint) match the template used during mining.
-            CMutableTransaction mtx(*tx);
-            mtx.vout.erase(
-                std::remove_if(mtx.vout.begin(), mtx.vout.end(),
-                    [&](const CTxOut& out) { return IsCoinbaseUTXOAttestationOutput(out, nHeight); }),
-                mtx.vout.end());
-            const CTransactionRef mtx_ref{MakeTransactionRef(std::move(mtx))};
-            UpdateCoins(*mtx_ref, view, undo_dummy, nHeight);
+        if (const CTransactionRef stripped{StripAttestationOutput(*tx, nHeight)}) {
+            UpdateCoins(*stripped, view, undo_dummy, nHeight);
         } else {
             UpdateCoins(*tx, view, undo_dummy, nHeight);
         }
@@ -2389,7 +2461,8 @@ std::optional<uint256> ExtractCoinbaseUTXOAttestation(const CTransaction& coinba
  * computed after connecting the block. Full snapshot files are written to disk only
  * at checkpoint heights (every MANDATORY_PRUNE_DEPTH blocks).
  */
-bool ValidateUTXOCheckpoint(const CBlock& block, int nHeight, CCoinsView& view, node::BlockManager& blockman, BlockValidationState& state)
+bool ValidateUTXOCheckpoint(const CBlock& block, int nHeight, CCoinsView& view, node::BlockManager& blockman, BlockValidationState& state,
+                             const Consensus::Params& params, const kernel::UTXOMuHashState* tip_muhash)
 {
     if (nHeight <= 0) {
         return true; // Genesis has no attestation
@@ -2409,7 +2482,7 @@ bool ValidateUTXOCheckpoint(const CBlock& block, int nHeight, CCoinsView& view, 
     if (auto* cache = dynamic_cast<CCoinsViewCache*>(&view)) {
         base_view = &cache->GetBackend();
     }
-    const auto computed_hash = ComputeBlockUTXOAttestationHash(block, nHeight, *base_view, blockman);
+    const auto computed_hash = ComputeBlockUTXOAttestationHash(block, nHeight, *base_view, blockman, params, tip_muhash);
     if (!computed_hash) {
         state.Invalid(BlockValidationResult::BLOCK_CONSENSUS, "bad-utxo-attestation-compute");
         return false;
@@ -2420,7 +2493,7 @@ bool ValidateUTXOCheckpoint(const CBlock& block, int nHeight, CCoinsView& view, 
                 nHeight, attestation_hash->ToString(), computed_hash->ToString()));
         return false;
     }
-    if (nHeight % MANDATORY_PRUNE_DEPTH == 0) {
+    if (nHeight % static_cast<int>(params.MandatoryPruneDepth) == 0) {
         LogInfo("Validated UTXO checkpoint at height %d, hash=%s\n",
                 nHeight, attestation_hash->ToString());
     } else {
@@ -2436,7 +2509,8 @@ bool ValidateUTXOCheckpoint(const CBlock& block, int nHeight, CCoinsView& view, 
  */
 void WriteAutomaticSnapshot(Chainstate& chainstate, int nHeight, const CBlockIndex* pindex, bool force)
 {
-    if (!force && (nHeight <= 0 || nHeight % MANDATORY_PRUNE_DEPTH != 0)) {
+    const unsigned int checkpoint_interval = chainstate.m_chainman.GetConsensus().MandatoryPruneDepth;
+    if (!force && (nHeight <= 0 || nHeight % static_cast<int>(checkpoint_interval) != 0)) {
         return; // Not a checkpoint block
     }
 
@@ -2590,6 +2664,10 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
 
     const auto time_start{SteadyClock::now()};
     const CChainParams& params{m_chainman.GetParams()};
+
+    // Elektron Net: ensure the incremental UTXO MuHash accumulator reflects the state
+    // *before* this block, regardless of activation height (see EnsureUTXOMuHashLoaded).
+    EnsureUTXOMuHashLoaded();
 
     // Check it again in case a previous version let a bad block in
     // NOTE: We don't currently (re-)invoke ContextualCheckBlock() or
@@ -2918,7 +2996,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
              Ticks<MillisecondsDouble>(m_chainman.time_verify) / m_chainman.num_blocks_total);
 
     // Elektron Net: validate UTXO attestation in every block (snapshot files only at checkpoints)
-    if (!ValidateUTXOCheckpoint(block, pindex->nHeight, view, m_blockman, state)) {
+    if (!ValidateUTXOCheckpoint(block, pindex->nHeight, view, m_blockman, state, params.GetConsensus(), &m_utxo_muhash)) {
         return false;
     }
 
@@ -2932,6 +3010,28 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
 
     if (!m_blockman.WriteBlockUndo(blockundo, state, *pindex)) {
         return false;
+    }
+
+    // Elektron Net: commit this block's coin changes to the persistent UTXO MuHash
+    // accumulator. Done here (post fJustCheck, post WriteBlockUndo) using the
+    // already-validated block + blockundo, so speculative/dry-run ConnectBlock calls
+    // (mining, TestBlockValidity) never mutate it, and a disk-write failure above
+    // leaves it untouched too -- only blocks that are actually being connected do.
+    // Runs unconditionally (not just post-activation) so the accumulator is already
+    // warmed up by the time MuhashAttestationActivationHeight is reached; see
+    // EnsureUTXOMuHashLoaded.
+    for (size_t i = 0; i < block.vtx.size(); ++i) {
+        const CTransaction& tx = *block.vtx[i];
+        if (!tx.IsCoinBase()) {
+            const CTxUndo& txundo = blockundo.vtxundo[i - 1];
+            for (size_t j = 0; j < tx.vin.size(); ++j) {
+                m_utxo_muhash.RemoveCoin(tx.vin[j].prevout, txundo.vprevout[j]);
+            }
+        }
+        for (size_t o = 0; o < tx.vout.size(); ++o) {
+            if (tx.vout[o].scriptPubKey.IsUnspendable()) continue;
+            m_utxo_muhash.AddCoin(COutPoint(tx.GetHash(), o), Coin(tx.vout[o], pindex->nHeight, tx.IsCoinBase()));
+        }
     }
 
     const auto time_5{SteadyClock::now()};
@@ -3110,6 +3210,13 @@ bool Chainstate::FlushStateToDisk(
                 // Flush the chainstate (which may refer to block index entries).
                 empty_cache ? CoinsTip().Flush() : CoinsTip().Sync();
                 full_flush_completed = true;
+                // Elektron Net: persist the UTXO MuHash accumulator alongside the coins DB.
+                // Guarded on m_utxo_muhash_loaded: if it was never loaded/built (this
+                // chainstate never ran ConnectBlock/DisconnectBlock), there is nothing
+                // meaningful to persist yet.
+                if (m_utxo_muhash_loaded) {
+                    CoinsDB().WriteUTXOMuHashState(m_utxo_muhash, CoinsTip().GetBestBlock());
+                }
                 TRACEPOINT(utxocache, flush,
                     int64_t{Ticks<std::chrono::microseconds>(NodeClock::now() - nNow)},
                     (uint32_t)mode,
@@ -6682,9 +6789,9 @@ std::pair<int, int> Chainstate::GetPruneRange(int last_height_can_prune) const
     }
 
     int max_prune = std::max<int>(
-        0, m_chain.Height() - static_cast<int>(MANDATORY_PRUNE_DEPTH));
+        0, m_chain.Height() - static_cast<int>(m_chainman.GetConsensus().MandatoryPruneDepth));
 
-    // last block to prune is the lesser of (caller-specified height, MANDATORY_PRUNE_DEPTH from the tip)
+    // last block to prune is the lesser of (caller-specified height, MandatoryPruneDepth from the tip)
     //
     // While you might be tempted to prune the background chainstate more
     // aggressively (i.e. fewer MIN_BLOCKS_TO_KEEP), this won't work with index

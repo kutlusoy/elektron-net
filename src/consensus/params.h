@@ -121,6 +121,16 @@ struct Params {
     bool enforce_BIP94;
     bool fPowNoRetargeting;
     int MinDifficultyActivationHeight = -1;
+    /** Block height at which per-block UTXO attestation switches from a full
+     * HASH_SERIALIZED rescan to the incrementally-maintained MuHash
+     * accumulator. -1 = never active (default; used on mainnet for now). */
+    int MuhashAttestationActivationHeight = -1;
+    /** Elektron Net: interval (in blocks) between automatic UTXO checkpoint
+     * snapshots (WriteAutomaticSnapshot) and the P2P snapshot-bootstrap
+     * threshold (see src/validation.h's MANDATORY_PRUNE_DEPTH, the mainnet
+     * default this defaults to). Lower on testnet/regtest so the checkpoint
+     * cycle can actually be observed without mining 197,280 blocks. */
+    unsigned int MandatoryPruneDepth = 197280;
     int64_t nPowTargetSpacing;
     int64_t nPowTargetTimespan;
     std::chrono::seconds PowTargetSpacing() const

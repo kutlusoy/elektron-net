@@ -205,7 +205,8 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock()
     // Full snapshot files are written to disk only at checkpoint heights (every MANDATORY_PRUNE_DEPTH).
     if (nHeight > 0) {
         // Must match ConnectBlock / TestBlockValidity: they layer on CoinsTip(), not CoinsDB().
-        const auto hash = ComputeBlockUTXOAttestationHash(*pblock, nHeight, m_chainstate.CoinsTip(), m_chainstate.m_chainman.m_blockman);
+        const auto hash = ComputeBlockUTXOAttestationHash(*pblock, nHeight, m_chainstate.CoinsTip(), m_chainstate.m_chainman.m_blockman,
+                                                            chainparams.GetConsensus(), &m_chainstate.UTXOMuHash());
         if (!hash) {
             LogError("CreateNewBlock(): failed to compute UTXO attestation at height %d — aborting template\n", nHeight);
             return nullptr;
@@ -218,7 +219,7 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock()
         tx.vout.push_back(out);
         pblock->vtx[0] = MakeTransactionRef(std::move(tx));
         coinbase_tx.required_outputs.push_back(out);
-        if (nHeight % MANDATORY_PRUNE_DEPTH == 0) {
+        if (nHeight % static_cast<int>(chainparams.GetConsensus().MandatoryPruneDepth) == 0) {
             LogInfo("CreateNewBlock(): added UTXO checkpoint at height %d, hash=%s\n",
                     nHeight, hash->ToString());
         } else {

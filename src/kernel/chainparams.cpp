@@ -95,6 +95,11 @@ public:
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = false;
         consensus.MinDifficultyActivationHeight = 1; // Stoic Awakening active from block 1 (v4.0 genesis restart)
+        // MuHash UTXO attestation (doc-elektron/fix-report-utxo-attestation-scalability.md):
+        // deliberately left disabled (-1) on mainnet. Only testnet/testnet4/regtest carry a
+        // real activation height while this is being exercised; see doc-elektron/CHANGELOG-muhash-attestation.md.
+        consensus.MuhashAttestationActivationHeight = -1;
+        consensus.MandatoryPruneDepth = 197280; // 137 days at 60s blocks (mainnet default, explicit for clarity)
         consensus.enforce_BIP94 = false;
         consensus.fPowNoRetargeting = false;
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].bit = 28;
@@ -187,6 +192,13 @@ public:
         consensus.nPowTargetTimespan = 2016 * 60; // 1.4 days
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = true;
+        // MuHash UTXO attestation test activation (doc-elektron/fix-report-utxo-attestation-scalability.md,
+        // doc-elektron/CHANGELOG-muhash-attestation.md). NOT active on mainnet. Testnet is still at
+        // height ~0 (2026-07-01), so 5000 leaves a safe testing window without waiting too long.
+        consensus.MuhashAttestationActivationHeight = 5000;
+        // Lower checkpoint interval so the automatic UTXO snapshot cycle can actually be
+        // observed on testnet without waiting for 197,280 blocks (mainnet default).
+        consensus.MandatoryPruneDepth = 7000;
         consensus.enforce_BIP94 = false;
         consensus.fPowNoRetargeting = false;
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].bit = 28;
@@ -266,6 +278,9 @@ public:
         consensus.nPowTargetTimespan = 2016 * 60; // 1.4 days
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = true;
+        // See CTestNetParams::MuhashAttestationActivationHeight / MandatoryPruneDepth above -- same values/caveats apply.
+        consensus.MuhashAttestationActivationHeight = 5000;
+        consensus.MandatoryPruneDepth = 7000;
         consensus.enforce_BIP94 = true;
         consensus.fPowNoRetargeting = false;
 
@@ -459,6 +474,12 @@ public:
         consensus.nPowTargetTimespan = 2016 * 60; // 1.4 days
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = true;
+        // MuHash UTXO attestation: fixed low activation height so the switchover is
+        // exercised in every regtest run / functional test (see fix-report §5).
+        consensus.MuhashAttestationActivationHeight = 50;
+        // Checkpoint interval likewise fixed low so a full snapshot cycle is reachable
+        // in a manual/local regtest session without mining hundreds of thousands of blocks.
+        consensus.MandatoryPruneDepth = 100;
         consensus.enforce_BIP94 = opts.enforce_bip94;
         consensus.fPowNoRetargeting = true;
 

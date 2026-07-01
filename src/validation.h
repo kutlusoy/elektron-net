@@ -75,7 +75,12 @@ class SignalInterrupt;
 
 /** Block files containing a block-height within MIN_BLOCKS_TO_KEEP of ActiveChain().Tip() will not be pruned. */
 static const unsigned int MIN_BLOCKS_TO_KEEP = 2880; // ~2 days at 60s block time
-/** Mandatory prune depth: 137 days (197,280 blocks at 60s). */
+/** Mandatory prune depth: 137 days (197,280 blocks at 60s) on mainnet.
+ *  This is the mainnet value and the default Consensus::Params::MandatoryPruneDepth
+ *  is initialized to; testnet/testnet4/regtest override that field to a much lower
+ *  value (see src/kernel/chainparams.cpp) so the checkpoint cycle is actually
+ *  observable there. Consensus/checkpoint code should read
+ *  Consensus::Params::MandatoryPruneDepth, not this constant, except where noted. */
 static const unsigned int MANDATORY_PRUNE_DEPTH = 197280;
 static const signed int DEFAULT_CHECKBLOCKS = 6;
 static constexpr int DEFAULT_CHECKLEVEL{3};
@@ -99,13 +104,30 @@ static constexpr int MAX_SCRIPTCHECK_THREADS{15};
 class CBlock;
 class CCoinsView;
 class BlockValidationState;
+
+/** Elektron Net: true once per-block UTXO attestation should use the incrementally
+ *  maintained MuHash accumulator (see kernel::UTXOMuHashState) instead of a full
+ *  HASH_SERIALIZED rescan. Always false while MuhashAttestationActivationHeight is -1
+ *  (the default; left disabled on mainnet -- see doc-elektron/CHANGELOG-muhash-attestation.md). */
+inline bool IsMuhashAttestationActive(int nHeight, const Consensus::Params& params)
+{
+    return params.MuhashAttestationActivationHeight >= 0 && nHeight >= params.MuhashAttestationActivationHeight;
+}
+
 /** Compute the UTXO attestation hash after connecting all transactions in a block.
- *  Coinbase attestation OP_RETURN outputs are excluded (hash is committed before they are added). */
-/** @param base_view Must be the active chain UTXO view (e.g. CoinsTip()), not the raw DB. */
-std::optional<uint256> ComputeBlockUTXOAttestationHash(const CBlock& block, int nHeight, CCoinsView& base_view, node::BlockManager& blockman);
+ *  Coinbase attestation OP_RETURN outputs are excluded (hash is committed before they are added).
+ *  @param base_view Must be the active chain UTXO view (e.g. CoinsTip()), not the raw DB.
+ *  @param params Consensus parameters (activation height gate).
+ *  @param tip_muhash Current UTXO MuHash accumulator representing base_view's state, or
+ *         nullptr. Once activation height is reached and this is non-null, the hash is
+ *         computed by cloning it (cheap) and applying only this block's coin changes,
+ *         instead of a full rescan of the UTXO set. */
+std::optional<uint256> ComputeBlockUTXOAttestationHash(const CBlock& block, int nHeight, CCoinsView& base_view, node::BlockManager& blockman,
+                                                         const Consensus::Params& params, const kernel::UTXOMuHashState* tip_muhash);
 /** Parse OP_RETURN UTXO attestation from a coinbase at the expected height. */
 std::optional<uint256> ExtractCoinbaseUTXOAttestation(const CTransaction& coinbase, int nHeight);
-bool ValidateUTXOCheckpoint(const CBlock& block, int nHeight, CCoinsView& view, node::BlockManager& blockman, BlockValidationState& state);
+bool ValidateUTXOCheckpoint(const CBlock& block, int nHeight, CCoinsView& view, node::BlockManager& blockman, BlockValidationState& state,
+                             const Consensus::Params& params, const kernel::UTXOMuHashState* tip_muhash);
 
 /** Elektron Net: automatically write a UTXO snapshot to disk after a checkpoint block
  *  is successfully connected. This snapshot can be used by new nodes for bootstrap.
@@ -595,6 +617,14 @@ protected:
 
     std::optional<const char*> m_last_script_check_reason_logged GUARDED_BY(::cs_main){};
 
+    //! Elektron Net: backing storage for UTXOMuHash(); see there.
+    kernel::UTXOMuHashState m_utxo_muhash GUARDED_BY(::cs_main);
+    bool m_utxo_muhash_loaded GUARDED_BY(::cs_main){false};
+    //! Loads m_utxo_muhash from disk on first use, or rebuilds it with a one-time full
+    //! pass over the current UTXO set if no (or a stale) persisted state is found -- e.g.
+    //! the first time a node runs this feature, or after a crash. See txdb.h.
+    void EnsureUTXOMuHashLoaded() EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+
 public:
     //! Reference to a BlockManager instance which itself is shared across all
     //! Chainstate instances.
@@ -718,6 +748,18 @@ public:
     {
         AssertLockHeld(::cs_main);
         return Assert(m_coins_views)->m_dbview;
+    }
+
+    //! Elektron Net: incrementally-maintained UTXO MuHash accumulator, representing the
+    //! same UTXO set as CoinsTip()/CoinsDB() at the chain's current tip. Loaded lazily
+    //! (see EnsureUTXOMuHashLoaded) and kept up to date by ConnectBlock/DisconnectBlock
+    //! regardless of MuhashAttestationActivationHeight, so it is already warmed up by the
+    //! time the activation height is reached. See kernel/utxo_muhash.h.
+    const kernel::UTXOMuHashState& UTXOMuHash() EXCLUSIVE_LOCKS_REQUIRED(::cs_main)
+    {
+        AssertLockHeld(::cs_main);
+        EnsureUTXOMuHashLoaded();
+        return m_utxo_muhash;
     }
 
     //! @returns A pointer to the mempool.

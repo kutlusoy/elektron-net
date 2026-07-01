@@ -24,6 +24,9 @@
 static constexpr uint8_t DB_COIN{'C'};
 static constexpr uint8_t DB_BEST_BLOCK{'B'};
 static constexpr uint8_t DB_HEAD_BLOCKS{'H'};
+// Elektron Net: incrementally-maintained UTXO MuHash accumulator state, stored
+// together with the block hash it corresponds to (see WriteUTXOMuHashState).
+static constexpr uint8_t DB_UTXO_MUHASH{'U'};
 // Keys used in previous version that might still be found in the DB:
 static constexpr uint8_t DB_COINS{'c'};
 
@@ -102,6 +105,21 @@ std::vector<uint256> CCoinsViewDB::GetHeadBlocks() const {
         return std::vector<uint256>();
     }
     return vhashHeadBlocks;
+}
+
+bool CCoinsViewDB::WriteUTXOMuHashState(const kernel::UTXOMuHashState& state, const uint256& tip_hash)
+{
+    m_db->Write(DB_UTXO_MUHASH, std::make_pair(tip_hash, state));
+    return true;
+}
+
+bool CCoinsViewDB::ReadUTXOMuHashState(kernel::UTXOMuHashState& state, uint256& tip_hash) const
+{
+    std::pair<uint256, kernel::UTXOMuHashState> entry;
+    if (!m_db->Read(DB_UTXO_MUHASH, entry)) return false;
+    tip_hash = entry.first;
+    state = entry.second;
+    return true;
 }
 
 void CCoinsViewDB::BatchWrite(CoinsViewCacheCursor& cursor, const uint256& block_hash)
