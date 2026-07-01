@@ -267,8 +267,15 @@ inline constexpr const char* SENDTXRCNCL{"sendtxrcncl"};
 /**
  * Elektron Net: request a UTXO snapshot from a peer.
  * The payload is a uint256 block hash of the checkpoint block.
+ * NOTE: message type strings are wire-limited to CMessageHeader::MESSAGE_TYPE_SIZE
+ * (12 bytes) -- "getutxosnapshot" (15 chars) previously overflowed that, and got
+ * silently mangled by V2Transport::SetMessageToSend (src/net.cpp), which copies
+ * the type string into a fixed 12-byte field without a length check. The
+ * receiving peer saw a truncated/corrupted "getutxosnaps" and dropped it as an
+ * unknown message type, so snapshot-bootstrap sync never worked at all. See
+ * doc-elektron/CHANGELOG-muhash-attestation.md for the diagnosis.
  */
-inline constexpr const char* GETUTXOSNAPSHOT{"getutxosnapshot"};
+inline constexpr const char* GETUTXOSNAPSHOT{"getutxosnap"};
 /**
  * Elektron Net: response containing UTXO snapshot metadata.
  * The payload is: int height, uint256 blockhash, uint256 utxo_hash, uint64_t file_size.
@@ -277,8 +284,9 @@ inline constexpr const char* UTXOSNAPSHOT{"utxosnapshot"};
 /**
  * Elektron Net: request a chunk of snapshot data from a peer.
  * The payload is: uint256 blockhash, uint64_t offset, uint32_t length.
+ * See the MESSAGE_TYPE_SIZE note on GETUTXOSNAPSHOT above -- same bug, same fix.
  */
-inline constexpr const char* GETSNAPSHOTDATA{"getsnapshotdata"};
+inline constexpr const char* GETSNAPSHOTDATA{"getsnapdata"};
 /**
  * Elektron Net: response containing a chunk of snapshot data.
  * The payload is: uint256 blockhash, uint64_t offset, vector<uint8_t> data.

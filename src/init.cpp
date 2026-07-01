@@ -1460,6 +1460,22 @@ static void UpdateLocalSnapshotServices(const fs::path& datadir)
  */
 static void MaybeActivateAutomaticSnapshot(NodeContext& node)
 {
+    // Elektron Net: idempotency guard. This function runs every 30s (see
+    // SNAPSHOT_ACTIVATION_INTERVAL below) as long as chainman.IsInitialBlockDownload()
+    // stays true, which it can for a while even after a successful activation. Two
+    // different in-memory checks (chainman.CurrentChainstate()'s
+    // m_from_snapshot_blockhash, and chainman.ActiveChain().Tip()) were both tried
+    // and BOTH observed live to still read as "not yet activated" on the very next
+    // scheduled call after a successful activation -- so re-activation was attempted
+    // a second time, which crashes: ActivateSnapshot() opens a fresh LevelDB handle
+    // on chainstate_snapshot/, colliding with the LOCK file the first (still-open)
+    // activation already holds. This function is only ever called from this one
+    // production code path (never from tests), so a function-local static tracking
+    // the exact checkpoint hash already activated is a safe, direct, and reliable
+    // guard that does not depend on introspecting ChainstateManager's chainstate
+    // selection. See doc-elektron/CHANGELOG-muhash-attestation.md for the live repro.
+    static uint256 s_activated_snapshot_hash;
+
     if (!node.chainman) return;
     ChainstateManager& chainman = *node.chainman;
 
@@ -1495,6 +1511,19 @@ static void MaybeActivateAutomaticSnapshot(NodeContext& node)
         }
     }
     if (!snapshot_path) return;
+
+    uint256 snapshot_hash;
+    {
+        const std::string fname = snapshot_path->filename().string();
+        const size_t dash_pos = fname.find('-');
+        if (dash_pos == std::string::npos) return;
+        auto parsed = uint256::FromHex(fname.substr(dash_pos + 1, 64));
+        if (!parsed) return;
+        snapshot_hash = *parsed;
+    }
+    if (snapshot_hash == s_activated_snapshot_hash) {
+        return; // already activated this exact checkpoint (see guard comment above)
+    }
 
     LogInfo("[snapshot] Found automatic snapshot file: %s, attempting activation...\n",
             fs::PathToString(*snapshot_path));
@@ -1563,7 +1592,13 @@ static void MaybeActivateAutomaticSnapshot(NodeContext& node)
         return;
     }
 
-    const CBlockIndex* checkpoint_index = chainman.m_blockman.LookupBlockIndex(metadata.m_base_blockhash);
+    // LookupBlockIndex() requires cs_main; this call was previously unlocked (the
+    // LOCK(::cs_main) scope above at line ~1526 had already been released by this
+    // point), which asserts and crashes the process -- see
+    // doc-elektron/CHANGELOG-muhash-attestation.md for the live-tested repro. This
+    // runs periodically (every 30s, see SNAPSHOT_ACTIVATION_INTERVAL below), so it
+    // reliably crashed any node with a pending snapshot download/activation.
+    const CBlockIndex* checkpoint_index = WITH_LOCK(::cs_main, return chainman.m_blockman.LookupBlockIndex(metadata.m_base_blockhash));
     if (checkpoint_index && checkpoint_index->nHeight > 0) {
         CBlock checkpoint_block;
         if (chainman.m_blockman.ReadBlock(checkpoint_block, *checkpoint_index)) {
@@ -1598,6 +1633,8 @@ static void MaybeActivateAutomaticSnapshot(NodeContext& node)
         return;
     }
 
+    s_activated_snapshot_hash = snapshot_hash;
+
     LogInfo("[snapshot] Successfully activated snapshot at height %d, hash=%s\n",
             (*activation_result)->nHeight, (*activation_result)->GetBlockHash().ToString());
 
@@ -1618,16 +1655,34 @@ static void MaybeActivateAutomaticSnapshot(NodeContext& node)
     // Advertise that we now have a snapshot available for peers.
     UpdateLocalSnapshotServices(chainman.m_options.datadir);
 
-    // Elektron Net: disable background validation for automatic snapshots.
+    // Elektron Net: discard the old (pre-snapshot) chainstate for automatic snapshots.
     // In a fully-pruned network, the historical blocks needed for background
-    // validation are unavailable on all peers. The background chainstate would
-    // stall forever trying to download pruned blocks. Clearing the target
-    // prevents this waste of CPU, memory, and bandwidth.
+    // validation are unavailable on all peers, so that chainstate can never catch up --
+    // it must be abandoned. The previous approach called SetTargetBlock(nullptr) on it
+    // to just stop its background-validation attempts, but that broke
+    // ChainstateManager::CurrentChainstate(): that function picks the *first*
+    // chainstate in m_chainstates with no m_target_blockhash, and m_chainstates is
+    // ordered with the old chainstate before the new snapshot chainstate (see
+    // AddChainstate()). Once the old chainstate's target was cleared, BOTH it and the
+    // snapshot chainstate had no target, so CurrentChainstate() kept resolving to the
+    // old (still-genesis-only) chainstate instead of the snapshot -- live-observed:
+    // debug.log showed "[snapshot] Successfully activated..." but getblockchaininfo
+    // stayed stuck at "blocks": 0 / initialblockdownload: true forever afterwards,
+    // even though the snapshot chainstate itself was correctly at height 1100
+    // internally. Deleting the old chainstate outright (matching the existing
+    // "replace an existing snapshot chainstate" cleanup a few dozen lines up in
+    // ChainstateManager::ActivateSnapshot()) removes the ambiguity entirely: only the
+    // snapshot chainstate remains, so CurrentChainstate()/ActiveChainstate() resolve to
+    // it unambiguously.
     {
         LOCK(::cs_main);
-        if (Chainstate* validated_cs = chainman.HistoricalChainstate()) {
-            validated_cs->SetTargetBlock(nullptr);
-            LogInfo("[snapshot] Disabled background validation for automatic snapshot.\n");
+        if (Chainstate* historical_cs = chainman.HistoricalChainstate()) {
+            historical_cs->ResetCoinsViews();
+            if (chainman.DeleteChainstate(*historical_cs)) {
+                LogInfo("[snapshot] Discarded old pre-snapshot chainstate (background validation is not possible on a pruned network).\n");
+            } else {
+                LogWarning("[snapshot] Failed to discard old pre-snapshot chainstate.\n");
+            }
         }
     }
 

@@ -5248,9 +5248,21 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
         vRecv >> checkpoint_hash;
         LogDebug(BCLog::NET, "Received getutxosnapshot for %s from peer=%d\n",
                  checkpoint_hash.ToString(), pfrom.GetId());
-        const CBlockIndex* checkpoint_index = m_chainman.m_blockman.LookupBlockIndex(checkpoint_hash);
-        if (checkpoint_index && checkpoint_index->nHeight > 0 &&
-            checkpoint_index->nHeight % static_cast<int>(m_chainman.GetConsensus().MandatoryPruneDepth) == 0) {
+        // LookupBlockIndex() requires cs_main; this handler previously called it
+        // unlocked, which asserts and crashes the process (see
+        // doc-elektron/CHANGELOG-muhash-attestation.md for the live-tested repro).
+        int checkpoint_height{0};
+        bool is_checkpoint{false};
+        {
+            LOCK(cs_main);
+            const CBlockIndex* checkpoint_index = m_chainman.m_blockman.LookupBlockIndex(checkpoint_hash);
+            if (checkpoint_index && checkpoint_index->nHeight > 0 &&
+                checkpoint_index->nHeight % static_cast<int>(m_chainman.GetConsensus().MandatoryPruneDepth) == 0) {
+                checkpoint_height = checkpoint_index->nHeight;
+                is_checkpoint = true;
+            }
+        }
+        if (is_checkpoint) {
             // Only advertise if we actually have the snapshot file
             auto maybe_path = FindSnapshotFile(checkpoint_hash);
             if (maybe_path) {
@@ -5286,9 +5298,9 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
                 }
 
                 MakeAndPushMessage(pfrom, NetMsgType::UTXOSNAPSHOT,
-                                   checkpoint_index->nHeight, checkpoint_hash, utxo_hash, file_size);
+                                   checkpoint_height, checkpoint_hash, utxo_hash, file_size);
                 LogDebug(BCLog::NET, "Sent utxosnapshot for height %d (size=%d) to peer=%d\n",
-                         checkpoint_index->nHeight, file_size, pfrom.GetId());
+                         checkpoint_height, file_size, pfrom.GetId());
             }
         }
         return;
@@ -5406,6 +5418,14 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
                     AutoFile afile{file};
                     afile.seek(offset, SEEK_SET);
                     afile.write(std::span{reinterpret_cast<const std::byte*>(data.data()), data.size()});
+                    // AutoFile's destructor asserts the handle was already closed (see
+                    // streams.h); leaving this open crashed the process right as the
+                    // download completed, immediately below the fs::rename() call --
+                    // see doc-elektron/CHANGELOG-muhash-attestation.md for the live repro.
+                    if (afile.fclose() != 0) {
+                        LogWarning("[snapshot] Failed to close snapshot chunk file %s\n",
+                                   fs::PathToString(it->second.temp_path));
+                    }
                     it->second.last_progress_time = std::chrono::steady_clock::now();
                     if (it->second.AddRange(offset, data.size())) {
                         const fs::path hash_path = it->second.final_path + ".hash";

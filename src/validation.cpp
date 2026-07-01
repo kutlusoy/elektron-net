@@ -6671,10 +6671,20 @@ bool ChainstateManager::DeleteChainstate(Chainstate& chainstate)
         return false;
     }
     std::unique_ptr<Chainstate> prev_chainstate{Assert(RemoveChainstate(chainstate))};
-    Chainstate& curr_chainstate{CurrentChainstate()};
-    assert(prev_chainstate->m_mempool->size() == 0);
-    assert(!curr_chainstate.m_mempool);
-    std::swap(curr_chainstate.m_mempool, prev_chainstate->m_mempool);
+    // Elektron Net: only the chainstate currently holding the mempool needs to hand it
+    // off to whatever chainstate becomes current after removal. A chainstate whose
+    // mempool was already swapped away earlier (e.g. the old IBD chainstate, right
+    // after ChainstateManager::AddChainstate() moved its mempool to a newly-activated
+    // snapshot chainstate) has m_mempool == nullptr here, and there is nothing to hand
+    // off -- unconditionally dereferencing it, as the original upstream code did, would
+    // segfault (live-observed when deleting the abandoned post-snapshot IBD chainstate
+    // in MaybeActivateAutomaticSnapshot()).
+    if (prev_chainstate->m_mempool) {
+        Chainstate& curr_chainstate{CurrentChainstate()};
+        assert(prev_chainstate->m_mempool->size() == 0);
+        assert(!curr_chainstate.m_mempool);
+        std::swap(curr_chainstate.m_mempool, prev_chainstate->m_mempool);
+    }
     return true;
 }
 
