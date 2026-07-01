@@ -20,7 +20,7 @@ This file is a dated, chronological log of the changes made in this pass, in the
 - Testnet / Testnet4: `7000`.
 - Regtest: `100`.
 
-Disk-pruning thresholds (`nPruneAfterHeight`, a separate, pre-existing mechanism) were left untouched.
+`nPruneAfterHeight` (`src/kernel/chainparams.cpp`) was initially left untouched, then corrected the same day (see the second dated entry below) to match `MandatoryPruneDepth` per network, mirroring the mainnet principle where the two are already equal (`197280` == `197280`).
 
 **New incremental UTXO MuHash accumulator.** `src/kernel/utxo_muhash.h`: `kernel::UTXOMuHashState`, a thin wrapper around the existing `MuHash3072` type (`src/crypto/muhash.h`) that reuses the existing `ApplyCoinHash`/`RemoveCoinHash` helpers (`src/kernel/coinstats.cpp`) already used by `CoinStatsIndex` — no new per-coin serialization logic was written.
 
@@ -45,6 +45,17 @@ Disk-pruning thresholds (`nPruneAfterHeight`, a separate, pre-existing mechanism
 **Miner/pool impact assessment.** Re-verified before implementation: `kutlusoy/elektron-net-pool` contains no code that computes or independently verifies the UTXO attestation hash (confirmed via repository code search for `attestation`/`muhash`/`utxo`/`hash_serialized` — zero matches). Pools only copy the `scriptPubKey` from `getblocktemplate`'s `coinbase_required_outputs`, and that field's shape (32-byte hash, same OP_RETURN encoding) is unchanged by this switch. No changes needed in the pool, pool-ui, or faucet repositories for this pass.
 
 **Documentation.** `doc-elektron/fix-report-utxo-attestation-scalability.md` status field updated; `BITCOIN_CORE_DIFF.md` §2.2 updated to describe the dual-algorithm behavior and the new consensus parameter, "Last updated" bumped.
+
+---
+
+## 2026-07-01 (same day, follow-up: `nPruneAfterHeight` + live pruning verification)
+
+Live-tested this branch end-to-end on a real regtest node (build + run `elektrond`/`elektron-cli`, mine across both boundaries, restart, `pruneblockchain`) rather than relying on unit/functional tests alone. Two findings:
+
+1. **`nPruneAfterHeight` was inconsistent with the new `MandatoryPruneDepth`.** Mainnet already has them equal (`197280` == `197280`, "pruning starts at the first checkpoint" per §2.1). Testnet/testnet4 still had the old `nPruneAfterHeight = 1000` (vs. `MandatoryPruneDepth = 7000`) and regtest had `opts.fastprune ? 100 : 1000` (vs. `MandatoryPruneDepth = 100`) — meaning pruning eligibility wouldn't even be *considered* until height 1000, well past the point the checkpoint/attestation testing is meant to happen around. Fixed to match `MandatoryPruneDepth` on all three networks (testnet/testnet4: `7000`; regtest: fixed `100`, dropping the `fastprune` conditional since both branches now agree).
+2. **Confirmed via live test that actual block-*file* deletion additionally requires `-fastprune`.** Height-based eligibility (`GetPruneRange`) is necessary but not sufficient: `FindFilesToPrune` only deletes whole `blk*.dat`/`rev*.dat` files, and a file only rolls over to the next number once it hits `MAX_BLOCKFILE_SIZE` (128 MiB) — `-fastprune` lowers that to 64 KiB (`src/node/blockstorage.cpp`), which is what actually makes multiple block files (and therefore observable pruning) reachable within a short regtest session with realistically tiny empty blocks. Without `-fastprune`, a regtest node would need ~400,000+ blocks before a second file is ever created, regardless of how low `MandatoryPruneDepth`/`nPruneAfterHeight` are. Not a bug — this is pre-existing, correct Bitcoin Core behavior — but worth recording since it wasn't obvious from the code alone and is essential to reproducing a working pruning test.
+
+Verified live with the corrected `nPruneAfterHeight` values: fresh regtest node, `-fastprune`, mined to height 600. `pruneblockchain 500` (and automatic pruning during normal flushes) correctly capped the actual prune height at `tip - MandatoryPruneDepth` (pruned to height ~433, since pruning only removes whole files and the eligible cutoff of 500 didn't land exactly on a file boundary) and **physically deleted** the old `blk00000.dat`/`blk00001.dat`/`rev00000.dat`/`rev00001.dat` file pairs from disk — only the current file (`blk00002.dat`/`rev00002.dat`) remained. `getblockchaininfo` reported `pruneheight: 433` afterwards, confirming the RPC-visible state matches the on-disk reality.
 
 ---
 
