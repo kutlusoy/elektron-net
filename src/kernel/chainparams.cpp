@@ -193,12 +193,12 @@ public:
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = true;
         // MuHash UTXO attestation test activation (doc-elektron/fix-report-utxo-attestation-scalability.md,
-        // doc-elektron/CHANGELOG-muhash-attestation.md). NOT active on mainnet. Testnet is still at
-        // height ~0 (2026-07-01), so 5000 leaves a safe testing window without waiting too long.
-        consensus.MuhashAttestationActivationHeight = 5000;
+        // doc-elektron/CHANGELOG-muhash-attestation.md). NOT active on mainnet. Lowered from 5000 to 250
+        // for fast local testnet iteration (still verify against the live tip before real deployment).
+        consensus.MuhashAttestationActivationHeight = 250;
         // Lower checkpoint interval so the automatic UTXO snapshot cycle can actually be
         // observed on testnet without waiting for 197,280 blocks (mainnet default).
-        consensus.MandatoryPruneDepth = 7000;
+        consensus.MandatoryPruneDepth = 300;
         consensus.enforce_BIP94 = false;
         consensus.fPowNoRetargeting = false;
         consensus.vDeployments[Consensus::DEPLOYMENT_TESTDUMMY].bit = 28;
@@ -216,7 +216,7 @@ public:
         pchMessageStart[2] = 0x09;
         pchMessageStart[3] = 0x07;
         nDefaultPort = 18333;
-        nPruneAfterHeight = 7000; // matches MandatoryPruneDepth above -- pruning starts at the first checkpoint, same principle as mainnet
+        nPruneAfterHeight = 300; // matches MandatoryPruneDepth above -- pruning starts at the first checkpoint, same principle as mainnet
         m_assumed_blockchain_size = 245;
         m_assumed_chain_state_size = 19;
 
@@ -279,8 +279,8 @@ public:
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = true;
         // See CTestNetParams::MuhashAttestationActivationHeight / MandatoryPruneDepth above -- same values/caveats apply.
-        consensus.MuhashAttestationActivationHeight = 5000;
-        consensus.MandatoryPruneDepth = 7000;
+        consensus.MuhashAttestationActivationHeight = 250;
+        consensus.MandatoryPruneDepth = 300;
         consensus.enforce_BIP94 = true;
         consensus.fPowNoRetargeting = false;
 
@@ -299,7 +299,7 @@ public:
         pchMessageStart[2] = 0x3f;
         pchMessageStart[3] = 0x28;
         nDefaultPort = 48333;
-        nPruneAfterHeight = 7000; // matches MandatoryPruneDepth above -- see CTestNetParams
+        nPruneAfterHeight = 300; // matches MandatoryPruneDepth above -- see CTestNetParams
         m_assumed_blockchain_size = 31;
         m_assumed_chain_state_size = 2;
 
