@@ -1679,6 +1679,15 @@ static void MaybeActivateAutomaticSnapshot(NodeContext& node)
         if (Chainstate* historical_cs = chainman.HistoricalChainstate()) {
             historical_cs->ResetCoinsViews();
             if (chainman.DeleteChainstate(*historical_cs)) {
+                // Elektron Net: ChainstateManager::ValidatedChainstate() (used by index
+                // init/background-sync code) requires some chainstate with
+                // m_assumeutxo == VALIDATED to exist -- normally the now-deleted
+                // historical chainstate. The snapshot chainstate takes over that role;
+                // safe here because it was already cross-checked against this node's own
+                // on-chain MuHash coinbase attestation before activation (see above),
+                // not merely assumed valid. See node/chainstate.cpp's LoadChainstate()
+                // for the equivalent, startup-time fix and fuller explanation.
+                chainman.CurrentChainstate().m_assumeutxo = Assumeutxo::VALIDATED;
                 LogInfo("[snapshot] Discarded old pre-snapshot chainstate (background validation is not possible on a pruned network).\n");
             } else {
                 LogWarning("[snapshot] Failed to discard old pre-snapshot chainstate.\n");

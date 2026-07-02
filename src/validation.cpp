@@ -3000,10 +3000,6 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
         return false;
     }
 
-    if (!fJustCheck) {
-        WriteAutomaticSnapshot(*this, pindex->nHeight, pindex);
-    }
-
     if (fJustCheck) {
         return true;
     }
@@ -3455,6 +3451,20 @@ bool Chainstate::ConnectTip(
                  Ticks<SecondsDouble>(m_chainman.time_connect_total),
                  Ticks<MillisecondsDouble>(m_chainman.time_connect_total) / m_chainman.num_blocks_total);
         view.Flush(/*reallocate_cache=*/false); // No need to reallocate since it only has capacity for 1 block
+
+        // Elektron Net: write the automatic UTXO snapshot (if pindexNew is a checkpoint
+        // height) only now, after view.Flush() has merged this block's own coin changes
+        // into CoinsTip(). This call used to live inside ConnectBlock(), before this
+        // flush happened -- WriteAutomaticSnapshot() reads CoinsDB() via its own
+        // ForceFlushStateToDisk(), which at that point could only see CoinsTip() as of
+        // the *parent* block, silently omitting the checkpoint block's own coinbase
+        // output from the snapshot. Live-observed: a snapshot written at a checkpoint
+        // right after MuHash activation caused every bootstrapping peer to compute a
+        // UTXO MuHash one coin short of the real tip, rejecting the very next block
+        // ("bad-utxo-attestation", mismatch at checkpoint_height + 1) even though the
+        // snapshot's own content-integrity check (HASH_SERIALIZED sidecar) passed, since
+        // that hash was computed from the same (consistently, but wrongly) stale data.
+        WriteAutomaticSnapshot(*this, pindexNew->nHeight, pindexNew);
     }
     const auto time_4{SteadyClock::now()};
     m_chainman.time_flush += time_4 - time_3;
@@ -6376,6 +6386,20 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
     assert(index == snapshot_start_block);
     if (au_data) {
         index->m_chain_tx_count = au_data->m_chain_tx_count;
+    } else {
+        // Elektron Net: automatic/dynamic snapshots (verify_assumeutxo_hash=false) have
+        // no static chainparams entry, so au_data is always null here -- their
+        // activation heights are computed at runtime from
+        // Consensus::Params::MandatoryPruneDepth, not hardcoded per network. Without
+        // this, index->m_chain_tx_count stays 0, so HaveNumChainTxs() is false for the
+        // snapshot base, which live-crashed ChainstateManager::CheckBlockIndex()'s
+        // invariant "(pindexFirstNeverProcessed == nullptr || pindex == snap_base) ==
+        // pindex->HaveNumChainTxs()" the next time new headers arrived after
+        // activation (regtest defaults -checkblockindex to run on every operation).
+        // The exact count only affects the verificationprogress estimate, never
+        // consensus validity, and the true historical count is unknown here (those
+        // blocks are pruned on every peer) -- use a one-tx-per-block lower bound.
+        index->m_chain_tx_count = base_height + 1;
     }
 
     LogInfo("[snapshot] validated snapshot (%.2f MB)",
