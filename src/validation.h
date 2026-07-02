@@ -841,10 +841,24 @@ public:
         LOCKS_EXCLUDED(::cs_main);
 
     // Block (dis)connection on a given view:
-    DisconnectResult DisconnectBlock(const CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view)
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    //
+    // Elektron Net: `update_muhash` (default true) gates whether the persistent
+    // Chainstate::m_utxo_muhash accumulator (see EnsureUTXOMuHashLoaded) is mutated by
+    // this call. It defaults to true because both real call sites -- DisconnectTip()/
+    // ConnectTip() and ReplayBlocks() -- represent actual, persistent changes to the
+    // chainstate's coins view that m_utxo_muhash must track. It must be passed false
+    // from CVerifyDB::VerifyDB(): that function disconnects (and, only at
+    // -checklevel>=4, reconnects) blocks against a throwaway, scratch CCoinsViewCache
+    // purely to sanity-check the on-disk data -- it never touches the real CoinsTip()/
+    // CoinsDB(). At the default -checklevel=3, only the disconnect half runs (no
+    // matching reconnect), so leaving this unguarded permanently subtracted the last
+    // `-checkblocks` (default 6) blocks' coin changes from m_utxo_muhash on every
+    // single node restart, live-observed to desync the accumulator from the chain's
+    // real tip and reject the very next block validated against it.
+    DisconnectResult DisconnectBlock(const CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view,
+                      bool update_muhash = true) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
     bool ConnectBlock(const CBlock& block, BlockValidationState& state, CBlockIndex* pindex,
-                      CCoinsViewCache& view, bool fJustCheck = false) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+                      CCoinsViewCache& view, bool fJustCheck = false, bool update_muhash = true) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     // Apply the effects of a block disconnection on the UTXO set.
     bool DisconnectTip(BlockValidationState& state, DisconnectedBlockTransactions* disconnectpool) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_mempool->cs);
@@ -1439,6 +1453,33 @@ public:
     //! Returns how many blocks the best header is ahead of the current tip,
     //! or nullopt if the best header does not extend the tip.
     std::optional<int> BlocksAheadOfTip() const LOCKS_EXCLUDED(::cs_main);
+
+    //! Elektron Net: true if we have actually downloaded and validated (not merely heard
+    //! about via headers) a chain whose highest known rejected block is at or after this
+    //! network's MuHash attestation activation height -- a pure consensus-parameter mismatch
+    //! category, not any invalid chain for any reason -- yet carries substantially more
+    //! cumulative proof-of-work than our own active tip, sustained over roughly an hour of
+    //! blocks at this network's own block spacing (not a fixed block count -- see the .cpp
+    //! for why). This is the signal used by PeerManagerImpl::MaybeRequestSnapshot()
+    //! (net_processing.cpp) to attempt automatic snapshot-based recovery even outside
+    //! ordinary IBD: ordinary reconnection/re-sync cannot recover on its own once specific
+    //! blocks are cached invalid on disk, regardless of the running software version.
+    //! Deliberately narrowed to this one category rather than "any invalid chain with more
+    //! work" -- see the .cpp for the security reasoning (more work alone is not proof of
+    //! honesty, only of computation) and for why this checks height rather than the specific
+    //! rejection reason string (the latter isn't persisted to disk and is unavailable after
+    //! exactly the kind of restart this feature targets) -- and deliberately independent of
+    //! (does not alter) Chainstate::CheckForkWarningConditions()'s pre-existing,
+    //! upstream-derived LARGE_WORK_INVALID_CHAIN warning threshold, which stays untouched.
+    bool HasSustainedInvalidChainWithMoreWork() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+
+    //! Elektron Net: the highest-work chain we know of that turned out invalid (nullptr if
+    //! none). Used alongside HasSustainedInvalidChainWithMoreWork() as the reference chain
+    //! for automatic snapshot recovery: m_best_header itself can be stuck at no further than
+    //! our own tip in this situation (RecalculateBestHeader() excludes anything descended
+    //! from a BLOCK_FAILED_VALID ancestor), even though the real rejected chain extends far
+    //! beyond it -- this is that chain's actual tip.
+    const CBlockIndex* BestInvalid() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main) { return m_best_invalid; }
 
     CCheckQueue<CScriptCheck>& GetCheckQueue() { return m_script_check_queue; }
 

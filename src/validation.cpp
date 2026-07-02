@@ -2206,14 +2206,17 @@ int ApplyTxInUndo(Coin&& undo, CCoinsViewCache& view, const COutPoint& out)
 
 /** Undo the effects of this block (with given index) on the UTXO set represented by coins.
  *  When FAILED is returned, view is left in an indeterminate state. */
-DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view)
+DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view,
+                                              bool update_muhash)
 {
     AssertLockHeld(::cs_main);
     bool fClean = true;
 
     // Elektron Net: keep the incremental UTXO MuHash accumulator in lockstep with the
-    // real UTXO set on reorg too; see the matching commit step in ConnectBlock.
-    EnsureUTXOMuHashLoaded();
+    // real UTXO set on reorg too; see the matching commit step in ConnectBlock. Skipped
+    // when update_muhash is false (CVerifyDB::VerifyDB()'s scratch/read-only check) --
+    // see the parameter's doc comment in validation.h.
+    if (update_muhash) EnsureUTXOMuHashLoaded();
 
     CBlockUndo blockUndo;
     if (!m_blockman.ReadBlockUndo(blockUndo, *pindex)) {
@@ -2254,7 +2257,7 @@ DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIn
                         fClean = false; // transaction output mismatch
                     }
                 }
-                if (is_spent) m_utxo_muhash.RemoveCoin(out, coin);
+                if (is_spent && update_muhash) m_utxo_muhash.RemoveCoin(out, coin);
             }
         }
 
@@ -2274,7 +2277,7 @@ DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIn
                 // Re-read from view rather than trusting the (possibly height-adjusted,
                 // see ApplyTxInUndo) undo record directly, so this always matches exactly
                 // what was actually restored to the UTXO set.
-                m_utxo_muhash.AddCoin(out, view.AccessCoin(out));
+                if (update_muhash) m_utxo_muhash.AddCoin(out, view.AccessCoin(out));
             }
             // At this point, all of txundo.vprevout should have been moved out.
         }
@@ -2654,7 +2657,7 @@ void WriteAutomaticSnapshot(Chainstate& chainstate, int nHeight, const CBlockInd
  *  Validity checks that depend on the UTXO set are also done; ConnectBlock()
  *  can fail if those validity checks fail (among other reasons). */
 bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, CBlockIndex* pindex,
-                               CCoinsViewCache& view, bool fJustCheck)
+                               CCoinsViewCache& view, bool fJustCheck, bool update_muhash)
 {
     AssertLockHeld(cs_main);
     assert(pindex);
@@ -3015,18 +3018,25 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     // leaves it untouched too -- only blocks that are actually being connected do.
     // Runs unconditionally (not just post-activation) so the accumulator is already
     // warmed up by the time MuhashAttestationActivationHeight is reached; see
-    // EnsureUTXOMuHashLoaded.
-    for (size_t i = 0; i < block.vtx.size(); ++i) {
-        const CTransaction& tx = *block.vtx[i];
-        if (!tx.IsCoinBase()) {
-            const CTxUndo& txundo = blockundo.vtxundo[i - 1];
-            for (size_t j = 0; j < tx.vin.size(); ++j) {
-                m_utxo_muhash.RemoveCoin(tx.vin[j].prevout, txundo.vprevout[j]);
+    // EnsureUTXOMuHashLoaded. Also gated on update_muhash, false only for
+    // CVerifyDB::VerifyDB()'s -checklevel>=4 scratch reconnect check (see the
+    // parameter's doc comment in validation.h and the matching guard in
+    // DisconnectBlock): that runs against a throwaway view that was never actually
+    // subtracted from m_utxo_muhash in the first place (DisconnectBlock() skips the
+    // mutation for that same scratch pass), so re-adding it here would double count.
+    if (update_muhash) {
+        for (size_t i = 0; i < block.vtx.size(); ++i) {
+            const CTransaction& tx = *block.vtx[i];
+            if (!tx.IsCoinBase()) {
+                const CTxUndo& txundo = blockundo.vtxundo[i - 1];
+                for (size_t j = 0; j < tx.vin.size(); ++j) {
+                    m_utxo_muhash.RemoveCoin(tx.vin[j].prevout, txundo.vprevout[j]);
+                }
             }
-        }
-        for (size_t o = 0; o < tx.vout.size(); ++o) {
-            if (tx.vout[o].scriptPubKey.IsUnspendable()) continue;
-            m_utxo_muhash.AddCoin(COutPoint(tx.GetHash(), o), Coin(tx.vout[o], pindex->nHeight, tx.IsCoinBase()));
+            for (size_t o = 0; o < tx.vout.size(); ++o) {
+                if (tx.vout[o].scriptPubKey.IsUnspendable()) continue;
+                m_utxo_muhash.AddCoin(COutPoint(tx.GetHash(), o), Coin(tx.vout[o], pindex->nHeight, tx.IsCoinBase()));
+            }
         }
     }
 
@@ -5090,7 +5100,7 @@ VerifyDBResult CVerifyDB::VerifyDB(
         if (nCheckLevel >= 3) {
             if (curr_coins_usage <= chainstate.m_coinstip_cache_size_bytes) {
                 assert(coins.GetBestBlock() == pindex->GetBlockHash());
-                DisconnectResult res = chainstate.DisconnectBlock(block, pindex, coins);
+                DisconnectResult res = chainstate.DisconnectBlock(block, pindex, coins, /*update_muhash=*/false);
                 if (res == DISCONNECT_FAILED) {
                     LogError("Verification error: irrecoverable inconsistency in block data at %d, hash=%s", pindex->nHeight, pindex->GetBlockHash().ToString());
                     return VerifyDBResult::CORRUPTED_BLOCK_DB;
@@ -5134,7 +5144,7 @@ VerifyDBResult CVerifyDB::VerifyDB(
                 LogError("Verification error: ReadBlock failed at %d, hash=%s", pindex->nHeight, pindex->GetBlockHash().ToString());
                 return VerifyDBResult::CORRUPTED_BLOCK_DB;
             }
-            if (!chainstate.ConnectBlock(block, state, pindex, coins)) {
+            if (!chainstate.ConnectBlock(block, state, pindex, coins, /*fJustCheck=*/false, /*update_muhash=*/false)) {
                 LogError("Verification error: found unconnectable block at %d, hash=%s (%s)", pindex->nHeight, pindex->GetBlockHash().ToString(), state.ToString());
                 return VerifyDBResult::CORRUPTED_BLOCK_DB;
             }
@@ -6739,6 +6749,67 @@ std::optional<int> ChainstateManager::BlocksAheadOfTip() const
         return best_header->nHeight - tip->nHeight;
     }
     return std::nullopt;
+}
+
+bool ChainstateManager::HasSustainedInvalidChainWithMoreWork() const
+{
+    AssertLockHeld(::cs_main);
+    const CBlockIndex* tip{ActiveChain().Tip()};
+    if (!tip || !m_best_invalid) return false;
+
+    // Elektron Net: deliberately narrowed to a specific, verifiable category of rejection --
+    // "the disputed block is at or after this network's own MuHash attestation activation
+    // height" -- rather than "any invalid chain with more work". "More cumulative work"
+    // alone is not proof of an honest chain, only of computation, which a sufficiently
+    // well-resourced attacker can also produce (this is exactly why Bitcoin Core's own
+    // `reconsiderblock` RPC is manual-only and never auto-triggered by "more work" -- see
+    // doc-elektron/CHANGELOG-muhash-attestation.md, "Security discussion", for the full
+    // reasoning this narrowing followed from).
+    //
+    // This checks height, not the specific rejection reason string (e.g.
+    // "bad-utxo-attestation") -- a first implementation attempt tried the latter and had to
+    // be reverted: BlockValidationState (and its reject reason) is never persisted to disk,
+    // only the coarse BLOCK_FAILED_VALID bit is. In exactly the scenario this feature exists
+    // for -- a node restarts on updated software after already having rejected blocks pre
+    // -update -- m_best_invalid gets rebuilt from those persisted bits alone
+    // (ChainstateManager::LoadBlockIndex(), at startup, with no BlockValidationState in
+    // sight), so a reason captured only in memory during the original (pre-restart)
+    // rejection is unrecoverable by the time recovery is actually needed. The activation
+    // height, by contrast, is a public, static, consensus-defined constant -- available
+    // identically in memory or freshly after any number of restarts -- and is exactly the
+    // same category of signal: a block at/after this height can only fail attestation
+    // validation for the specific reason this feature targets (the validating node not yet
+    // understanding the post-activation attestation algorithm), never for unrelated reasons
+    // like forged signatures or invalid coin creation, which would be rejected on their own
+    // terms regardless of height and are far stronger signals of a genuine attack than of a
+    // stale software version.
+    if (GetConsensus().MuhashAttestationActivationHeight < 0 ||
+        m_best_invalid->nHeight < GetConsensus().MuhashAttestationActivationHeight) {
+        return false;
+    }
+
+    // Elektron Net: this is deliberately independent of Chainstate::
+    // CheckForkWarningConditions()'s pre-existing, upstream-derived "6 blocks" threshold
+    // for the LARGE_WORK_INVALID_CHAIN warning -- that constant is left untouched here
+    // (it's covered by an existing functional test, feature_notifications.py, that pins
+    // the exact block count and message text). This is a separate, independently-tuned
+    // threshold for a much more consequential action (discarding local chain state and
+    // fetching a replacement snapshot), not just logging a warning, so it deliberately
+    // uses a real-time window rather than a raw block count: Elektron Net's block spacing
+    // is a consensus parameter that can differ by network and, unlike Bitcoin's fixed
+    // 10-minute spacing, is 60 seconds on every network defined so far -- a flat block
+    // count tuned for a 10-minute network would fire 10x too eagerly here, on nothing more
+    // than ordinary propagation delay or a brief natural reorg. Converting the same
+    // "roughly an hour of blocks" intent into this network's own spacing keeps the
+    // real-world meaning (a sustained, genuine incompatibility) consistent regardless of
+    // how fast or slow blocks actually arrive.
+    static constexpr int64_t RECOVERY_TRIGGER_WINDOW_SECONDS = 60 * 60; // ~1 hour of blocks, any network
+    static constexpr int RECOVERY_TRIGGER_MIN_BLOCKS = 6; // floor, matches the plain warning's minimum
+    const int64_t spacing = std::max<int64_t>(1, GetConsensus().nPowTargetSpacing);
+    const int blocks_threshold = static_cast<int>(std::max<int64_t>(
+        RECOVERY_TRIGGER_MIN_BLOCKS, RECOVERY_TRIGGER_WINDOW_SECONDS / spacing));
+
+    return m_best_invalid->nChainWork > tip->nChainWork + (GetBlockProof(*tip) * blocks_threshold);
 }
 
 bool ChainstateManager::ValidatedSnapshotCleanup(Chainstate& validated_cs, Chainstate& unvalidated_cs)
