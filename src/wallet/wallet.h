@@ -657,6 +657,18 @@ public:
     /** Elektron Net: recover wallet balances from the current UTXO set when pruned history is unavailable. */
     bool ScanUTXOSet(bilingual_str& error) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
     bool CreditUTXOFromChain(const COutPoint& outpoint, const Coin& coin) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+    /** Elektron Net: true if AttachChain()'s ScanUTXOSet() fallback ran while the node
+     *  was still in initial block download -- i.e. it only ever saw whatever partial
+     *  UTXO set existed at that instant, since automatic snapshot bootstrap happens
+     *  asynchronously on a scheduler and can finish well after wallet load. Such a scan
+     *  must be redone once a snapshot actually activates, since nothing else ever
+     *  re-triggers it (AttachChain() only runs once, at wallet-load time). */
+    bool m_utxo_scan_needs_retry_after_snapshot GUARDED_BY(cs_wallet) = false;
+    /** Elektron Net: re-run ScanUTXOSet() if the previous run happened before the node
+     *  had a fully-synced view of the UTXO set. No-ops if no retry is pending. Safe to
+     *  call unconditionally; intended to be called after every automatic snapshot
+     *  activation (see MaybeActivateAutomaticSnapshot() in init.cpp). */
+    void MaybeRescanUTXOSetAfterSnapshot();
     void transactionRemovedFromMempool(const CTransactionRef& tx, MemPoolRemovalReason reason) override;
     /** Set the next time this wallet should resend transactions to 12-36 hours from now, ~1 day on average. */
     void SetNextResend() { m_next_resend = GetDefaultNextResend(); }
