@@ -26,7 +26,13 @@ static constexpr uint8_t DB_BEST_BLOCK{'B'};
 static constexpr uint8_t DB_HEAD_BLOCKS{'H'};
 // Elektron Net: incrementally-maintained UTXO MuHash accumulator state, stored
 // together with the block hash it corresponds to (see WriteUTXOMuHashState).
-static constexpr uint8_t DB_UTXO_MUHASH{'U'};
+// V2 (key 'V'): adds a coin count alongside the accumulator (see kernel::UTXOMuHashState,
+// Phase 2 -- used by WriteAutomaticSnapshot() to skip a full-set rescan for coins_count).
+// A fresh key, not a format-version field on the old one, so any pre-Phase-2 record is
+// simply not found rather than misparsed -- ReadUTXOMuHashState() already treats "not
+// found" as a cold start and rebuilds from a full scan, so this reuses that exact,
+// already-tested path for the one-time migration instead of adding new logic for it.
+static constexpr uint8_t DB_UTXO_MUHASH{'V'};
 // Keys used in previous version that might still be found in the DB:
 static constexpr uint8_t DB_COINS{'c'};
 

@@ -132,7 +132,7 @@ bool ValidateUTXOCheckpoint(const CBlock& block, int nHeight, CCoinsView& view, 
 /** Elektron Net: automatically write a UTXO snapshot to disk after a checkpoint block
  *  is successfully connected. This snapshot can be used by new nodes for bootstrap.
  */
-void WriteAutomaticSnapshot(Chainstate& chainstate, int nHeight, const CBlockIndex* pindex, bool force = false);
+void WriteAutomaticSnapshot(Chainstate& chainstate, int nHeight, const CBlockIndex* pindex, bool force = false) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
 /** Current sync state passed to tip changed callbacks. */
 enum class SynchronizationState {

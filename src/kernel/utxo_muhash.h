@@ -11,6 +11,7 @@
 #include <primitives/transaction.h>
 #include <serialize.h>
 #include <uint256.h>
+#include <util/check.h>
 
 namespace kernel {
 
@@ -28,12 +29,25 @@ class UTXOMuHashState
 {
 private:
     MuHash3072 m_muhash;
+    //! Elektron Net: running count of coins folded into m_muhash, maintained by the same
+    //! Add/RemoveCoin calls -- lets callers (see WriteAutomaticSnapshot(), Phase 2) get the
+    //! current UTXO set size for free, without a separate full-set scan.
+    uint64_t m_coin_count{0};
 
 public:
     UTXOMuHashState() noexcept = default;
 
-    void AddCoin(const COutPoint& outpoint, const Coin& coin) { ApplyCoinHash(m_muhash, outpoint, coin); }
-    void RemoveCoin(const COutPoint& outpoint, const Coin& coin) { RemoveCoinHash(m_muhash, outpoint, coin); }
+    void AddCoin(const COutPoint& outpoint, const Coin& coin)
+    {
+        ApplyCoinHash(m_muhash, outpoint, coin);
+        ++m_coin_count;
+    }
+    void RemoveCoin(const COutPoint& outpoint, const Coin& coin)
+    {
+        RemoveCoinHash(m_muhash, outpoint, coin);
+        Assume(m_coin_count > 0);
+        --m_coin_count;
+    }
 
     //! Finalize into a 32-byte hash. Operates on a copy, so the running
     //! accumulator itself keeps accepting further Add/RemoveCoin calls.
@@ -45,7 +59,9 @@ public:
         return out;
     }
 
-    SERIALIZE_METHODS(UTXOMuHashState, obj) { READWRITE(obj.m_muhash); }
+    uint64_t GetCoinCount() const { return m_coin_count; }
+
+    SERIALIZE_METHODS(UTXOMuHashState, obj) { READWRITE(obj.m_muhash, obj.m_coin_count); }
 };
 
 } // namespace kernel
