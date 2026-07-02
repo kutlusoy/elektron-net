@@ -1941,6 +1941,24 @@ bool CWallet::ScanUTXOSet(bilingual_str& error)
     return true;
 }
 
+void CWallet::MaybeRescanUTXOSetAfterSnapshot()
+{
+    LOCK(cs_wallet);
+    if (!m_utxo_scan_needs_retry_after_snapshot) return;
+    if (!HaveChain()) return;
+
+    WalletLogPrintf("Re-scanning UTXO set after snapshot activation (previous scan ran before the node was fully synced)...\n");
+    bilingual_str error;
+    if (!ScanUTXOSet(error)) {
+        WalletLogPrintf("UTXO set re-scan failed: %s\n", error.original);
+        return;
+    }
+    m_utxo_scan_needs_retry_after_snapshot = false;
+    if (const std::optional<int> tip_height = chain().getHeight()) {
+        SetLastBlockProcessed(*tip_height, chain().getBlockHash(*tip_height));
+    }
+}
+
 CWallet::ScanResult CWallet::ScanForWalletTransactions(const uint256& start_block, int start_height, std::optional<int> max_height, const WalletRescanReserver& reserver, bool fUpdate, const bool save_progress)
 {
     constexpr auto INTERVAL_TIME{60s};
@@ -3267,6 +3285,18 @@ bool CWallet::AttachChain(const std::shared_ptr<CWallet>& walletInstance, interf
     assert(!walletInstance->m_chain || walletInstance->m_chain == &chain);
     walletInstance->m_chain = &chain;
 
+    // Elektron Net: if the node is still in initial block download when the wallet
+    // loads, its current view of the chain/UTXO set (however that's determined below)
+    // isn't authoritative yet -- on a fresh, wiped node this is usually just genesis,
+    // so the rescan-height logic below can conclude "nothing to do" (wallet's locator
+    // already matches the tip) without ever running ScanUTXOSet(), even though real
+    // history is still missing entirely. Flag this wallet for a UTXO-set verification
+    // once a snapshot actually activates (see MaybeRescanUTXOSetAfterSnapshot() and its
+    // caller in init.cpp); harmless/idempotent if it turns out not to have been needed.
+    if (chain.isInitialBlockDownload()) {
+        walletInstance->m_utxo_scan_needs_retry_after_snapshot = true;
+    }
+
     // Unless allowed, ensure wallet files are not reused across chains:
     if (!gArgs.GetBoolArg("-walletcrosschain", DEFAULT_WALLETCROSSCHAIN)) {
         WalletBatch batch(walletInstance->GetDatabase());
@@ -3347,6 +3377,11 @@ bool CWallet::AttachChain(const std::shared_ptr<CWallet>& walletInstance, interf
                     }
                     warnings.push_back(_("Wallet balances recovered from the current UTXO set. Pruned transaction history is unavailable."));
                     rescan_height = *tip_height;
+                    // Elektron Net: the m_utxo_scan_needs_retry_after_snapshot flag set
+                    // near the top of this function (if the node was still in IBD at
+                    // load time) already covers redoing this scan once a snapshot
+                    // actually activates -- this scan may only have seen a near-empty,
+                    // pre-activation UTXO set.
                 } else {
                     error = strprintf(_(
                         "Error loading wallet. Wallet requires blocks to be downloaded, "
@@ -4652,10 +4687,15 @@ void CWallet::RefreshTXOsFromTx(const CWalletTx& wtx)
         const CTxOut& txout = wtx.tx->vout.at(i);
         if (!IsMine(txout)) continue;
         COutPoint outpoint(wtx.GetHash(), i);
-        if (m_txos.contains(outpoint)) {
-        } else {
-            m_txos.emplace(outpoint, WalletTXO{wtx, txout});
-        }
+        // Elektron Net: always (re-)point the cached entry at the wtx's *current*
+        // tx/vout. WalletTXO stores plain references into wtx and wtx.tx->vout[i] (and
+        // is therefore not assignable), so an existing entry must be erased before
+        // re-inserting. If wtx.tx is later replaced (e.g. CreditUTXOFromChain()
+        // re-crediting an outpoint via wtx.SetTx()) while an old m_txos entry is left
+        // untouched, that entry keeps referencing the now-destroyed old CTransaction --
+        // a dangling reference whose garbage nValue can surface as a wildly wrong balance.
+        m_txos.erase(outpoint);
+        m_txos.emplace(outpoint, WalletTXO{wtx, txout});
     }
 }
 

@@ -344,6 +344,13 @@ public:
     using LoadWalletFn = std::function<void(std::unique_ptr<Wallet> wallet)>;
     virtual std::unique_ptr<Handler> handleLoadWallet(LoadWalletFn fn) = 0;
 
+    //! Elektron Net: ask every loaded wallet to redo its UTXO-set balance recovery
+    //! (see CWallet::MaybeRescanUTXOSetAfterSnapshot()) if the previous attempt ran
+    //! before the node was fully synced. Called after every automatic snapshot
+    //! activation (see MaybeActivateAutomaticSnapshot() in init.cpp); a no-op for
+    //! wallets that don't need it.
+    virtual void rescanUTXOSetIfNeeded() = 0;
+
     //! Return pointer to internal context, useful for testing.
     virtual wallet::WalletContext* context() { return nullptr; }
 };

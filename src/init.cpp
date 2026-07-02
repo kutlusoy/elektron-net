@@ -1705,6 +1705,16 @@ static void MaybeActivateAutomaticSnapshot(NodeContext& node)
         node.peerman->ClearBlocksInFlight();
     }
 
+    // Elektron Net: any wallet loaded before this activation may have had to fall back
+    // to CWallet::ScanUTXOSet() at load time (pruned node, no historical blocks to
+    // rescan) while the node was still in IBD -- that scan only ever saw whatever
+    // near-empty UTXO set existed at that instant, and nothing else ever redoes it.
+    // Now that a snapshot has actually activated, give such wallets a chance to
+    // recover the correct balances. No-op for wallets that don't need it.
+    if (node.wallet_loader) {
+        node.wallet_loader->rescanUTXOSetIfNeeded();
+    }
+
     // Elektron Net: cleanup obsolete snapshot files from earlier checkpoints or failed attempts.
     try {
         const std::string activated_prefix = strprintf("%d-%s", best_height, metadata.m_base_blockhash.ToString());

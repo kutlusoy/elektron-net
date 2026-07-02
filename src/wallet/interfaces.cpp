@@ -654,6 +654,12 @@ public:
     {
         return HandleLoadWallet(m_context, std::move(fn));
     }
+    void rescanUTXOSetIfNeeded() override
+    {
+        for (const auto& wallet : GetWallets(m_context)) {
+            wallet->MaybeRescanUTXOSetAfterSnapshot();
+        }
+    }
     WalletContext* context() override  { return &m_context; }
 
     WalletContext m_context;

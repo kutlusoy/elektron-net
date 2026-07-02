@@ -2,7 +2,7 @@
 
 **Version:** 4.0.0  
 **Base:** Bitcoin Core (C++20 fork)  
-**Last updated:** 2026-07-01  
+**Last updated:** 2026-07-02  
 **Companion docs:** [`WHITEPAPER.md`](../WHITEPAPER.md), [`mining-pool-integration.md`](mining-pool-integration.md), [`AUDIT_PRUNING_SNAPSHOT.md`](AUDIT_PRUNING_SNAPSHOT.md), [`hardfork-v3.0.1-stoic-awakening.md`](hardfork-v3.0.1-stoic-awakening.md), [`fix-report-utxo-attestation-scalability.md`](fix-report-utxo-attestation-scalability.md), [`CHANGELOG-muhash-attestation.md`](CHANGELOG-muhash-attestation.md)
 
 This document lists **every deliberate divergence** from upstream Bitcoin Core, organized from protocol fundamentals outward to tooling and tests. Files with only branding or string changes are grouped separately.
@@ -100,7 +100,9 @@ When a wallet's last-synced height is older than available pruned blocks, Elektr
 
 Triggered automatically in `CWallet::AttachChain()` when `chain.havePruned()` and block rescan is impossible. User sees a warning: *"Wallet balances recovered from the current UTXO set. Pruned transaction history is unavailable."*
 
-**Implication for wallet vendors:** seed + UTXO scan restores spendable balance; **transaction history before the pruning window is not recoverable** from the network (by design). See [`WHITEPAPER.md`](../WHITEPAPER.md) §4.3 (Pocket philosophy).
+Because automatic snapshot bootstrap (request/download/activation) runs asynchronously on a scheduler (§2.3), the initial `ScanUTXOSet()` call at wallet-load time can run before the node has actually caught up — seeing only a near-empty pre-activation UTXO set. `CWallet::MaybeRescanUTXOSetAfterSnapshot()` re-runs the scan automatically once a snapshot actually activates (`interfaces::WalletLoader::rescanUTXOSetIfNeeded()`, called from `init.cpp`'s `MaybeActivateAutomaticSnapshot()` alongside the existing `ClearBlocksInFlight()`/`ResyncHeadersAfterRecovery()` hooks — see `CHANGELOG-muhash-attestation.md`, 2026-07-02), so balances self-heal without a manual rescan or wallet reimport.
+
+**Implication for wallet vendors:** seed + UTXO scan restores spendable balance; **transaction history before the pruning window is not recoverable** from the network (by design). Balances restored on a still-syncing node may briefly read `0` until the next automatic snapshot activation, at which point they self-correct with no user action required. See [`WHITEPAPER.md`](../WHITEPAPER.md) §4.3 (Pocket philosophy).
 
 ---
 
@@ -148,6 +150,12 @@ Defined in `src/protocol.h`; handlers in `src/net_processing.cpp`.
 | `Chain::forEachCoin()` | `src/interfaces/chain.h`, `src/node/interfaces.cpp` | Iterate live UTXO set (wallet scan) |
 | `CWallet::ScanUTXOSet()` | `src/wallet/wallet.cpp` | Recover wallet balances without block history |
 | `CWallet::CreditUTXOFromChain()` | `src/wallet/wallet.cpp` | Credit single UTXO into wallet map |
+| `CWallet::MaybeRescanUTXOSetAfterSnapshot()` | `src/wallet/wallet.cpp` | Redo `ScanUTXOSet()` once a snapshot activates, if the first pass ran mid-IBD |
+| `interfaces::WalletLoader::rescanUTXOSetIfNeeded()` | `src/interfaces/wallet.h`, `src/wallet/interfaces.cpp` | Fan-out of the above across every loaded wallet |
+| `ChainstateManager::HasSustainedInvalidChainWithMoreWork()` | `src/validation.h/.cpp` | Detect a stale pre-upgrade `BLOCK_FAILED_VALID` marking on a chain that has more work, past the MuHash activation height, as grounds for automatic snapshot-based recovery |
+| `ChainstateManager::HasFallenBehindPruneHorizon()` | `src/validation.h/.cpp` | Detect a node that left IBD once but has since fallen `>= MandatoryPruneDepth` behind the best known header |
+| `PeerManager::ResyncHeadersAfterRecovery()` | `src/net_processing.h/.cpp` | Reset per-peer headers-sync latch after a stuck-chain recovery clears a stale invalid marking |
+| `PeerManager::ClearBlocksInFlight()` | `src/net_processing.h/.cpp` | Cancel in-flight block requests left over from the pre-snapshot chainstate after any snapshot activation |
 
 ### 3.4 New struct / class members (`PeerManagerImpl`)
 
