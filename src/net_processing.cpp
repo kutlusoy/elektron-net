@@ -1074,6 +1074,9 @@ private:
     /** Elektron Net: force a fresh headers sync after stuck-chain recovery. */
     void ResyncHeadersAfterRecovery() override;
 
+    /** Elektron Net: cancel all in-flight block requests after a snapshot activation. */
+    void ClearBlocksInFlight() override;
+
     void AddToCompactExtraTransactions(const CTransactionRef& tx) EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex);
 
     /** Orphan/conflicted/etc transactions that are kept for compact block reconstruction.
@@ -2156,9 +2159,18 @@ void PeerManagerImpl::MaybeRequestSnapshot()
     // recovery, even outside IBD -- see below, where the "only if far behind in height"
     // gap check is also skipped in this case, since the blocking problem here is block
     // validity, not distance.
+    //
+    // A third, much more ordinary case: a node that has already left IBD (its own tip
+    // merely *looks* recent) but has since fallen more than a checkpoint interval behind a
+    // pruning peer -- see ChainstateManager::HasFallenBehindPruneHorizon(). Live-confirmed:
+    // once a peer has pruned away a block this node still needs, ordinary sync can never
+    // recover on its own ("Timeout downloading block ..., disconnecting peer", repeating
+    // forever) -- exactly the case automatic snapshots exist for, just reached from a node
+    // that was already caught up once rather than a fresh one starting at height 0.
     const bool ibd = m_chainman.IsInitialBlockDownload();
     const bool stuck_on_invalid_chain = m_chainman.HasSustainedInvalidChainWithMoreWork();
-    if (!ibd && !stuck_on_invalid_chain) {
+    const bool fell_behind_prune_horizon = m_chainman.HasFallenBehindPruneHorizon();
+    if (!ibd && !stuck_on_invalid_chain && !fell_behind_prune_horizon) {
         return;
     }
 
@@ -2313,6 +2325,31 @@ void PeerManagerImpl::ResyncHeadersAfterRecovery()
         state->fSyncStarted = false;
         nSyncStarted--;
     });
+}
+
+void PeerManagerImpl::ClearBlocksInFlight()
+{
+    // Elektron Net: live-observed after a snapshot activation jumps the active tip
+    // straight to the checkpoint height: blocks that were mid-request against the
+    // *previous* chainstate (e.g. the next few blocks past an old, now-superseded
+    // tip) are never fulfilled or explicitly cancelled -- FindNextBlocksToDownload()
+    // won't issue new requests to a peer whose in-flight count is already at
+    // MAX_BLOCKS_IN_TRANSIT_PER_PEER, so real progress silently stalls until those
+    // stale requests eventually hit the ordinary block-download timeout and
+    // disconnect the peer (multiple minutes later, and -- unlike an automatic
+    // outbound connection -- a peer added via the addconnection RPC does not
+    // reconnect on its own afterward). Cancelling them immediately here, right after
+    // a successful activation, lets the very next SendMessages() cycle request the
+    // blocks that actually matter post-jump instead of waiting that out.
+    LOCK(cs_main);
+    std::vector<uint256> in_flight_hashes;
+    in_flight_hashes.reserve(mapBlocksInFlight.size());
+    for (const auto& [hash, _] : mapBlocksInFlight) {
+        in_flight_hashes.push_back(hash);
+    }
+    for (const auto& hash : in_flight_hashes) {
+        RemoveBlockRequest(hash, std::nullopt);
+    }
 }
 
 void PeerManagerImpl::StartScheduledTasks(CScheduler& scheduler)

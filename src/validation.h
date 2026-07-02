@@ -1481,6 +1481,21 @@ public:
     //! beyond it -- this is that chain's actual tip.
     const CBlockIndex* BestInvalid() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main) { return m_best_invalid; }
 
+    //! Elektron Net: true if the best known header is at least one full checkpoint interval
+    //! (Consensus::Params::MandatoryPruneDepth) ahead of our active tip, and we've therefore
+    //! left ordinary IBD behind (IsInitialBlockDownload() latches to false once a node's own
+    //! tip merely *looks* recent, independent of how far behind a live, pruning peer it
+    //! actually is). A node in this state cannot catch up via ordinary block-by-block sync
+    //! at all: any block it still needs that falls below a peer's prune height is permanently
+    //! unavailable from that peer (confirmed live: repeated "Timeout downloading block ...,
+    //! disconnecting peer" once a peer has pruned the requested block away). This is the
+    //! precise, narrow trigger for PeerManagerImpl::MaybeRequestSnapshot() (net_processing.cpp)
+    //! to request a newer snapshot even outside ordinary IBD -- unlike
+    //! HasSustainedInvalidChainWithMoreWork(), this has nothing to do with chain validity or
+    //! security tradeoffs: it only reads how far behind our own already-accepted, valid
+    //! headers we are, which is exactly the situation automatic snapshots exist to solve.
+    bool HasFallenBehindPruneHorizon() const EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+
     CCheckQueue<CScriptCheck>& GetCheckQueue() { return m_script_check_queue; }
 
     ~ChainstateManager();

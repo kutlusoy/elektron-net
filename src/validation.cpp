@@ -6011,6 +6011,7 @@ util::Result<CBlockIndex*> ChainstateManager::ActivateSnapshot(
     uint256 base_blockhash = metadata.m_base_blockhash;
 
     CBlockIndex* snapshot_start_block{};
+    bool replacing_snapshot = false;
 
     {
         LOCK(::cs_main);
@@ -6020,21 +6021,17 @@ util::Result<CBlockIndex*> ChainstateManager::ActivateSnapshot(
         // from an old snapshot falls too far behind the pruned network and needs a
         // newer snapshot to catch up.  The old snapshot data is just as obsolete as
         // the pruned blocks it replaced.
+        //
+        // Only *detected* here -- the actual replacement happens much further down,
+        // right before the new chainstate's InitCoinsDB() call (live-observed: doing
+        // it here instead, by removing the old chainstate from m_chainstates before a
+        // new one exists to take its place, leaves m_chainstates completely empty for
+        // everything in between, and CurrentChainstate() -- called by, among other
+        // things, the ordinary mempool-emptiness check just below -- aborts outright
+        // when no chainstate exists at all).
         if (this->CurrentChainstate().m_from_snapshot_blockhash) {
             if (!verify_assumeutxo_hash) {
-                LogInfo("[snapshot] Replacing existing snapshot chainstate with newer automatic snapshot.\n");
-                Chainstate& old_cs = CurrentChainstate();
-                old_cs.ResetCoinsViews();
-                if (!DeleteChainstate(old_cs)) {
-                    return util::Error{Untranslated("Failed to remove old snapshot chainstate before activating new snapshot.")};
-                }
-                // Also clear the target on the IBD chainstate so it doesn't try to
-                // background-validate the now-deleted old snapshot.
-                for (auto& cs : m_chainstates) {
-                    if (cs && cs->m_target_blockhash) {
-                        cs->SetTargetBlock(nullptr);
-                    }
-                }
+                replacing_snapshot = true;
             } else {
                 return util::Error{Untranslated("Can't activate a snapshot-based chainstate more than once")};
             }
@@ -6100,15 +6097,54 @@ util::Result<CBlockIndex*> ChainstateManager::ActivateSnapshot(
             static_cast<size_t>(current_coinsdb_cache_size * IBD_CACHE_PERC));
     }
 
+    Chainstate* old_snapshot_cs = nullptr;
+    if (replacing_snapshot) {
+        LOCK(::cs_main);
+        // Elektron Net: every automatic snapshot chainstate shares the exact same
+        // fixed on-disk directory (Chainstate::StoragePath() never varies by
+        // checkpoint), so the old snapshot's leveldb handle must be closed before a
+        // new one can be opened at that path -- otherwise InitCoinsDB() below fails
+        // outright on the still-held LOCK file. old_snapshot_cs deliberately stays in
+        // m_chainstates (with its coins views now reset) until right after the new
+        // chainstate is registered via AddChainstate() further down; removing it any
+        // earlier would leave m_chainstates empty in between, which
+        // CurrentChainstate()/ActiveChainstate() (called by several things in
+        // between, e.g. the cache-resizing just above) abort outright on.
+        old_snapshot_cs = &CurrentChainstate();
+        LogInfo("[snapshot] Replacing existing snapshot chainstate with newer automatic snapshot.\n");
+
+        // Elektron Net: the old snapshot's base block had m_chain_tx_count set (a
+        // base_height+1 lower-bound estimate -- see PopulateAndValidateSnapshot()
+        // below and the earlier bug report on why automatic snapshots need this at
+        // all) back when *it* was activated. Once this replacement completes, that
+        // block is just an ordinary ancestor of the new snap_base, ==
+        // CheckBlockIndex() asserts (pindexFirstNeverProcessed == nullptr || pindex
+        // == snap_base) == pindex->HaveNumChainTxs() -- true only for the *current*
+        // snap_base -- and it fires the very next time CheckBlockIndex() runs
+        // (immediately, on the first post-replace block) if the stale value is left
+        // in place. Live-observed: assertion failure with no further explanation,
+        // process aborts.
+        if (CBlockIndex* old_base = m_blockman.LookupBlockIndex(*Assert(old_snapshot_cs->m_from_snapshot_blockhash))) {
+            old_base->m_chain_tx_count = 0;
+        }
+
+        old_snapshot_cs->ResetCoinsViews();
+    }
+
     auto snapshot_chainstate = WITH_LOCK(::cs_main,
         return std::make_unique<Chainstate>(
             /*mempool=*/nullptr, m_blockman, *this, base_blockhash));
 
     {
         LOCK(::cs_main);
+        // should_wipe=true when replacing: lets leveldb itself discard the old
+        // checkpoint's data as part of opening the new database at the same path,
+        // atomically -- simpler and safer than a separate manual destroy-then-create
+        // step while a (reset, but still list-resident) Chainstate for the old
+        // directory is still around.
         snapshot_chainstate->InitCoinsDB(
             static_cast<size_t>(current_coinsdb_cache_size * SNAPSHOT_CACHE_PERC),
-            in_memory, /*should_wipe=*/false);
+            in_memory, /*should_wipe=*/replacing_snapshot);
         snapshot_chainstate->InitCoinsCache(
             static_cast<size_t>(current_coinstip_cache_size * SNAPSHOT_CACHE_PERC));
     }
@@ -6155,6 +6191,17 @@ util::Result<CBlockIndex*> ChainstateManager::ActivateSnapshot(
 
     Chainstate& chainstate{AddChainstate(std::move(snapshot_chainstate))};
     m_blockman.m_snapshot_height = Assert(chainstate.SnapshotBase())->nHeight;
+
+    // Elektron Net: now that the new chainstate is registered and CurrentChainstate()
+    // resolves to it (AddChainstate() gave the old one a target, which excludes it),
+    // it's finally safe to drop the old snapshot chainstate from m_chainstates. Its
+    // disk data is already gone (folded into opening the new leveldb above via
+    // should_wipe=true), so this is purely a list removal -- calling the general
+    // DeleteChainstate() here instead would try to destroy the on-disk directory a
+    // second time, at what is now the *new*, just-activated chainstate's own path.
+    if (old_snapshot_cs) {
+        Assert(RemoveChainstate(*old_snapshot_cs));
+    }
 
     chainstate.PopulateBlockIndexCandidates();
 
@@ -6550,6 +6597,15 @@ void ChainstateManager::MaybeRebalanceCaches()
 {
     AssertLockHeld(::cs_main);
     Chainstate& current_cs{CurrentChainstate()};
+    // Elektron Net: guards against a narrow window during ActivateSnapshot()'s
+    // "replace an existing automatic snapshot" path, where the old snapshot
+    // chainstate has already had its coins views reset (to free up its on-disk
+    // directory for the incoming replacement) but is briefly still the one
+    // CurrentChainstate() resolves to. Only reachable if snapshot population then
+    // fails partway through (e.g. a corrupted download) and the cleanup path calls
+    // back in here; ResizeCoinsCaches() below would otherwise dereference a null
+    // coins view.
+    if (!current_cs.m_coins_views) return;
     Chainstate* historical_cs{HistoricalChainstate()};
     if (!historical_cs && !current_cs.m_from_snapshot_blockhash) {
         // Allocate everything to the IBD chainstate. This will always happen
@@ -6810,6 +6866,24 @@ bool ChainstateManager::HasSustainedInvalidChainWithMoreWork() const
         RECOVERY_TRIGGER_MIN_BLOCKS, RECOVERY_TRIGGER_WINDOW_SECONDS / spacing));
 
     return m_best_invalid->nChainWork > tip->nChainWork + (GetBlockProof(*tip) * blocks_threshold);
+}
+
+bool ChainstateManager::HasFallenBehindPruneHorizon() const
+{
+    AssertLockHeld(::cs_main);
+    const CBlockIndex* tip{ActiveChain().Tip()};
+    if (!tip || !m_best_header) return false;
+
+    // Elektron Net: same "which checkpoint would a fresh node bootstrap from" math as
+    // PeerManagerImpl::MaybeRequestSnapshot() uses once it actually requests a snapshot --
+    // duplicated here (rather than calling into net_processing.cpp) because this is
+    // consensus/chain-state bookkeeping, not networking, and both net_processing.cpp and
+    // init.cpp need the same answer. Below one checkpoint interval, there's nothing to
+    // bootstrap from yet -- same as a brand new node, just let ordinary IBD handle it.
+    const int checkpoint_interval = static_cast<int>(GetConsensus().MandatoryPruneDepth);
+    if (checkpoint_interval <= 0 || m_best_header->nHeight < checkpoint_interval) return false;
+
+    return (m_best_header->nHeight - tip->nHeight) >= checkpoint_interval;
 }
 
 bool ChainstateManager::ValidatedSnapshotCleanup(Chainstate& validated_cs, Chainstate& unvalidated_cs)
