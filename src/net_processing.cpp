@@ -1071,6 +1071,9 @@ private:
     /** Elektron Net: if IBD is stalled because all peers are pruned, request a UTXO snapshot. */
     void MaybeRequestSnapshot() override;
 
+    /** Elektron Net: force a fresh headers sync after stuck-chain recovery. */
+    void ResyncHeadersAfterRecovery() override;
+
     void AddToCompactExtraTransactions(const CTransactionRef& tx) EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex);
 
     /** Orphan/conflicted/etc transactions that are kept for compact block reconstruction.
@@ -2142,8 +2145,20 @@ void PeerManagerImpl::MaybeRequestSnapshot()
 {
     LOCK(cs_main);
 
-    // Only during IBD
-    if (!m_chainman.IsInitialBlockDownload()) {
+    // Elektron Net: normally this only runs during ordinary IBD (still catching up in
+    // height). But a node can also get permanently stuck without being behind in height at
+    // all -- e.g. after a consensus rule change, if it already downloaded and rejected a
+    // peer's chain that carries substantially more real proof-of-work than its own (see
+    // ChainstateManager::HasSustainedInvalidChainWithMoreWork()). Ordinary reconnection and
+    // re-sync cannot recover from that on their own: the offending blocks get permanently
+    // cached as invalid in the block index on disk, independent of which software version
+    // is running. Treat that as an equally valid reason to attempt automatic snapshot
+    // recovery, even outside IBD -- see below, where the "only if far behind in height"
+    // gap check is also skipped in this case, since the blocking problem here is block
+    // validity, not distance.
+    const bool ibd = m_chainman.IsInitialBlockDownload();
+    const bool stuck_on_invalid_chain = m_chainman.HasSustainedInvalidChainWithMoreWork();
+    if (!ibd && !stuck_on_invalid_chain) {
         return;
     }
 
@@ -2174,7 +2189,14 @@ void PeerManagerImpl::MaybeRequestSnapshot()
     const int tip_height = active_chain.Height();
     if (tip_height < 0) return;
 
-    const CBlockIndex* best_header = m_chainman.m_best_header;
+    // Elektron Net: when stuck on a sustained invalid chain, m_best_header itself can be
+    // stuck too -- ChainstateManager::RecalculateBestHeader() (and the equivalent update in
+    // AcceptBlockHeader()) skip any header descended from a BLOCK_FAILED_VALID ancestor, so
+    // m_best_header ends up no further ahead than our own (also stuck) tip, even though the
+    // real rejected chain extends far beyond it. m_best_invalid, by contrast, is exactly
+    // that rejected chain's tip -- it's the reference we determined we're stuck behind in
+    // the first place -- so use it instead of m_best_header in that case.
+    const CBlockIndex* best_header = stuck_on_invalid_chain ? m_chainman.BestInvalid() : m_chainman.m_best_header;
     if (!best_header) return;
 
     const int header_height = best_header->nHeight;
@@ -2183,7 +2205,15 @@ void PeerManagerImpl::MaybeRequestSnapshot()
         return; // first checkpoint not yet reached on the network — sync like Bitcoin Core
     }
 
-    if (header_height - tip_height < checkpoint_interval) {
+    // Elektron Net: a node stuck on a sustained, more-work invalid chain may be only a
+    // handful of blocks behind (its own -- ultimately doomed -- fork can keep it looking
+    // "caught up" by height); ordinary block-by-block sync can't fix that regardless of
+    // the gap size, since the peer's blocks near the fork point are the ones being
+    // rejected. Skip the "only bother with a snapshot if we're far behind" gap check in
+    // that case; if no checkpoint is available yet (below), this still falls through to
+    // no-op and the operator is left with the existing warning plus -reindex as a manual
+    // fallback.
+    if (!stuck_on_invalid_chain && header_height - tip_height < checkpoint_interval) {
         return; // normal IBD is still possible within the trailing window
     }
 
@@ -2252,6 +2282,37 @@ void PeerManagerImpl::MaybeRequestSnapshot()
 
     m_last_snapshot_request = now;
     m_snapshot_bootstrap_target = checkpoint_hash;
+}
+
+void PeerManagerImpl::ResyncHeadersAfterRecovery()
+{
+    // Elektron Net: headers sync with a peer only ever (re-)starts once per connection under
+    // normal circumstances (fSyncStarted latches true and stays true; the only built-in reset
+    // path requires *another* preferred peer to fail over to, which a small/young network may
+    // not have). If that one-time sync ran into a header descended from a block we had marked
+    // BLOCK_FAILED_VALID (bad-prevblk / duplicate-invalid), it aborts entirely without ever
+    // recording the peer's true best-known block -- and stays stuck that way even after
+    // stuck-chain recovery (see HasSustainedInvalidChainWithMoreWork()) clears the stale
+    // marking, since nothing else prompts a retry. Force that retry here, for every peer that
+    // already gave up, so the node actually learns about (and downloads) the blocks past the
+    // just-activated snapshot checkpoint instead of sitting at the checkpoint height forever.
+    //
+    // This is called from the scheduler thread, not the net message-processing thread, so it
+    // must not touch anything guarded by g_msgproc_mutex (e.g. Peer::m_headers_sync_timeout) --
+    // that mutex is locked once for the entire lifetime of CConnman::ThreadMessageHandler() and
+    // is therefore never obtainable from another thread during normal operation. fSyncStarted
+    // and nSyncStarted are guarded by cs_main instead, which is safe to take here; leaving the
+    // stale m_headers_sync_timeout behind is harmless since it is unconditionally overwritten
+    // by the net thread itself the next time it starts a sync for this peer.
+    LOCK(cs_main);
+    m_connman.ForEachNode([&](CNode* pnode) {
+        if (!pnode) return;
+        CNodeState* state = State(pnode->GetId());
+        if (!state || !state->fSyncStarted) return;
+        LogInfo("[snapshot] Resetting headers sync state for peer=%d after stuck-chain recovery.\n", pnode->GetId());
+        state->fSyncStarted = false;
+        nSyncStarted--;
+    });
 }
 
 void PeerManagerImpl::StartScheduledTasks(CScheduler& scheduler)

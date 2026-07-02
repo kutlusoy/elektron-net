@@ -1481,7 +1481,17 @@ static void MaybeActivateAutomaticSnapshot(NodeContext& node)
 
     // Only activate automatic snapshots while in IBD. Active nodes that have
     // written their own checkpoint snapshots must not accidentally re-load them.
-    if (!chainman.IsInitialBlockDownload()) {
+    //
+    // Elektron Net: also proceed if we're stuck on a sustained, more-work invalid chain
+    // (see ChainstateManager::HasSustainedInvalidChainWithMoreWork(), used the same way by
+    // PeerManagerImpl::MaybeRequestSnapshot() to request the download this function is
+    // meant to activate). A node in that state is *not* "active [and] has written its own
+    // checkpoint snapshot" -- it's stuck on a dead branch and IsInitialBlockDownload() can
+    // read false simply because its own (bad) tip's timestamp looks recent, not because it
+    // has actually caught up. Without this, MaybeRequestSnapshot() would still request and
+    // download the snapshot, but it would then sit on disk forever, unactivated.
+    const bool stuck_on_invalid_chain = WITH_LOCK(::cs_main, return chainman.HasSustainedInvalidChainWithMoreWork());
+    if (!chainman.IsInitialBlockDownload() && !stuck_on_invalid_chain) {
         return;
     }
 
@@ -1620,6 +1630,35 @@ static void MaybeActivateAutomaticSnapshot(NodeContext& node)
         }
     }
 
+    // Elektron Net: ActivateSnapshot() refuses outright if the checkpoint's own block
+    // header is cached BLOCK_FAILED_VALID -- live-observed: "The base block header (...)
+    // is part of an invalid chain". That's exactly the stale marking a stuck node needs to
+    // recover from (e.g. left over from old, pre-upgrade software that rejected this same,
+    // now-valid chain under different rules) -- it's specifically what
+    // HasSustainedInvalidChainWithMoreWork() detected to get us into this recovery path in
+    // the first place. Clear it here, the same way the `reconsiderblock` RPC does, rather
+    // than trying to activate against a chain we ourselves have marked unusable. This does
+    // not weaken validation: the snapshot's actual content is still independently
+    // cross-checked against the on-chain MuHash attestation (or the .hash sidecar) just
+    // above and by ActivateSnapshot() itself, so a genuinely bad snapshot is still rejected
+    // -- this only removes a stale verdict, it doesn't skip re-verification.
+    if (stuck_on_invalid_chain) {
+        LOCK(::cs_main);
+        if (CBlockIndex* checkpoint_index_mut = chainman.m_blockman.LookupBlockIndex(metadata.m_base_blockhash)) {
+            LogInfo("[snapshot] Clearing stale invalid marking on %s before activation (stuck-chain recovery).\n",
+                    metadata.m_base_blockhash.ToString());
+            chainman.ActiveChainstate().ResetBlockFailureFlags(checkpoint_index_mut);
+            // ResetBlockFailureFlags() alone doesn't recompute m_best_header -- it was
+            // pinned at our own (stuck) tip precisely because every known header past that
+            // point still descended from a BLOCK_FAILED_VALID ancestor (see
+            // ChainstateManager::BestInvalid()'s doc comment). ActivateSnapshot() requires
+            // the checkpoint to be an ancestor of m_best_header ("A forked headers-chain
+            // with more work... exists" otherwise) -- live-observed -- so recompute it now
+            // that the flag is cleared.
+            chainman.RecalculateBestHeader();
+        }
+    }
+
     auto activation_result = chainman.ActivateSnapshot(afile, metadata, false, /*verify_assumeutxo_hash=*/false, expected_hash);
     if (!activation_result) {
         LogWarning("[snapshot] Failed to activate snapshot: %s\n",
@@ -1637,6 +1676,16 @@ static void MaybeActivateAutomaticSnapshot(NodeContext& node)
 
     LogInfo("[snapshot] Successfully activated snapshot at height %d, hash=%s\n",
             (*activation_result)->nHeight, (*activation_result)->GetBlockHash().ToString());
+
+    // Elektron Net: a stuck-chain recovery only clears the stale invalid marking on the
+    // checkpoint's ancestors -- it doesn't touch per-peer headers-sync state. Any peer whose
+    // one-time headers sync already ran into that stale marking (duplicate-invalid /
+    // bad-prevblk) gave up for good and never recorded its true best-known block, so normal
+    // block download for the blocks past this checkpoint would never resume on its own. Force
+    // a fresh headers handshake with such peers now that the marking is gone.
+    if (stuck_on_invalid_chain && node.peerman) {
+        node.peerman->ResyncHeadersAfterRecovery();
+    }
 
     // Elektron Net: cleanup obsolete snapshot files from earlier checkpoints or failed attempts.
     try {

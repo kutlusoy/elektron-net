@@ -126,6 +126,12 @@ public:
     /** Elektron Net: trigger snapshot bootstrap request if IBD is stalled. Test-only hook. */
     virtual void MaybeRequestSnapshot() = 0;
 
+    /** Elektron Net: force a fresh headers sync with all peers. Used after stuck-chain
+     *  recovery clears stale BLOCK_FAILED_VALID markings, since any peer whose headers sync
+     *  already ran into those markings is otherwise permanently stuck (headers sync only
+     *  ever (re-)starts once per connection under normal circumstances). */
+    virtual void ResyncHeadersAfterRecovery() = 0;
+
     /**
      * Abort private broadcast attempts for transactions currently being privately broadcast.
      *
