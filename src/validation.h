@@ -841,10 +841,24 @@ public:
         LOCKS_EXCLUDED(::cs_main);
 
     // Block (dis)connection on a given view:
-    DisconnectResult DisconnectBlock(const CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view)
-        EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    //
+    // Elektron Net: `update_muhash` (default true) gates whether the persistent
+    // Chainstate::m_utxo_muhash accumulator (see EnsureUTXOMuHashLoaded) is mutated by
+    // this call. It defaults to true because both real call sites -- DisconnectTip()/
+    // ConnectTip() and ReplayBlocks() -- represent actual, persistent changes to the
+    // chainstate's coins view that m_utxo_muhash must track. It must be passed false
+    // from CVerifyDB::VerifyDB(): that function disconnects (and, only at
+    // -checklevel>=4, reconnects) blocks against a throwaway, scratch CCoinsViewCache
+    // purely to sanity-check the on-disk data -- it never touches the real CoinsTip()/
+    // CoinsDB(). At the default -checklevel=3, only the disconnect half runs (no
+    // matching reconnect), so leaving this unguarded permanently subtracted the last
+    // `-checkblocks` (default 6) blocks' coin changes from m_utxo_muhash on every
+    // single node restart, live-observed to desync the accumulator from the chain's
+    // real tip and reject the very next block validated against it.
+    DisconnectResult DisconnectBlock(const CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view,
+                      bool update_muhash = true) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
     bool ConnectBlock(const CBlock& block, BlockValidationState& state, CBlockIndex* pindex,
-                      CCoinsViewCache& view, bool fJustCheck = false) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+                      CCoinsViewCache& view, bool fJustCheck = false, bool update_muhash = true) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
     // Apply the effects of a block disconnection on the UTXO set.
     bool DisconnectTip(BlockValidationState& state, DisconnectedBlockTransactions* disconnectpool) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_mempool->cs);

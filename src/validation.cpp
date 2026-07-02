@@ -2206,14 +2206,17 @@ int ApplyTxInUndo(Coin&& undo, CCoinsViewCache& view, const COutPoint& out)
 
 /** Undo the effects of this block (with given index) on the UTXO set represented by coins.
  *  When FAILED is returned, view is left in an indeterminate state. */
-DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view)
+DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIndex* pindex, CCoinsViewCache& view,
+                                              bool update_muhash)
 {
     AssertLockHeld(::cs_main);
     bool fClean = true;
 
     // Elektron Net: keep the incremental UTXO MuHash accumulator in lockstep with the
-    // real UTXO set on reorg too; see the matching commit step in ConnectBlock.
-    EnsureUTXOMuHashLoaded();
+    // real UTXO set on reorg too; see the matching commit step in ConnectBlock. Skipped
+    // when update_muhash is false (CVerifyDB::VerifyDB()'s scratch/read-only check) --
+    // see the parameter's doc comment in validation.h.
+    if (update_muhash) EnsureUTXOMuHashLoaded();
 
     CBlockUndo blockUndo;
     if (!m_blockman.ReadBlockUndo(blockUndo, *pindex)) {
@@ -2254,7 +2257,7 @@ DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIn
                         fClean = false; // transaction output mismatch
                     }
                 }
-                if (is_spent) m_utxo_muhash.RemoveCoin(out, coin);
+                if (is_spent && update_muhash) m_utxo_muhash.RemoveCoin(out, coin);
             }
         }
 
@@ -2274,7 +2277,7 @@ DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIn
                 // Re-read from view rather than trusting the (possibly height-adjusted,
                 // see ApplyTxInUndo) undo record directly, so this always matches exactly
                 // what was actually restored to the UTXO set.
-                m_utxo_muhash.AddCoin(out, view.AccessCoin(out));
+                if (update_muhash) m_utxo_muhash.AddCoin(out, view.AccessCoin(out));
             }
             // At this point, all of txundo.vprevout should have been moved out.
         }
@@ -2654,7 +2657,7 @@ void WriteAutomaticSnapshot(Chainstate& chainstate, int nHeight, const CBlockInd
  *  Validity checks that depend on the UTXO set are also done; ConnectBlock()
  *  can fail if those validity checks fail (among other reasons). */
 bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, CBlockIndex* pindex,
-                               CCoinsViewCache& view, bool fJustCheck)
+                               CCoinsViewCache& view, bool fJustCheck, bool update_muhash)
 {
     AssertLockHeld(cs_main);
     assert(pindex);
@@ -3015,18 +3018,25 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
     // leaves it untouched too -- only blocks that are actually being connected do.
     // Runs unconditionally (not just post-activation) so the accumulator is already
     // warmed up by the time MuhashAttestationActivationHeight is reached; see
-    // EnsureUTXOMuHashLoaded.
-    for (size_t i = 0; i < block.vtx.size(); ++i) {
-        const CTransaction& tx = *block.vtx[i];
-        if (!tx.IsCoinBase()) {
-            const CTxUndo& txundo = blockundo.vtxundo[i - 1];
-            for (size_t j = 0; j < tx.vin.size(); ++j) {
-                m_utxo_muhash.RemoveCoin(tx.vin[j].prevout, txundo.vprevout[j]);
+    // EnsureUTXOMuHashLoaded. Also gated on update_muhash, false only for
+    // CVerifyDB::VerifyDB()'s -checklevel>=4 scratch reconnect check (see the
+    // parameter's doc comment in validation.h and the matching guard in
+    // DisconnectBlock): that runs against a throwaway view that was never actually
+    // subtracted from m_utxo_muhash in the first place (DisconnectBlock() skips the
+    // mutation for that same scratch pass), so re-adding it here would double count.
+    if (update_muhash) {
+        for (size_t i = 0; i < block.vtx.size(); ++i) {
+            const CTransaction& tx = *block.vtx[i];
+            if (!tx.IsCoinBase()) {
+                const CTxUndo& txundo = blockundo.vtxundo[i - 1];
+                for (size_t j = 0; j < tx.vin.size(); ++j) {
+                    m_utxo_muhash.RemoveCoin(tx.vin[j].prevout, txundo.vprevout[j]);
+                }
             }
-        }
-        for (size_t o = 0; o < tx.vout.size(); ++o) {
-            if (tx.vout[o].scriptPubKey.IsUnspendable()) continue;
-            m_utxo_muhash.AddCoin(COutPoint(tx.GetHash(), o), Coin(tx.vout[o], pindex->nHeight, tx.IsCoinBase()));
+            for (size_t o = 0; o < tx.vout.size(); ++o) {
+                if (tx.vout[o].scriptPubKey.IsUnspendable()) continue;
+                m_utxo_muhash.AddCoin(COutPoint(tx.GetHash(), o), Coin(tx.vout[o], pindex->nHeight, tx.IsCoinBase()));
+            }
         }
     }
 
@@ -5090,7 +5100,7 @@ VerifyDBResult CVerifyDB::VerifyDB(
         if (nCheckLevel >= 3) {
             if (curr_coins_usage <= chainstate.m_coinstip_cache_size_bytes) {
                 assert(coins.GetBestBlock() == pindex->GetBlockHash());
-                DisconnectResult res = chainstate.DisconnectBlock(block, pindex, coins);
+                DisconnectResult res = chainstate.DisconnectBlock(block, pindex, coins, /*update_muhash=*/false);
                 if (res == DISCONNECT_FAILED) {
                     LogError("Verification error: irrecoverable inconsistency in block data at %d, hash=%s", pindex->nHeight, pindex->GetBlockHash().ToString());
                     return VerifyDBResult::CORRUPTED_BLOCK_DB;
@@ -5134,7 +5144,7 @@ VerifyDBResult CVerifyDB::VerifyDB(
                 LogError("Verification error: ReadBlock failed at %d, hash=%s", pindex->nHeight, pindex->GetBlockHash().ToString());
                 return VerifyDBResult::CORRUPTED_BLOCK_DB;
             }
-            if (!chainstate.ConnectBlock(block, state, pindex, coins)) {
+            if (!chainstate.ConnectBlock(block, state, pindex, coins, /*fJustCheck=*/false, /*update_muhash=*/false)) {
                 LogError("Verification error: found unconnectable block at %d, hash=%s (%s)", pindex->nHeight, pindex->GetBlockHash().ToString(), state.ToString());
                 return VerifyDBResult::CORRUPTED_BLOCK_DB;
             }

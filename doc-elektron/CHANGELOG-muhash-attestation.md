@@ -183,6 +183,38 @@ Fix: once the old chainstate is deleted because there's no static assumeutxo dat
 
 ---
 
+## 2026-07-02: mainnet-activation risk simulation, and bug 10 (VerifyDB silently corrupted the MuHash accumulator on every restart)
+
+At the user's request: simulated what a real mainnet MuHash activation would look like, using regtest as a stand-in (the validation code path is identical; only chainparams differ). Two scenarios, both run against real, separately-built binaries — a "new" binary (this branch) and an "old" reference binary built from `16ef72f`, the commit immediately before MuHash was introduced (verified via `git merge-base main MuHash`).
+
+### Scenario A: old software vs. new software across the activation height
+
+Two nodes, connected throughout, synced identically up to height 49 (both algorithms agree pre-activation). At height 50 (regtest `MuhashAttestationActivationHeight`):
+- Old-software-mined block 50 → rejected by the new-software node (`bad-utxo-attestation`), which also flags the old node `Misbehaving` and logs *"potential consensus incompatibility"*.
+- New-software-mined block 50 → rejected by the old-software node, symmetrically.
+
+Confirmed both directions: crossing a real activation height with *any* un-upgraded node present causes an immediate, silent hard fork — not an edge case, the deterministic outcome of a flag-day activation with mixed software versions on the network. This directly informed the user's plan to force upgrades via a version bump ahead of any real mainnet activation.
+
+### Scenario B: does an updated node correctly rejoin the real chain afterward, and what happens to old vs. new coins?
+
+Simulated: an old-software node mines its own (soon to be orphaned) blocks past the fork point while the "real" network (new software) mines further ahead with more work, then the node operator updates their software and reconnects. Live-verified with a real coinbase UTXO from *before* the fork and one *only on the abandoned branch*.
+
+**First attempt exposed a new, serious, standalone bug (10) — unrelated to forks, hits every normal restart.** After updating and reconnecting, the node got stuck rejecting the real chain's block 50 with `bad-utxo-attestation`, *even though both sides were running identical new software*. Root cause: `CVerifyDB::VerifyDB()` (runs at every startup; regtest defaults `-checklevel=3`, verifying the last `-checkblocks` (default 6) blocks) disconnects those blocks against a throwaway, scratch `CCoinsViewCache` purely to sanity-check on-disk data — it never touches the real `CoinsTip()`/`CoinsDB()`, and at the default checklevel it disconnects *without* a matching reconnect (that only happens at `-checklevel>=4`). `Chainstate::DisconnectBlock()`'s MuHash bookkeeping had no way to tell this scratch call apart from a real reorg disconnect, so it permanently subtracted those blocks' coin changes from the **persistent** `m_utxo_muhash` accumulator on every single restart with more than 0 verifiable blocks — silently desyncing it from the chain's real tip. Confirmed directly: `gettxoutsetinfo muhash` (independent full-scan ground truth) at height 49 did not match what the corrupted accumulator produced after a restart.
+
+Fix: added an `update_muhash` parameter (default `true`) to both `Chainstate::DisconnectBlock()` and `Chainstate::ConnectBlock()`. The two real call sites (`DisconnectTip()`/`ConnectTip()`, and `ReplayBlocks()`'s crash-recovery replay) keep the default; `CVerifyDB::VerifyDB()`'s two call sites (the level-3 disconnect check and the level-4-only reconnect check) now both pass `false`. Diagnosed with temporary `LogInfo` tracing added to `EnsureUTXOMuHashLoaded()`/`DisconnectBlock()` (rebuilt, reproduced, removed once confirmed) after an `fprintf(stderr, ...)` first attempt went missing — Bitcoin Core detaches/redirects stderr once its own logging takes over `-printtoconsole=0`, so anything logged after early startup needs `LogInfo`, not raw `fprintf`, to reliably land in `debug.log`.
+
+**Re-verified after the fix**, correctly isolating test methodology from the bug itself (an old-software node that has *already* seen and rejected a peer's chain permanently caches that block as invalid regardless of a later software update — see below — so this needed a node that had *never* contacted the real network before updating, to observe a clean first attempt): fresh old-software node, mined its own 59-block chain in total isolation, gracefully stopped, restarted with the fixed new software, connected to the real (69-block) chain for the very first time — reorged cleanly to the exact matching tip, no `bad-utxo-attestation`, no crash.
+
+### What happens to old vs. new coins (the user's original question)
+
+With the same clean setup: the fully-reorged node correctly retains every pre-fork/shared coin (`gettxout` on a block-10-height coinbase: present, spendable, `confirmations: 60`) and correctly has **no record at all** of coins that only ever existed on the node's own abandoned branch (`gettxout` on the old-fork-only coinbase: empty/not found) — exactly matching the user's expectation: legitimate old coins are unaffected by the fork; coins mined only on the losing branch are simply gone, as if they never existed, once the node adopts the winning chain.
+
+### Practical finding: a software update alone is not always enough
+
+Separately verified a scenario the user didn't explicitly ask about but that matters for a real rollout: if an old-software node has **already** synced far enough to encounter and reject the new chain's blocks *before* being updated (which happens automatically and immediately over live P2P — essentially guaranteed for any node that was online), Bitcoin's block index permanently caches those specific blocks as `BLOCK_FAILED_VALID`. That marking survives a software update (it's data on disk, not a software limitation) and is **not** automatically cleared by upgrading alone — the node stayed stuck at the fork point even after the update, still logging `"...was previously marked invalid"` for the exact same blocks. `reconsiderblock <hash>` on the first rejected block partially helped but stalled again a few blocks later (several blocks had been marked invalid during the original rejection, not just one, and clearing them one at a time is impractical). `-reindex` reliably resolved it in one step (rebuilds the block index from the raw block files on disk, discarding all stale validity flags), reaching the exact same, fully-correct end state as the clean-first-contact case. **Operational implication for a real rollout: instruct operators to update *before* their node has a chance to sync past the activation height on the old chain if at all possible; if a node is found stuck after already having rejected blocks pre-update, `-reindex` (not just restarting) is the reliable fix, not `reconsiderblock`.**
+
+---
+
 ## Deferred (not part of this pass)
 
 - **Phase 2 (snapshot metadata embedding):** `WriteAutomaticSnapshot()` still always performs a full `HASH_SERIALIZED` pass for the checkpoint snapshot file itself; the accumulator's state is not yet embedded in snapshot metadata for bootstrap nodes to skip a from-scratch rebuild. Not needed for this pass: activation is testnet/regtest-only, at heights far below the checkpoint interval (`MANDATORY_PRUNE_DEPTH`), so no node exercised by this change will reach a checkpoint boundary in the course of testing it.
