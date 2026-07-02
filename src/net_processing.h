@@ -132,6 +132,13 @@ public:
      *  ever (re-)starts once per connection under normal circumstances). */
     virtual void ResyncHeadersAfterRecovery() = 0;
 
+    /** Elektron Net: cancel all in-flight block download requests. Used right after a
+     *  snapshot activation, since any block requested against the *previous* active
+     *  chainstate is meaningless once the tip has jumped straight to the checkpoint --
+     *  left alone, those requests just occupy the per-peer in-flight budget until they
+     *  eventually time out and disconnect the peer, stalling real progress for minutes. */
+    virtual void ClearBlocksInFlight() = 0;
+
     /**
      * Abort private broadcast attempts for transactions currently being privately broadcast.
      *

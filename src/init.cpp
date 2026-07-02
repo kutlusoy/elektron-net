@@ -1490,8 +1490,15 @@ static void MaybeActivateAutomaticSnapshot(NodeContext& node)
     // read false simply because its own (bad) tip's timestamp looks recent, not because it
     // has actually caught up. Without this, MaybeRequestSnapshot() would still request and
     // download the snapshot, but it would then sit on disk forever, unactivated.
+    //
+    // Same reasoning applies to a node that has simply fallen more than a checkpoint
+    // interval behind a pruning peer after already leaving IBD (see
+    // ChainstateManager::HasFallenBehindPruneHorizon()) -- MaybeRequestSnapshot() requests
+    // and downloads a newer snapshot for that case too, and it would otherwise sit here
+    // unactivated exactly the same way.
     const bool stuck_on_invalid_chain = WITH_LOCK(::cs_main, return chainman.HasSustainedInvalidChainWithMoreWork());
-    if (!chainman.IsInitialBlockDownload() && !stuck_on_invalid_chain) {
+    const bool fell_behind_prune_horizon = WITH_LOCK(::cs_main, return chainman.HasFallenBehindPruneHorizon());
+    if (!chainman.IsInitialBlockDownload() && !stuck_on_invalid_chain && !fell_behind_prune_horizon) {
         return;
     }
 
@@ -1685,6 +1692,17 @@ static void MaybeActivateAutomaticSnapshot(NodeContext& node)
     // a fresh headers handshake with such peers now that the marking is gone.
     if (stuck_on_invalid_chain && node.peerman) {
         node.peerman->ResyncHeadersAfterRecovery();
+    }
+
+    // Elektron Net: any block requested against the chainstate this activation just
+    // replaced is now meaningless (the tip jumped straight to the checkpoint) -- left
+    // alone, those stale in-flight requests occupy each affected peer's download budget
+    // until they eventually time out and disconnect the peer, stalling real progress for
+    // minutes for no reason. Applies to every successful activation, not just recovery
+    // ones: a large first-time bootstrap can just as easily have blocks genuinely
+    // in-flight against the pre-snapshot chainstate at the moment it activates.
+    if (node.peerman) {
+        node.peerman->ClearBlocksInFlight();
     }
 
     // Elektron Net: cleanup obsolete snapshot files from earlier checkpoints or failed attempts.
