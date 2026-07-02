@@ -195,30 +195,55 @@ ChainstateLoadResult LoadChainstate(ChainstateManager& chainman, const CacheSize
 
     // Elektron Net: automatic snapshots have no hardcoded assumeutxo data in
     // chainparams. Background validation would stall forever because historical
-    // blocks older than the snapshot are pruned and unavailable on all peers.
-    // Clear the target block on any chainstate that is trying to validate the
-    // snapshot so that no background work is scheduled.
+    // blocks older than the snapshot are pruned and unavailable on all peers, so the
+    // pre-snapshot ("historical") chainstate must be abandoned. This used to just
+    // clear its target block, but that broke ChainstateManager::CurrentChainstate():
+    // it picks the *first* chainstate in m_chainstates with no m_target_blockhash, and
+    // clearing the historical chainstate's target left BOTH it and the snapshot
+    // chainstate target-less, so CurrentChainstate() kept resolving to the empty,
+    // never-connected historical chainstate instead of the snapshot chainstate --
+    // live-crashed at startup with `Assert(chainman.ActiveTip())` failing in
+    // AppInitMain() (init.cpp), since the wrongly-selected "current" chainstate had no
+    // tip at all.
+    //
+    // Deleting the historical chainstate outright (instead of merely clearing its
+    // target) fixes that, but uncovers a second invariant: ChainstateManager::
+    // ValidatedChainstate() -- used by StartIndexBackgroundSync() (init.cpp) and
+    // BaseIndex::Init() (index/base.cpp) -- requires *some* chainstate with
+    // m_assumeutxo == Assumeutxo::VALIDATED to exist, and aborts (live-crashed, this
+    // time inside the initload thread) if none does. Normally that's always the
+    // historical chainstate (VALIDATED is every Chainstate's default). Since we just
+    // deleted it, the snapshot chainstate must take over that role. This is safe for
+    // Elektron's automatic snapshots specifically: unlike upstream assumeutxo (whose
+    // whole premise is a snapshot with no independent verification until background
+    // validation catches up), ours was already cross-checked against the receiving
+    // node's own on-chain MuHash coinbase attestation before activation (see
+    // MaybeActivateAutomaticSnapshot(), init.cpp) -- it isn't merely assumed valid, it
+    // has independently been confirmed valid by this node.
+    bool deleted_historical_cs{false};
     if (assumeutxo_cs) {
         const CBlockIndex* base = assumeutxo_cs->SnapshotBase();
         if (base && !chainman.GetParams().AssumeutxoForHeight(base->nHeight).has_value()) {
-            for (auto& cs : chainman.m_chainstates) {
-                if (cs && cs->m_target_blockhash) {
-                    cs->SetTargetBlock(nullptr);
-                    LogInfo("[snapshot] Disabled background validation for automatic snapshot on restart.\n");
-                }
+            validated_cs.ResetCoinsViews();
+            if (!chainman.DeleteChainstate(validated_cs)) {
+                return {ChainstateLoadStatus::FAILURE_FATAL, Untranslated("Couldn't remove abandoned pre-snapshot chainstate.")};
             }
+            assumeutxo_cs->m_assumeutxo = Assumeutxo::VALIDATED;
+            deleted_historical_cs = true;
+            LogInfo("[snapshot] Discarded old pre-snapshot chainstate on restart (background validation is not possible for automatic snapshots).\n");
         }
     }
 
     // If a snapshot chainstate was fully validated by a background chainstate during
     // the last run, detect it here and clean up the now-unneeded background
-    // chainstate.
+    // chainstate. Not applicable (SKIPPED) if the historical chainstate was just
+    // deleted above -- background validation could never have completed for it.
     //
     // Why is this cleanup done here (on subsequent restart) and not just when the
     // snapshot is actually validated? Because this entails unusual
     // filesystem operations to move leveldb data directories around, and that seems
     // too risky to do in the middle of normal runtime.
-    auto snapshot_completion{assumeutxo_cs
+    auto snapshot_completion{(assumeutxo_cs && !deleted_historical_cs)
                              ? chainman.MaybeValidateSnapshot(validated_cs, *assumeutxo_cs)
                              : SnapshotCompletionResult::SKIPPED};
 

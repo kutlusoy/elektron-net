@@ -419,20 +419,38 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
     }
 
     if (snapshot_blockhash) {
-        const std::optional<AssumeutxoData> maybe_au_data = GetParams().AssumeutxoForBlockhash(*snapshot_blockhash);
-        if (!maybe_au_data) {
-            m_opts.notifications.fatalError(strprintf(_("Assumeutxo data not found for the given blockhash '%s'."), snapshot_blockhash->ToString()));
+        CBlockIndex* base{LookupBlockIndex(*snapshot_blockhash)};
+        if (!base) {
+            m_opts.notifications.fatalError(strprintf(_("Failed to find block index for the snapshot base block '%s'."), snapshot_blockhash->ToString()));
             return false;
         }
-        const AssumeutxoData& au_data = *Assert(maybe_au_data);
-        m_snapshot_height = au_data.height;
-        CBlockIndex* base{LookupBlockIndex(*snapshot_blockhash)};
+        const std::optional<AssumeutxoData> maybe_au_data = GetParams().AssumeutxoForBlockhash(*snapshot_blockhash);
+        if (maybe_au_data) {
+            const AssumeutxoData& au_data = *Assert(maybe_au_data);
+            m_snapshot_height = au_data.height;
 
-        // Since m_chain_tx_count (responsible for estimated progress) isn't persisted
-        // to disk, we must bootstrap the value for assumedvalid chainstates
-        // from the hardcoded assumeutxo chainparams.
-        base->m_chain_tx_count = au_data.m_chain_tx_count;
-        LogInfo("[snapshot] set m_chain_tx_count=%d for %s", au_data.m_chain_tx_count, snapshot_blockhash->ToString());
+            // Since m_chain_tx_count (responsible for estimated progress) isn't persisted
+            // to disk, we must bootstrap the value for assumedvalid chainstates
+            // from the hardcoded assumeutxo chainparams.
+            base->m_chain_tx_count = au_data.m_chain_tx_count;
+            LogInfo("[snapshot] set m_chain_tx_count=%d for %s", au_data.m_chain_tx_count, snapshot_blockhash->ToString());
+        } else {
+            // Elektron Net: automatic/dynamic snapshots have no static chainparams
+            // entry (their heights are computed at runtime from
+            // Consensus::Params::MandatoryPruneDepth, never hardcoded), so
+            // AssumeutxoForBlockhash() never finds them -- the original upstream code
+            // treated that as fatal and refused to start, which live-crashed every
+            // restart of a node that had ever activated one of our automatic
+            // snapshots ("Assumeutxo data not found for the given blockhash"). The
+            // height doesn't need the static table at all -- it's available directly
+            // from the already-loaded block index. m_chain_tx_count (progress-estimate
+            // only, not consensus-critical) uses the same one-tx-per-block lower bound
+            // as PopulateAndValidateSnapshot() uses when the snapshot is first activated.
+            m_snapshot_height = base->nHeight;
+            base->m_chain_tx_count = base->nHeight + 1;
+            LogInfo("[snapshot] automatic snapshot at height %d has no static assumeutxo entry; using estimated m_chain_tx_count=%d for %s",
+                    base->nHeight, base->m_chain_tx_count, snapshot_blockhash->ToString());
+        }
     } else {
         // If this isn't called with a snapshot blockhash, make sure the cached snapshot height
         // is null. This is relevant during snapshot completion, when the blockman may be loaded
