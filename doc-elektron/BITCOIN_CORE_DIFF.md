@@ -58,9 +58,9 @@ This document lists **every deliberate divergence** from upstream Bitcoin Core, 
 - **`CreateNewBlock` / GBT**: if attestation hash cannot be computed, template creation returns `nullptr` / RPC error (no silent omission).
 - Miners receive the required output via GBT `coinbase_required_outputs` (`src/rpc/mining.cpp`). The 32-byte hash format is unchanged by the dual algorithm below — pools following this contract need no changes.
 - **Dual algorithm, height-gated** (`Consensus::Params::MuhashAttestationActivationHeight`, `src/consensus/params.h`; see `doc-elektron/fix-report-utxo-attestation-scalability.md` and `doc-elektron/CHANGELOG-muhash-attestation.md` for the full design/implementation history):
-  - Below the activation height (or when the height is `-1`, disabled): `HASH_SERIALIZED` — a full rescan of the UTXO set after connecting the block (`kernel::ComputeUTXOStats`, `src/kernel/coinstats.cpp`). This is the only algorithm ever used on **mainnet** (`MuhashAttestationActivationHeight = -1`, permanently, until a separate decision is made).
+  - Below the activation height (or when the height is `-1`, disabled): `HASH_SERIALIZED` — a full rescan of the UTXO set after connecting the block (`kernel::ComputeUTXOStats`, `src/kernel/coinstats.cpp`).
   - At/after the activation height: an **incrementally-maintained MuHash accumulator** (`kernel::UTXOMuHashState`, `src/kernel/utxo_muhash.h`), updated per-block from `ConnectBlock`/`DisconnectBlock` and persisted alongside the chainstate (`CCoinsViewDB::WriteUTXOMuHashState`, `src/txdb.cpp`). Cost is bounded by the coins touched in the block being processed, not by total UTXO set size — this removes a per-block cost that otherwise scales with the UTXO set (see the fix report for the concrete threshold math).
-  - Current activation heights (`src/kernel/chainparams.cpp`): **mainnet `-1` (disabled)**, testnet/testnet4 `250` (tuned low for fast local testing; verify against the live tip before ever pointing this at the actual public testnet), regtest `50` (fixed, exercised by every regtest run, high enough to leave a visible pre-activation window for manual testing).
+  - Current activation heights (`src/kernel/chainparams.cpp`): **mainnet `137000`** (activated 2026-07-02, chosen with lead time from the then-current tip of `63214` and deliberately before mainnet's own first checkpoint at `197280` — see `CHANGELOG-muhash-attestation.md`), testnet/testnet4 `250` (tuned low for fast local testing; verify against the live tip before ever pointing this at the actual public testnet), regtest `50` (fixed, exercised by every regtest run, high enough to leave a visible pre-activation window for manual testing).
   - `ComputeBlockUTXOAttestationHash()` picks the algorithm transparently based on height; callers (`ValidateUTXOCheckpoint`, `CreateNewBlock`) are unaffected either way.
 
 ### 2.3 Checkpoint snapshot files (every `Consensus::Params::MandatoryPruneDepth` blocks — 197,280 on mainnet)
@@ -69,10 +69,10 @@ This document lists **every deliberate divergence** from upstream Bitcoin Core, 
 - On-disk `.dat` + `.hash` sidecar written **only** at checkpoint heights (`WriteAutomaticSnapshot`).
 - If `.hash` sidecar write fails, the `.dat` file is **removed** (snapshot unusable without hash).
 - Uses AssumeUTXO serialization; **no** hardcoded `assumeutxo` entries in `chainparams` for automatic snapshots.
+- `.hash` sidecar content: `HASH_SERIALIZED` below the MuHash activation height, the incremental `Chainstate::UTXOMuHash()` value at/after it (Phase 2, see §2.2 and `CHANGELOG-muhash-attestation.md`) — no full rescan needed post-activation.
 - **Activation security** (`MaybeActivateAutomaticSnapshot`, `PopulateAndValidateSnapshot`):
   - Requires valid `.hash` sidecar; refuses activation without it.
-  - When checkpoint block is on disk: verifies `.hash` against on-chain coinbase attestation (`ExtractCoinbaseUTXOAttestation`).
-  - Always verifies deserialized snapshot content against `expected_utxo_hash` (from sidecar).
+  - Always verifies deserialized snapshot content against `expected_utxo_hash` (from sidecar), using the matching hash algorithm for the checkpoint's height — this, not a direct on-chain-coinbase-attestation comparison, is the authoritative integrity check (see `CHANGELOG-muhash-attestation.md`, Phase 2, for why a direct attestation comparison is structurally unable to ever match and was removed).
   - Picks **newest** checkpoint file deterministically; deletes obsolete snapshots after success.
 - P2P bootstrap via new messages (see §5).
 - **`NODE_SNAPSHOT`**: advertised only when node has both `.dat` and `.hash` for a checkpoint.
@@ -117,7 +117,7 @@ Because automatic snapshot bootstrap (request/download/activation) runs asynchro
 | `NODE_SNAPSHOT` | `src/protocol.h` | Service bit `1 << 12` |
 | `CURRENCY_UNIT` | `src/policy/feerate.h` | `"ELEK"` |
 | `COIN` | `src/consensus/amount.h` | 10⁸ leptons per ELEK |
-| `Consensus::Params::MuhashAttestationActivationHeight` | `src/consensus/params.h` | `-1` disabled (mainnet); per-network heights in `src/kernel/chainparams.cpp` (see §2.2) |
+| `Consensus::Params::MuhashAttestationActivationHeight` | `src/consensus/params.h` | `137000` (mainnet); per-network heights in `src/kernel/chainparams.cpp` (see §2.2); `-1` sentinel still means disabled |
 | `Consensus::Params::MandatoryPruneDepth` | `src/consensus/params.h` | Defaults to `197280` (mainnet); `300` testnet/testnet4, `100` regtest (see §2.1/§2.3) |
 | `DB_UTXO_MUHASH` | `src/txdb.cpp` | Coins-DB key (`'U'`) for the persisted MuHash accumulator |
 

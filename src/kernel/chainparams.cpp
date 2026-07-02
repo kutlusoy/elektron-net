@@ -96,9 +96,14 @@ public:
         consensus.fPowAllowMinDifficultyBlocks = false;
         consensus.MinDifficultyActivationHeight = 1; // Stoic Awakening active from block 1 (v4.0 genesis restart)
         // MuHash UTXO attestation (doc-elektron/fix-report-utxo-attestation-scalability.md):
-        // deliberately left disabled (-1) on mainnet. Only testnet/testnet4/regtest carry a
-        // real activation height while this is being exercised; see doc-elektron/CHANGELOG-muhash-attestation.md.
-        consensus.MuhashAttestationActivationHeight = -1;
+        // activated 2026-07-02 at height 137000 -- chosen with real lead time from the
+        // then-current tip (63214) for every operator to update, and deliberately before
+        // the first mandatory checkpoint (MandatoryPruneDepth, 197280 below) so the very
+        // first mainnet snapshot is written and cross-checked consistently as a MuHash
+        // value throughout, never straddling the switch. See
+        // doc-elektron/CHANGELOG-muhash-attestation.md for the full activation history
+        // (Phase 1 exercised on testnet/testnet4/regtest first).
+        consensus.MuhashAttestationActivationHeight = 137000;
         consensus.MandatoryPruneDepth = 197280; // 137 days at 60s blocks (mainnet default, explicit for clarity)
         consensus.enforce_BIP94 = false;
         consensus.fPowNoRetargeting = false;

@@ -2512,6 +2512,7 @@ bool ValidateUTXOCheckpoint(const CBlock& block, int nHeight, CCoinsView& view, 
  */
 void WriteAutomaticSnapshot(Chainstate& chainstate, int nHeight, const CBlockIndex* pindex, bool force)
 {
+    AssertLockHeld(::cs_main);
     const unsigned int checkpoint_interval = chainstate.m_chainman.GetConsensus().MandatoryPruneDepth;
     if (!force && (nHeight <= 0 || nHeight % static_cast<int>(checkpoint_interval) != 0)) {
         return; // Not a checkpoint block
@@ -2546,13 +2547,37 @@ void WriteAutomaticSnapshot(Chainstate& chainstate, int nHeight, const CBlockInd
 
     chainstate.ForceFlushStateToDisk(/*wipe_cache=*/false);
 
-    auto maybe_stats = kernel::ComputeUTXOStats(kernel::CoinStatsHashType::HASH_SERIALIZED, &chainstate.CoinsDB(), chainstate.m_blockman);
-    if (!maybe_stats) {
-        LogWarning("[snapshot] Unable to read UTXO stats for automatic snapshot at height %d\n", nHeight);
-        return;
+    // Elektron Net (Phase 2): once MuHash attestation is active, the incrementally
+    // maintained accumulator (Chainstate::UTXOMuHash(), kept in sync by ConnectBlock's
+    // AddCoin/RemoveCoin hooks, flushed just above) already holds the correct hash and
+    // running coin count for the real, final UTXO set as of this checkpoint -- both for
+    // free, without a second full-set rescan. Deliberately NOT the same value as this
+    // checkpoint block's own coinbase attestation (see ComputeBlockUTXOAttestationHash):
+    // that value necessarily keys this block's own coinbase reward by a pre-attestation
+    // transaction id (a chicken-and-egg the embedding/validation logic resolves via
+    // StripAttestationOutput(), self-consistently, but structurally different from the
+    // real, final id anyone would actually use to spend it) -- see
+    // doc-elektron/CHANGELOG-muhash-attestation.md, Phase 2 entry, for the live-tested
+    // divergence and why PopulateAndValidateSnapshot()'s content-integrity check (not a
+    // direct comparison against the coinbase attestation) is the correct place to verify
+    // this sidecar. Pre-activation the original full HASH_SERIALIZED scan is unchanged.
+    uint256 snapshot_hash;
+    uint64_t coins_count;
+    if (IsMuhashAttestationActive(nHeight, chainstate.m_chainman.GetConsensus())) {
+        const kernel::UTXOMuHashState& muhash = chainstate.UTXOMuHash();
+        snapshot_hash = muhash.GetHash();
+        coins_count = muhash.GetCoinCount();
+    } else {
+        auto maybe_stats = kernel::ComputeUTXOStats(kernel::CoinStatsHashType::HASH_SERIALIZED, &chainstate.CoinsDB(), chainstate.m_blockman);
+        if (!maybe_stats) {
+            LogWarning("[snapshot] Unable to read UTXO stats for automatic snapshot at height %d\n", nHeight);
+            return;
+        }
+        snapshot_hash = maybe_stats->hashSerialized;
+        coins_count = maybe_stats->coins_count;
     }
 
-    node::SnapshotMetadata metadata{chainstate.m_chainman.GetParams().MessageStart(), pindex->GetBlockHash(), maybe_stats->coins_count};
+    node::SnapshotMetadata metadata{chainstate.m_chainman.GetParams().MessageStart(), pindex->GetBlockHash(), coins_count};
     afile << metadata;
 
     auto pcursor = chainstate.CoinsDB().Cursor();
@@ -2590,9 +2615,9 @@ void WriteAutomaticSnapshot(Chainstate& chainstate, int nHeight, const CBlockInd
         write_coins(afile, last_hash, coins, written_coins_count);
     }
 
-    if (written_coins_count != maybe_stats->coins_count) {
+    if (written_coins_count != coins_count) {
         LogWarning("[snapshot] Coin count mismatch in automatic snapshot: written=%d, expected=%d\n",
-                   written_coins_count, maybe_stats->coins_count);
+                   written_coins_count, coins_count);
         return;
     }
 
@@ -2616,7 +2641,7 @@ void WriteAutomaticSnapshot(Chainstate& chainstate, int nHeight, const CBlockInd
         FILE* hash_file{fsbridge::fopen(hash_path, "wb")};
         if (hash_file) {
             AutoFile hash_afile{hash_file};
-            hash_afile << maybe_stats->hashSerialized;
+            hash_afile << snapshot_hash;
             if (hash_afile.fclose() == 0) {
                 hash_written = true;
             } else {
@@ -2636,7 +2661,7 @@ void WriteAutomaticSnapshot(Chainstate& chainstate, int nHeight, const CBlockInd
     }
 
     LogInfo("[snapshot] Automatic UTXO snapshot at height %d written successfully: %s (coins=%d, hash=%s)\n",
-            nHeight, fs::PathToString(snapshot_path), written_coins_count, maybe_stats->hashSerialized.ToString());
+            nHeight, fs::PathToString(snapshot_path), written_coins_count, snapshot_hash.ToString());
 
     // Elektron Net: cleanup obsolete snapshot files from earlier checkpoints.
     try {
@@ -6387,9 +6412,21 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
 
     std::optional<CCoinsStats> maybe_stats;
 
+    // Elektron Net (Phase 2): WriteAutomaticSnapshot() writes the .hash sidecar using
+    // MUHASH once past MuhashAttestationActivationHeight (matching Chainstate::UTXOMuHash(),
+    // see there) instead of HASH_SERIALIZED -- so the independent recompute here, used to
+    // verify expected_utxo_hash against the actually-downloaded coin data, must use the
+    // same hash type or it can never match regardless of whether the data is correct.
+    // The static-assumeutxo path (verify_assumeutxo_hash/au_data, a separate, Bitcoin-Core
+    // -style mechanism this project's chainparams never actually populate) always compares
+    // against a HASH_SERIALIZED value by convention, so it keeps using that type.
+    const CoinStatsHashType hash_type = (expected_utxo_hash && IsMuhashAttestationActive(base_height, GetConsensus()))
+        ? CoinStatsHashType::MUHASH
+        : CoinStatsHashType::HASH_SERIALIZED;
+
     try {
         maybe_stats = ComputeUTXOStats(
-            CoinStatsHashType::HASH_SERIALIZED, snapshot_coinsdb, m_blockman, [&interrupt = m_interrupt] { SnapshotUTXOHashBreakpoint(interrupt); });
+            hash_type, snapshot_coinsdb, m_blockman, [&interrupt = m_interrupt] { SnapshotUTXOHashBreakpoint(interrupt); });
     } catch (StopHashingException const&) {
         return util::Error{Untranslated("Aborting after an interrupt was requested")};
     }
@@ -6403,7 +6440,11 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
             au_data->hash_serialized.ToString(), maybe_stats->hashSerialized.ToString()))};
     }
 
-    // Elektron Net: automatic snapshots must match the on-chain attestation / .hash sidecar.
+    // Elektron Net: automatic snapshots must match the .hash sidecar (content-integrity
+    // check against the actually-downloaded coin data -- see hash_type above for why this
+    // is *not* compared against the checkpoint block's own coinbase attestation; that
+    // on-chain cross-check lives in init.cpp and is structurally a different, weaker
+    // comparison -- see doc-elektron/CHANGELOG-muhash-attestation.md, Phase 2 entry).
     if (expected_utxo_hash && maybe_stats->hashSerialized != *expected_utxo_hash) {
         return util::Error{Untranslated(strprintf("Bad snapshot content hash: expected %s, got %s",
             expected_utxo_hash->ToString(), maybe_stats->hashSerialized.ToString()))};

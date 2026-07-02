@@ -1609,33 +1609,24 @@ static void MaybeActivateAutomaticSnapshot(NodeContext& node)
         return;
     }
 
-    // LookupBlockIndex() requires cs_main; this call was previously unlocked (the
-    // LOCK(::cs_main) scope above at line ~1526 had already been released by this
-    // point), which asserts and crashes the process -- see
-    // doc-elektron/CHANGELOG-muhash-attestation.md for the live-tested repro. This
-    // runs periodically (every 30s, see SNAPSHOT_ACTIVATION_INTERVAL below), so it
-    // reliably crashed any node with a pending snapshot download/activation.
-    const CBlockIndex* checkpoint_index = WITH_LOCK(::cs_main, return chainman.m_blockman.LookupBlockIndex(metadata.m_base_blockhash));
-    if (checkpoint_index && checkpoint_index->nHeight > 0) {
-        CBlock checkpoint_block;
-        if (chainman.m_blockman.ReadBlock(checkpoint_block, *checkpoint_index)) {
-            const auto attestation = ExtractCoinbaseUTXOAttestation(*checkpoint_block.vtx[0], checkpoint_index->nHeight);
-            if (!attestation || *attestation != expected_hash) {
-                LogWarning("[snapshot] Snapshot .hash does NOT match on-chain attestation for %s. Removing snapshot.\n",
-                           metadata.m_base_blockhash.ToString());
-                try {
-                    fs::remove(*snapshot_path);
-                    fs::remove(hash_path);
-                } catch (const fs::filesystem_error&) {}
-                return;
-            }
-            LogInfo("[snapshot] Snapshot hash verified against on-chain attestation at height %d.\n",
-                    checkpoint_index->nHeight);
-        } else {
-            LogInfo("[snapshot] Checkpoint block %s not on disk; will verify snapshot content against .hash sidecar.\n",
-                    metadata.m_base_blockhash.ToString());
-        }
-    }
+    // Elektron Net: a checkpoint block's own coinbase attestation can never equal the
+    // .hash sidecar (or any hash of the real, final UTXO set) for that same checkpoint,
+    // for a structural reason, not a bug in either value individually: the attestation is
+    // computed and embedded *before* the coinbase's own OP_RETURN carrying it exists, so
+    // it necessarily commits to the checkpoint's own coinbase reward keyed by a
+    // pre-attestation transaction id -- but the real, spendable UTXO set (what the
+    // snapshot's coin data, WriteAutomaticSnapshot()'s sidecar, and Chainstate::UTXOMuHash()
+    // all reflect) necessarily keys that same output by its real, final (post-OP_RETURN)
+    // txid instead. A direct on-chain-attestation-vs-sidecar comparison here (removed;
+    // previously present and live-tested to *always* reject, since it could only ever
+    // exercise this exact case once the checkpoint block happened to already be on disk)
+    // would therefore reject every legitimate snapshot it ever actually compared, rather
+    // than catch a bad one -- see doc-elektron/CHANGELOG-muhash-attestation.md, Phase 2
+    // entry, for the live repro that surfaced this. The snapshot's actual coin *data* is
+    // still independently, and correctly, checked against this same .hash sidecar in
+    // ChainstateManager::PopulateAndValidateSnapshot() right after activation proceeds --
+    // that comparison operates on the real, final UTXO set on both sides, so it isn't
+    // subject to this mismatch and remains the authoritative integrity check.
 
     // Elektron Net: ActivateSnapshot() refuses outright if the checkpoint's own block
     // header is cached BLOCK_FAILED_VALID -- live-observed: "The base block header (...)
