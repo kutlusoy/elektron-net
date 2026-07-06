@@ -208,8 +208,19 @@ P2WPKH Address:       {k['p2wpkh']}
     footer = """# =============================================================================
 # USAGE NOTES FOR MINERS
 # =============================================================================
-# 1. Import the WIF or hex private key into your Elektron Net wallet:
-#      ./src/elektron-cli importprivkey "<WIF>"
+# 1. Import the WIF into your Elektron Net wallet. This fork removed the
+#    legacy importprivkey/dumpwallet RPCs in favor of descriptor wallets
+#    (importprivkey now fails with "Method not found") -- import via
+#    importdescriptors instead:
+#      ./src/elektron-cli createwallet "<name>" false true
+#      ./src/elektron-cli getdescriptorinfo "combo(<WIF>)"
+#        -> copy the "checksum" field from the result, then:
+#      ./src/elektron-cli -rpcwallet=<name> importdescriptors \\
+#          '[{"desc": "combo(<WIF>)#<checksum>", "timestamp": 0}]'
+#    combo(...) derives P2PKH/P2SH-SegWit/P2WPKH from the one key, so all
+#    three addresses above become spendable. Use "timestamp": 0 if this
+#    address may already have received funds (rescans the whole chain --
+#    can take a while); use "now" only for a brand-new, never-used key.
 #
 # 2. Or use the address directly as the mining reward address:
 #      ./src/elektron-cli generatetoaddress 1 "<P2WPKH>"
