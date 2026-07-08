@@ -142,6 +142,7 @@ public:
         // service bits we want, but we should get them updated to support all service bits wanted by any
         // release ASAP to avoid it where possible.
         vSeeds.emplace_back("seed0.eleknet.org.");   // operated by kutlusoy
+        vSeeds.emplace_back("seeder.eleknet.org.");  // operated by kutlusoy
         vSeeds.emplace_back("seed.elektron-net.org");
         
 
