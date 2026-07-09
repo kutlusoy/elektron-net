@@ -141,9 +141,25 @@ public:
         // This is fine at runtime as we'll fall back to using them as an addrfetch if they don't support the
         // service bits we want, but we should get them updated to support all service bits wanted by any
         // release ASAP to avoid it where possible.
-        vSeeds.emplace_back("seed0.eleknet.org.");   // operated by kutlusoy
+        vSeeds.emplace_back("seed.elektron-net.org");  // operated by kutlusoy
         vSeeds.emplace_back("seeder.eleknet.org.");  // operated by kutlusoy
-        vSeeds.emplace_back("seed.elektron-net.org");
+        vSeeds.emplace_back("seed0.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
+        vSeeds.emplace_back("seed1.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
+        vSeeds.emplace_back("seed2.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
+        vSeeds.emplace_back("seed3.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
+        vSeeds.emplace_back("seed4.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
+        vSeeds.emplace_back("seed5.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
+        vSeeds.emplace_back("seed6.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
+        vSeeds.emplace_back("seed7.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
+        vSeeds.emplace_back("seed8.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
+        vSeeds.emplace_back("seed9.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
+        vSeeds.emplace_back("seed10.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
+        vSeeds.emplace_back("seed11.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
+        vSeeds.emplace_back("seed12.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
+        vSeeds.emplace_back("seed13.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
+        vSeeds.emplace_back("seed14.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
+        vSeeds.emplace_back("seed15.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
+
         
 
         base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,0);
