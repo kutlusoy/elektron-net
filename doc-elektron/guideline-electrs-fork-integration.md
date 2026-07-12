@@ -1,6 +1,6 @@
 # Elektron Net — `elektron-net-electrs` Fork Integration Guideline
 
-- **Version:** 0.2 (reviewed)
+- **Version:** 0.3
 - **Date:** July 12, 2026 (draft: July 12, 2026)
 - **Audience:** Rust developers, Electrum-protocol server operators, anyone forking `romanz/electrs` for Elektron Net
 - **Reference implementation:** [`elektron-net`](https://github.com/kutlusoy/elektron-net) — `src/wallet/wallet.cpp` (`ScanUTXOSet()`/`CreditUTXOFromChain()`), `src/kernel/chainparams.cpp` — treat these as the ground truth for the bootstrap model and network parameters
@@ -11,12 +11,14 @@
 This document can be worked on independently of the wallet-client fork it feeds. Requirement levels follow common practice: **MUST** = mandatory for correct/safe operation, **SHOULD** = strongly recommended, **MAY** = optional.
 
 > **Review note (v0.2):** Every claim below about `elektron-net-electrs` behavior has been re-checked against the actual fork at `kutlusoy/elektron-net-electrs@main` (`src/daemon.rs`, `src/electrum.rs`, `src/merkle.rs`, `src/config.rs`), and every claim about Elektron Net's own parameters has been re-checked against `kutlusoy/elektron-net@main` (`src/kernel/chainparams.cpp`, `src/rpc/blockchain.cpp`). §3.2 and §3.3 were revised based on that inspection; changes are marked inline.
+>
+> **v0.3:** adaptation work has started — the fork now exists (base: upstream v0.10.10, adaptation branch `integration`); §3.2 (pruned-check replacement), §3.4 (typed code-3 error) and the P2P handshake requirements (magic override, protocol version 70017) are implemented there. New in this revision: §3.6 — the index itself MUST follow the chain's retention rule (self-contained concept), decided July 12, 2026.
 
 ---
 
 ## 1. Why `elektron-net-electrs` Is Needed
 
-Elektron Net enforces mandatory pruning on every node (`MandatoryPruneDepth` / `nPruneAfterHeight` = 197,280 blocks ≈ 137 days at a 60-second block time, no archival mode exists) and bases consensus on a continuously attested UTXO set (MuHash, active from block 137,000) rather than on block history. `elektron-net-mempool` already anticipates an Electrum-protocol server for address lookups and pruning-independent transaction detail, and pre-wires a disabled `elektron-electrs` service profile for it — but the repository itself does not yet exist. This guideline defines what building it correctly requires.
+Elektron Net enforces mandatory pruning on every node (`MandatoryPruneDepth` / `nPruneAfterHeight` = 197,280 blocks ≈ 137 days at a 60-second block time, no archival mode exists) and bases consensus on a continuously attested UTXO set (MuHash, active from block 137,000) rather than on block history. `elektron-net-mempool` already anticipates an Electrum-protocol server for address lookups and pruning-independent transaction detail, and pre-wires an `elektron-electrs` service profile for it. The fork now exists at [`elektron-net-electrs`](https://github.com/kutlusoy/elektron-net-electrs) (based on upstream v0.10.10; adaptations on the `integration` branch). This guideline defines what building it correctly requires.
 
 Building this server is the single prerequisite for any mobile wallet that uses the Electrum protocol (see the companion Wallet Integration Guideline, §3.2/§4). Nothing else in that guideline can be tested end-to-end without it.
 
@@ -100,9 +102,28 @@ Confirmed in the current fork: today, that failure does **not** crash the server
 
 **Required behavior:** `blockchain.transaction.get_merkle` (and `blockchain.transaction.id_from_pos`'s merkle branch, which follows the identical `get_block_txids` → `Proof::create` path in `transaction_from_pos()`) MUST detect this specific case and return a typed, documented "proof unavailable — block pruned" response, rather than letting bitcoind's raw error message pass through the generic `DaemonError` path. Wallet clients consuming this server need a stable way to distinguish "proof unavailable by design" from "server malfunction."
 
-### 3.5 Steady-state indexing needs no changes
+### 3.5 Steady-state indexing needs no changes for correctness
 
-Once the bootstrap height from §3.2 is established, ordinary block-by-block indexing via `getblock`/`get_block_txids` works exactly as upstream intends, because Elektron Net never prunes a block before it exceeds the retention window. The fork's divergence from upstream is concentrated entirely in startup/bootstrap (§3.2) and the merkle-proof edge case (§3.4) — the day-to-day indexing path, RocksDB schema, and Electrum-protocol server (`src/electrum.rs`) should be reusable close to as-is.
+Once the bootstrap height from §3.2 is established, ordinary block-by-block indexing works exactly as upstream intends, because Elektron Net never prunes a block before it exceeds the retention window. The day-to-day indexing path, RocksDB schema, and Electrum-protocol server (`src/electrum.rs`) are reusable close to as-is — the one deliberate addition to steady-state operation is the index's own retention rule (§3.6).
+
+### 3.6 The index MUST follow the chain's retention rule (self-contained concept)
+
+Decided July 12, 2026: `elektron-net-electrs` MUST NOT become a de-facto archival node. Upstream electrs indexes the entire chain since genesis and never deletes; on Elektron Net that would silently undermine the chain's own "time erases your traces" guarantee — every node forgets history after 197,280 blocks, but a stock electrs sitting next to it would remember everything. (`elektron-net-mempool` already made the identical call for its own `TxIndexRepository`, which self-prunes to the same depth.)
+
+The index therefore mirrors the chain's retention semantics one-to-one, which the `elektron-net` source guarantees on its side:
+
+| Data | Chain (`elektrond`) | electrs index |
+|---|---|---|
+| Headers | kept forever — `PruneOneBlockFile()` (`src/node/blockstorage.cpp`) only clears the `BLOCK_HAVE_DATA`/`BLOCK_HAVE_UNDO` flags and deletes `blk*.dat`/`rev*.dat`; the `CBlockIndex` entries survive | header chain kept forever (upstream behavior, unchanged) |
+| UTXO set | kept forever — structurally untouched by pruning, and consensus-critical on this chain (per-block MuHash attestation and checkpoint snapshots are computed over it) | **unspent entries per scripthash kept forever — exempt from index pruning** (otherwise balances would be silently wrong for old, still-unspent coins) |
+| Block bodies / history | 197,280 blocks, then deleted | history/spent entries older than 197,280 blocks deleted by a periodic index-pruning job |
+
+Two protocol-visible consequences to document for wallet integrators:
+
+1. A scripthash's Electrum status hash changes when old history entries age out of the window (wallets simply re-fetch that address's history — harmless, but observable).
+2. Wallets see at most ~137 days of transaction history; balances remain complete. This is the same statement the Wallet Integration Guideline already makes about the network — here it is enforced server-side as well.
+
+Together with §3.2 this makes the system self-contained: a server synced from genesis and a server bootstrapped later from a UTXO snapshot converge to the identical state — UTXO set plus a rolling 197,280-block history window.
 
 ## 4. Relationship to Header-Chain Availability
 
@@ -113,7 +134,8 @@ Elektron Net always retains the full header chain, even though block bodies are 
 - [ ] Fork `romanz/electrs` at a pinned commit; set up a rebase cadence against upstream for security/protocol fixes
 - [ ] Replace the hard-fail pruned-node check in `src/daemon.rs::rpc_poll()` with the UTXO-snapshot bootstrap path (§3.2), sourced from `dumptxoutset` or the automatically-written checkpoint snapshot files — no new `elektrond` RPC required
 - [ ] Decide and document the `Network` enum strategy (§3.3) — patched `rust-bitcoin` vs. repurposed variant; if repurposing, the only override needed is the mainnet bech32 HRP (`be`)
-- [ ] Implement the graceful merkle-proof fallback in both `transaction_get_merkle()` and `transaction_from_pos()` (`src/electrum.rs`, §3.4)
+- [ ] Implement the graceful merkle-proof fallback in both `transaction_get_merkle()` and `transaction_from_pos()` (`src/electrum.rs`, §3.4) — **done on `integration`** (typed Electrum error, code 3)
+- [ ] Implement the index retention rule (§3.6): periodic pruning of history/spent entries older than 197,280 blocks, unspent entries exempt
 - [ ] Document the header-chain vs. block-body distinction (§4) prominently, so wallet integrators don't misread the trust model
 - [ ] Document the shared-base58-prefix / address-ambiguity constraint (§3.3) prominently, so wallet integrators don't misread mainnet legacy addresses as chain-identifying
 - [ ] Enable and test the `elektron-electrs` Docker Compose profile already present in `elektron-net-mempool`
