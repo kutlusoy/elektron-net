@@ -6,7 +6,7 @@
 - **Reference implementation:** [`elektron-net`](https://github.com/kutlusoy/elektron-net) — `src/wallet/wallet.cpp` (`ScanUTXOSet()`/`CreditUTXOFromChain()`), `src/kernel/chainparams.cpp` — treat these as the ground truth for the bootstrap model and network parameters
 - **Fork base:** [`romanz/electrs`](https://github.com/romanz/electrs)
 - **Consumer:** [`elektron-net-mempool`](https://github.com/kutlusoy/elektron-net-mempool) — see its `docker-compose.yml` for the pre-wired, currently-disabled `elektron-electrs` service profile that this fork is meant to satisfy
-- **See also:** [`Elektron Net — Wallet Integration Guideline`](./Elektron-Net_Wallet-Integration-Guideline.md) (this document covers §3.2/§3.5 of that guideline in full depth), [`BITCOIN_CORE_DIFF.md`](https://github.com/kutlusoy/elektron-net/blob/main/doc-elektron/BITCOIN_CORE_DIFF.md), [`WHITEPAPER.md`](https://github.com/kutlusoy/elektron-net/blob/main/WHITEPAPER.md)
+- **See also:** [`Elektron Net — Wallet Integration Guideline`](./guideline-wallet-integration.md) (this document covers §3.2/§3.5 of that guideline in full depth), [`BITCOIN_CORE_DIFF.md`](https://github.com/kutlusoy/elektron-net/blob/main/doc-elektron/BITCOIN_CORE_DIFF.md), [`WHITEPAPER.md`](https://github.com/kutlusoy/elektron-net/blob/main/WHITEPAPER.md)
 
 This document can be worked on independently of the wallet-client fork it feeds. Requirement levels follow common practice: **MUST** = mandatory for correct/safe operation, **SHOULD** = strongly recommended, **MAY** = optional.
 
