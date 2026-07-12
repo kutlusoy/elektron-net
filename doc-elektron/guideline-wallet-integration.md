@@ -176,7 +176,7 @@ This should be treated as a **mandatory review item** for any wallet integration
 - [ ] Option A (Electrum-native Lightning) vs. Option B (Zeus+LND/CLN) should be finalized before further work begins
 
 **Phase 1 — `elektron-net-electrs`**
-- [ ] Follow the standalone [`elektron-net-electrs` Fork Integration Guideline](./Elektron-Net_electrs-Fork-Guideline.md) in full — it can be executed independently of Phase 2 by a separate developer or team
+- [ ] Follow the standalone [`elektron-net-electrs` Fork Integration Guideline](./guideline-electrs-fork-integration.md) in full — it can be executed independently of Phase 2 by a separate developer or team
 - [ ] Enable and test the `elektron-electrs` Docker Compose profile already present in `elektron-net-mempool` once the fork passes its own checklist
 
 **Phase 2 — Wallet Client Fork**
