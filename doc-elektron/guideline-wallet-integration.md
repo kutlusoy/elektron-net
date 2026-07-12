@@ -115,7 +115,7 @@ The UTXO attestation model fully solves balance recovery and long-term auditabil
 
 ### 3.5 Forking `romanz/electrs` into `elektron-net-electrs`
 
-The detailed technical requirements for this fork (exact source-level blockers, the `Network`-enum problem, merkle-proof handling, and a full checklist) have been split out into a standalone document so it can be picked up independently by developers who want to tackle the server side separately from the wallet client: [`Elektron Net — electrs Fork Integration Guideline`](./Elektron-Net_electrs-Fork-Guideline.md).
+The detailed technical requirements for this fork (exact source-level blockers, the `Network`-enum problem, merkle-proof handling, and a full checklist) have been split out into a standalone document so it can be picked up independently by developers who want to tackle the server side separately from the wallet client: [`Elektron Net — electrs Fork Integration Guideline`](./guideline-electrs-fork-integration.md).
 
 In short: `romanz/electrs` is the recommended base over the older ElectrumX/Fulcrum lineage, but it hard-fails on any pruned node by design — the fork must replace that check with the UTXO-set bootstrap described in §3.2, adapt its network-identity handling (it has no concept of Elektron Net), and make merkle-proof generation degrade gracefully once a block ages past the retention window. None of this affects steady-state indexing once bootstrapped.
 
