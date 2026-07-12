@@ -113,6 +113,12 @@ Requires an additional chain-param-patched LND/CLN fork that reproduces the `Sca
 
 The UTXO attestation model fully solves balance recovery and long-term auditability, but it does **not** solve real-time reaction to a breach within the CSV timeout window. A continuously running watchtower service remains necessary regardless of wallet or server choice, and any wallet vendor offering channel management should either run one or integrate with a third-party one.
 
+### 3.5 Forking `romanz/electrs` into `elektron-net-electrs`
+
+The detailed technical requirements for this fork (exact source-level blockers, the `Network`-enum problem, merkle-proof handling, and a full checklist) have been split out into a standalone document so it can be picked up independently by developers who want to tackle the server side separately from the wallet client: [`Elektron Net — electrs Fork Integration Guideline`](./Elektron-Net_electrs-Fork-Guideline.md).
+
+In short: `romanz/electrs` is the recommended base over the older ElectrumX/Fulcrum lineage, but it hard-fails on any pruned node by design — the fork must replace that check with the UTXO-set bootstrap described in §3.2, adapt its network-identity handling (it has no concept of Elektron Net), and make merkle-proof generation degrade gracefully once a block ages past the retention window. None of this affects steady-state indexing once bootstrapped.
+
 ---
 
 ## 4. Evaluation: Electrum Wallet as a Candidate
@@ -170,10 +176,8 @@ This should be treated as a **mandatory review item** for any wallet integration
 - [ ] Option A (Electrum-native Lightning) vs. Option B (Zeus+LND/CLN) should be finalized before further work begins
 
 **Phase 1 — `elektron-net-electrs`**
-- [ ] A base for forking must be chosen: `electrs` (romanz) or ElectrumX/Fulcrum
-- [ ] A bootstrap mode must be built: a one-time UTXO-set scan (mirroring `forEachCoin()`/`ScanUTXOSet()`) instead of a genesis replay
-- [ ] A merkle-proof fallback must be implemented for requests outside the pruning window
-- [ ] The Docker Compose profile in `elektron-net-mempool` should be enabled and tested against the new service
+- [ ] Follow the standalone [`elektron-net-electrs` Fork Integration Guideline](./Elektron-Net_electrs-Fork-Guideline.md) in full — it can be executed independently of Phase 2 by a separate developer or team
+- [ ] Enable and test the `elektron-electrs` Docker Compose profile already present in `elektron-net-mempool` once the fork passes its own checklist
 
 **Phase 2 — Wallet Client Fork**
 - [ ] Electrum should be forked, with a `constants.py` equivalent populated from §2.1
