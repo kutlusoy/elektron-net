@@ -1,7 +1,7 @@
 # Elektron Net — `elektron-net-electrs` Fork Integration Guideline
 
-- **Version:** 0.3
-- **Date:** July 12, 2026 (draft: July 12, 2026)
+- **Version:** 0.4
+- **Date:** July 13, 2026 (draft: July 12, 2026)
 - **Audience:** Rust developers, Electrum-protocol server operators, anyone forking `romanz/electrs` for Elektron Net
 - **Reference implementation:** [`elektron-net`](https://github.com/kutlusoy/elektron-net) — `src/wallet/wallet.cpp` (`ScanUTXOSet()`/`CreditUTXOFromChain()`), `src/kernel/chainparams.cpp` — treat these as the ground truth for the bootstrap model and network parameters
 - **Fork base:** [`romanz/electrs`](https://github.com/romanz/electrs)
@@ -13,6 +13,8 @@ This document can be worked on independently of the wallet-client fork it feeds.
 > **Review note (v0.2):** Every claim below about `elektron-net-electrs` behavior has been re-checked against the actual fork at `kutlusoy/elektron-net-electrs@main` (`src/daemon.rs`, `src/electrum.rs`, `src/merkle.rs`, `src/config.rs`), and every claim about Elektron Net's own parameters has been re-checked against `kutlusoy/elektron-net@main` (`src/kernel/chainparams.cpp`, `src/rpc/blockchain.cpp`). §3.2 and §3.3 were revised based on that inspection; changes are marked inline.
 >
 > **v0.3:** adaptation work has started — the fork now exists (base: upstream v0.10.10, adaptation branch `integration`); §3.2 (pruned-check replacement), §3.4 (typed code-3 error) and the P2P handshake requirements (magic override, protocol version 70017) are implemented there. New in this revision: §3.6 — the index itself MUST follow the chain's retention rule (self-contained concept), decided July 12, 2026.
+>
+> **v0.4:** §3.2 implementation planning started, branch `UTXO-Snapshot-Bootstrap` (see the fork's own [`doc/utxo-snapshot-bootstrap-plan.md`](https://github.com/kutlusoy/elektron-net-electrs/blob/UTXO-Snapshot-Bootstrap/doc/utxo-snapshot-bootstrap-plan.md) for the code-level plan). Tracing the actual index data flow (`src/index.rs`/`src/status.rs`) surfaced a refinement to §3.2 below: `FUNDING_CF`/`SPENDING_CF` are height *pointers* only, resolved into real amounts by re-fetching the historical block at query time — which doesn't work once that block is pruned. The bootstrap therefore needs its own self-contained UTXO storage (amount + height, no re-fetch required), not just synthetic funding pointers into the existing pointer-only schema.
 
 ---
 
@@ -62,6 +64,8 @@ Two consequences for the bootstrap design:
 - **Do not target `interfaces::Chain::forEachCoin()` / `CWallet::ScanUTXOSet()`.** Those are cited in the wallet-side diff as the *in-process* mechanism Elektron Net's own bundled wallet uses (they're C++ interface calls inside the same `elektrond` binary, not a JSON-RPC method) — `elektron-net-electrs` runs as a separate OS process and cannot call them directly. They are useful only as evidence that a full-UTXO-set iteration primitive already exists node-side; the actual integration point for an external process is the RPC/snapshot-file surface above, not this interface.
 
 This resolves Open Question 1 (§6) with a concrete recommendation: no new custom `elektrond` RPC is needed. Build the bootstrap against the existing AssumeUTXO-format snapshot artifact, either via `dumptxoutset` or by parsing the automatically-written checkpoint files directly.
+
+**Refinement from implementation planning (v0.4):** step 1 above ("seed the index in one pass") is not a simple insert into the existing schema. `elektron-net-electrs`'s index stores no amounts or scriptPubKeys anywhere — `FUNDING_CF`/`SPENDING_CF`/`TXID_CF` are height *pointers* ("scripthash X touched at height H"), and `ScriptHashStatus::sync()` (`src/status.rs`) resolves those pointers into real UTXO data by re-fetching and re-parsing the actual historical block from the daemon at query time. That re-fetch is exactly what's unavailable once a block ages past the retention window, so a snapshot bootstrap cannot just write synthetic pointers into this schema — it needs its own self-contained storage (a new column family carrying amount + height directly, since the snapshot dump already has that data per UTXO) that the balance/listunspent resolution path can consult without touching the daemon. See the linked implementation plan for the concrete column family and integration points.
 
 ### 3.3 Network identity: `rust-bitcoin`'s `Network` enum does not know Elektron Net
 
@@ -132,7 +136,7 @@ Elektron Net always retains the full header chain, even though block bodies are 
 ## 5. Checklist
 
 - [ ] Fork `romanz/electrs` at a pinned commit; set up a rebase cadence against upstream for security/protocol fixes
-- [ ] Replace the hard-fail pruned-node check in `src/daemon.rs::rpc_poll()` with the UTXO-snapshot bootstrap path (§3.2), sourced from `dumptxoutset` or the automatically-written checkpoint snapshot files — no new `elektrond` RPC required
+- [ ] Replace the hard-fail pruned-node check in `src/daemon.rs::rpc_poll()` with the UTXO-snapshot bootstrap path (§3.2), sourced from `dumptxoutset` or the automatically-written checkpoint snapshot files — no new `elektrond` RPC required — **planning done, implementation started on `UTXO-Snapshot-Bootstrap`** (see fork's `doc/utxo-snapshot-bootstrap-plan.md`)
 - [ ] Decide and document the `Network` enum strategy (§3.3) — patched `rust-bitcoin` vs. repurposed variant; if repurposing, the only override needed is the mainnet bech32 HRP (`be`)
 - [ ] Implement the graceful merkle-proof fallback in both `transaction_get_merkle()` and `transaction_from_pos()` (`src/electrum.rs`, §3.4) — **done on `integration`** (typed Electrum error, code 3)
 - [ ] Implement the index retention rule (§3.6): periodic pruning of history/spent entries older than 197,280 blocks, unspent entries exempt
