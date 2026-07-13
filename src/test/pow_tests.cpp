@@ -255,4 +255,92 @@ BOOST_AUTO_TEST_CASE(min_difficulty_activation_height)
     BOOST_CHECK(PermittedDifficultyTransition(consensus, 1001, 0x1d00ffff, 0x1d00ffff + 1));
 }
 
+/* Test StoicAwakeningEndHeight: the min-difficulty escape must stop applying
+ * at/after the end height, even with the exact same >120s delay that would
+ * have triggered it before. */
+BOOST_AUTO_TEST_CASE(stoic_awakening_end_height)
+{
+    auto consensus = CreateChainParams(*m_node.args, ChainType::MAIN)->GetConsensus();
+    consensus.fPowAllowMinDifficultyBlocks = false;
+    consensus.MinDifficultyActivationHeight = 1000;
+    consensus.StoicAwakeningEndHeight = 2000;
+
+    unsigned int nProofOfWorkLimit = UintToArith256(consensus.powLimit).GetCompact();
+
+    // Just before the end height: escape still works exactly as before.
+    {
+        CBlockIndex pindexLast;
+        pindexLast.nHeight = 1998; // next block = 1999
+        pindexLast.nTime = 1000;
+        pindexLast.nBits = 0x1d00ffff;
+        pindexLast.pprev = nullptr;
+
+        CBlockHeader block;
+        block.nTime = pindexLast.nTime + consensus.nPowTargetSpacing * 3; // > 120s delay
+
+        unsigned int nBits = GetNextWorkRequired(&pindexLast, &block, consensus);
+        BOOST_CHECK_EQUAL(nBits, nProofOfWorkLimit);
+    }
+
+    // At and after the end height: same delay no longer drops to minimum.
+    {
+        CBlockIndex pindexLast;
+        pindexLast.nHeight = 1999; // next block = 2000
+        pindexLast.nTime = 1000;
+        pindexLast.nBits = 0x1d00ffff;
+        pindexLast.pprev = nullptr;
+
+        CBlockHeader block;
+        block.nTime = pindexLast.nTime + consensus.nPowTargetSpacing * 3; // > 120s delay
+
+        unsigned int nBits = GetNextWorkRequired(&pindexLast, &block, consensus);
+        BOOST_CHECK_EQUAL(nBits, pindexLast.nBits);
+    }
+
+    // Same, further past the end height.
+    {
+        CBlockIndex pindexLast;
+        pindexLast.nHeight = 5000; // next block = 5001
+        pindexLast.nTime = 1000;
+        pindexLast.nBits = 0x1d00ffff;
+        pindexLast.pprev = nullptr;
+
+        CBlockHeader block;
+        block.nTime = pindexLast.nTime + consensus.nPowTargetSpacing * 10; // way more than 120s
+        unsigned int nBits = GetNextWorkRequired(&pindexLast, &block, consensus);
+        BOOST_CHECK_EQUAL(nBits, pindexLast.nBits);
+    }
+
+    // PermittedDifficultyTransition should be permissive just before the end height...
+    BOOST_CHECK(PermittedDifficultyTransition(consensus, 1999, 0x1d00ffff, 0x1d00ffff + 1));
+    // ...and strict again at/after it.
+    BOOST_CHECK(!PermittedDifficultyTransition(consensus, 2000, 0x1d00ffff, 0x1d00ffff + 1));
+    BOOST_CHECK(!PermittedDifficultyTransition(consensus, 5000, 0x1d00ffff, 0x1d00ffff + 1));
+}
+
+/* StoicAwakeningEndHeight == -1 (the default sentinel, used by every network
+ * that doesn't explicitly set it, e.g. testnet/testnet4/regtest) must never
+ * retire the escape. */
+BOOST_AUTO_TEST_CASE(stoic_awakening_no_end_height_by_default)
+{
+    auto consensus = CreateChainParams(*m_node.args, ChainType::MAIN)->GetConsensus();
+    consensus.fPowAllowMinDifficultyBlocks = false;
+    consensus.MinDifficultyActivationHeight = 1000;
+    consensus.StoicAwakeningEndHeight = -1;
+
+    unsigned int nProofOfWorkLimit = UintToArith256(consensus.powLimit).GetCompact();
+
+    CBlockIndex pindexLast;
+    pindexLast.nHeight = 500000; // far beyond any realistic end height
+    pindexLast.nTime = 1000;
+    pindexLast.nBits = 0x1d00ffff;
+    pindexLast.pprev = nullptr;
+
+    CBlockHeader block;
+    block.nTime = pindexLast.nTime + consensus.nPowTargetSpacing * 3; // > 120s delay
+
+    unsigned int nBits = GetNextWorkRequired(&pindexLast, &block, consensus);
+    BOOST_CHECK_EQUAL(nBits, nProofOfWorkLimit);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

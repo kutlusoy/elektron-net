@@ -95,6 +95,21 @@ public:
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = false;
         consensus.MinDifficultyActivationHeight = 1; // Stoic Awakening active from block 1 (v4.0 genesis restart)
+        // Stoic Awakening retirement: the >120s escape drops difficulty to
+        // powLimit far more often than intended under normal, stable-hashrate
+        // mining (~13.5% of blocks by the exponential inter-block-time model,
+        // not the ~5% originally assumed), and if the escape block lands on
+        // the last block of a retarget period, CalculateNextWorkRequired's
+        // pindexLast->nBits baseline carries that crashed difficulty into the
+        // entire next 2016-block epoch, requiring multiple +300%-capped
+        // periods to recover -- days of anomalously low, easily-attackable
+        // difficulty from a single unlucky timestamp, not an actual hashrate
+        // shock. Chosen with the user directly: mainnet tip was ~86829 when
+        // decided (2026-07-13), giving ~4-5 weeks of real lead time at the
+        // then-current (bug-inflated) ~2150 blocks/day rate for every
+        // operator to update. See
+        // doc-elektron/CHANGELOG-stoic-awakening-retirement.md.
+        consensus.StoicAwakeningEndHeight = 150000;
         // MuHash UTXO attestation (doc-elektron/fix-report-utxo-attestation-scalability.md):
         // activated 2026-07-02 at height 137000 -- chosen with real lead time from the
         // then-current tip (63214) for every operator to update, and deliberately before

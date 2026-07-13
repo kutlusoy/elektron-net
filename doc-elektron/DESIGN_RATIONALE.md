@@ -108,7 +108,15 @@ becomes finalized by erasure, not by checkpoint consensus.
 
 ---
 
-## 120 Seconds — The Open Hand
+## 120 Seconds — The Open Hand (retired at height 150000)
+
+> **Update (2026-07-13):** this mechanism is retired on mainnet at height
+> **150000** — the ~5% trigger rate assumed below turned out to be ~13.5% in
+> practice (Poisson math on a 60s mean), and an escape block landing on the
+> last block of a retarget period was found to corrupt the entire next
+> 2016-block epoch's difficulty for days. See
+> `CHANGELOG-stoic-awakening-retirement.md` for the full story. Kept below
+> for historical context on the original reasoning.
 
 If 60 seconds is the heartbeat and 137 days is the memory, 120 seconds is
 the gesture of welcome.
