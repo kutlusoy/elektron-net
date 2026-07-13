@@ -121,6 +121,16 @@ struct Params {
     bool enforce_BIP94;
     bool fPowNoRetargeting;
     int MinDifficultyActivationHeight = -1;
+    /** Height at which the Stoic Awakening min-difficulty escape
+     * (MinDifficultyActivationHeight) stops applying to new blocks, i.e. the
+     * post-genesis-restart mainnet exception is retired and mainnet reverts
+     * to always requiring pindexLast->nBits outside retarget boundaries, same
+     * as vanilla Bitcoin mainnet. -1 = no end (escape stays active forever,
+     * the historical default before this parameter existed). Blocks below
+     * this height keep validating exactly as before; only blocks at or above
+     * it lose access to the escape. See
+     * doc-elektron/CHANGELOG-stoic-awakening-retirement.md. */
+    int StoicAwakeningEndHeight = -1;
     /** Block height at which per-block UTXO attestation switches from a full
      * HASH_SERIALIZED rescan to the incrementally-maintained MuHash
      * accumulator. -1 = never active (default; used on mainnet for now). */

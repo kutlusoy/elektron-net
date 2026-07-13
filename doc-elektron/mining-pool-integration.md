@@ -1,6 +1,6 @@
 # Elektron Net — Mining Pool Integration Guide
 
-- **Version:** 4.0.1 
+- **Version:** 4.0.3 
 - **Date:** June 23, 2026 
 - **Audience:** Pool operators, Stratum backend developers, integrators of any kind 
 - **Reference implementation:** [`mining/miner.py`](../mining/miner.py) — treat this file as the ground truth 
@@ -564,7 +564,13 @@ Run these in order. Each step must succeed before moving on.
 
 ---
 
-## 8. Stoic Awakening (no pool patch needed)
+## 8. Stoic Awakening (no pool patch needed) — retired at height 150000
+
+**Retired on mainnet at height 150000** (`doc-elektron/CHANGELOG-stoic-awakening-retirement.md`).
+Below that height the behavior described in this section still applies as
+documented (no pool patch needed either way). From height 150000 onward,
+`bits` on mainnet only ever changes at 2016-block retarget boundaries, so
+there is no mid-period `bits` change for pools to react to at all.
 
 If `> 120 s` have passed since the previous block, the node sets `bits`
 to `powLimit` in the next template. The pool forwards `bits` unchanged

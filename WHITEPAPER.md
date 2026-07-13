@@ -145,7 +145,18 @@ Reducing block time by 10× would inflate supply by 10× if the block reward wer
 
 **No pre-mine. No airdrop. No founder allocation.** Every Elek is earned by producing valid proof-of-work.
 
-### 3.3 Chain Liveness Guarantee (Stoic Awakening)
+### 3.3 Chain Liveness Guarantee (Stoic Awakening) — retired at height 150000
+
+> **Update (2026-07-13):** Live mainnet data showed the escape firing far more
+> often than assumed (~13.5% of blocks by the Poisson model, not the ~5%
+> estimated below) and, when it landed on the last block of a retarget
+> period, corrupting the entire next 2016-block epoch's difficulty for days.
+> Stoic Awakening is retired on mainnet at height **150000**
+> (`Consensus::Params::StoicAwakeningEndHeight`); blocks below that height
+> still validate under the rule described here. See
+> `doc-elektron/CHANGELOG-stoic-awakening-retirement.md` for the full
+> analysis and rationale. The section below describes the original design
+> intent and is kept for historical context.
 
 Elektron Net is designed to reward miners frequently — but a payment network that stops moving is not a payment network at all. It is a monument.
 

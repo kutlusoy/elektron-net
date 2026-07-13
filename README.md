@@ -38,7 +38,9 @@ Key properties:
 ### Genesis Block (v4.0 Restart)
 
 Elektron Net v4.0 is a **complete chain restart** with new genesis blocks, network
-magic bytes (`0xe1ec7a6e`), and Stoic Awakening active from block 1. Delete any
+magic bytes (`0xe1ec7a6e`), and Stoic Awakening active from block 1 through
+height 149999 (retired at height 150000, see
+`doc-elektron/CHANGELOG-stoic-awakening-retirement.md`). Delete any
 existing datadir before upgrading — the old chain is incompatible.
 
 Genesis parameters are baked into `src/kernel/chainparams.cpp`. To regenerate:

@@ -77,9 +77,11 @@ This document lists **every deliberate divergence** from upstream Bitcoin Core, 
 - P2P bootstrap via new messages (see §5).
 - **`NODE_SNAPSHOT`**: advertised only when node has both `.dat` and `.hash` for a checkpoint.
 
-### 2.4 Stoic Awakening (mainnet min-difficulty recovery)
+### 2.4 Stoic Awakening (mainnet min-difficulty recovery) — retired at height 150000
 
-- `MinDifficultyActivationHeight = 1` on mainnet (`src/kernel/chainparams.cpp`).
+**Retired 2026-07-13**, see `CHANGELOG-stoic-awakening-retirement.md`: the escape fired far more often than intended under stable hashrate (~13.5% of blocks, Poisson math) and could corrupt an entire retarget epoch's difficulty for days when it landed on the last block of a period. `Consensus::Params::StoicAwakeningEndHeight = 150000` on mainnet (`-1`/never on other networks) ends it going forward; blocks below that height still validate under the rule as originally documented below.
+
+- `MinDifficultyActivationHeight = 1` on mainnet (`src/kernel/chainparams.cpp`), active only while `(height) < StoicAwakeningEndHeight` (150000).
 - If time since last block **> 120 s** (2× target spacing), next block may use `powLimit` difficulty.
 - Implemented in `src/pow.cpp`, `src/node/miner.cpp` (`GetNextWorkRequired` / template `nBits` logic).
 

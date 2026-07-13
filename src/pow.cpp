@@ -19,8 +19,10 @@ unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHead
     // Only change once per difficulty adjustment interval
     if ((pindexLast->nHeight+1) % params.DifficultyAdjustmentInterval() != 0)
     {
-        bool allowMinDifficulty = params.fPowAllowMinDifficultyBlocks ||
-            (params.MinDifficultyActivationHeight != -1 && (pindexLast->nHeight + 1) >= params.MinDifficultyActivationHeight);
+        bool stoicAwakeningActive = params.MinDifficultyActivationHeight != -1 &&
+            (pindexLast->nHeight + 1) >= params.MinDifficultyActivationHeight &&
+            (params.StoicAwakeningEndHeight == -1 || (pindexLast->nHeight + 1) < params.StoicAwakeningEndHeight);
+        bool allowMinDifficulty = params.fPowAllowMinDifficultyBlocks || stoicAwakeningActive;
         if (allowMinDifficulty)
         {
             // Stoic Awakening / testnet min-difficulty rule:
@@ -90,8 +92,10 @@ unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nF
 // or decrease beyond the permitted limits.
 bool PermittedDifficultyTransition(const Consensus::Params& params, int64_t height, uint32_t old_nbits, uint32_t new_nbits)
 {
-    bool allowMinDifficulty = params.fPowAllowMinDifficultyBlocks ||
-        (params.MinDifficultyActivationHeight != -1 && height >= params.MinDifficultyActivationHeight);
+    bool stoicAwakeningActive = params.MinDifficultyActivationHeight != -1 &&
+        height >= params.MinDifficultyActivationHeight &&
+        (params.StoicAwakeningEndHeight == -1 || height < params.StoicAwakeningEndHeight);
+    bool allowMinDifficulty = params.fPowAllowMinDifficultyBlocks || stoicAwakeningActive;
     if (allowMinDifficulty) return true;
 
     if (height % params.DifficultyAdjustmentInterval() == 0) {
