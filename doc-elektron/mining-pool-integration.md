@@ -49,10 +49,11 @@ ASICs only hash block headers. The **pool builds the coinbase** (or a
 GBT‑capable miner does). Without the pool adjustments described here,
 **every block your pool submits will be rejected**.
 
-Elektron Net adds two consensus changes that affect pools:
+Elektron Net adds consensus changes that affect pools:
 
 - **Per‑block UTXO attestation** baked into the coinbase
-- **60‑second blocks** with Stoic Awakening minimum‑difficulty escape
+- **60‑second blocks** (until height 150,000, also a since-retired
+  minimum‑difficulty escape — see §8)
 
 Standard Bitcoin pool software produces blocks that are invalid on
 Elektron Net. Read §3 carefully.
@@ -91,7 +92,7 @@ extensions. Call it with at least `{"rules": ["segwit"], "coinbaseaddress": "<be
 | `coinbase_required_outputs` | **Append verbatim** to the coinbase, in array order, starting at `vout[1]` |
 | `coinbase_script_sig_prefix` | **Use as the complete `scriptSig`**. Nothing before, nothing after. |
 | `transactions` | Mempool txs for the Merkle tree (you may also choose to drop them — see §3.6) |
-| `bits` | Difficulty (already includes Stoic Awakening) |
+| `bits` | Difficulty (before height 150,000, may reflect the since-retired Stoic Awakening escape — see §8) |
 | `previousblockhash`, `curtime`, `version` | Standard header fields |
 
 ### Fields the pool MUST NOT do anything other than copy
@@ -366,7 +367,7 @@ decoupling is already a full solution for the v1 firmware fleet.
 | `PROTOCOL_VERSION` | 70017 |
 | Bech32 HRP | `be` |
 | Block reward (start) | 5 ELEK |
-| Stoic Awakening | from height 1, after > 120 s gap → `powLimit` |
+| Stoic Awakening | height 1–149,999 only, after > 120 s gap → `powLimit`; retired from height 150,000 (§8) |
 
 Pool backend: connect to an **Elektron Net node** (not Bitcoin Core).
 
