@@ -1,23 +1,30 @@
-# Design Rationale: 137 Days, 120 Seconds, 60 Seconds
+# Design Rationale: 137 Days, 60 Seconds
 
-*The philosophy behind the three time constants of Elektron Net.*
+*The philosophy behind Elektron Net's two active time constants — and one
+retired experiment.*
 
 ---
 
 ## Introduction
 
-Three numbers shape almost everything about how Elektron Net feels, behaves,
+Two numbers shape almost everything about how Elektron Net feels, behaves,
 and stays secure:
 
 - **60 seconds** — the heartbeat of the chain (block interval)
-- **120 seconds** — the open hand for small miners (Stoic Awakening window)
 - **137 days** — the limit of memory (mandatory prune depth, 197,280 blocks)
 
 Each number on its own looks like a tuning parameter. Together they form a
 coherent design that trades the archival, industrial Bitcoin of today for
 something closer to Satoshi's original vision: a peer-to-peer cash system
-secured by many small, individual participants, with privacy built in by the
-simple act of forgetting.
+with privacy built in by the simple act of forgetting.
+
+A third number, **120 seconds**, was part of this design from genesis
+through block height 150,000: the *Stoic Awakening* min-difficulty window,
+discussed in its own section below along with why it was retired. It no
+longer shapes mainnet behavior today, but it shaped the chain's first
+150,000 blocks, and it shaped what the team learned about designing
+liveness mechanisms — so it stays in this document rather than being
+deleted from it.
 
 This document explains the *why*. The *how* lives in
 [`BITCOIN_CORE_DIFF.md`](BITCOIN_CORE_DIFF.md), the *philosophy* in
@@ -108,95 +115,62 @@ becomes finalized by erasure, not by checkpoint consensus.
 
 ---
 
-## 120 Seconds — The Open Hand (retired at height 150000)
+## 120 Seconds — The Open Hand (retired at height 150,000)
 
-> **Update (2026-07-13):** this mechanism is retired on mainnet at height
-> **150000** — the ~5% trigger rate assumed below turned out to be ~13.5% in
-> practice (Poisson math on a 60s mean), and an escape block landing on the
-> last block of a retarget period was found to corrupt the entire next
-> 2016-block epoch's difficulty for days. See
-> `CHANGELOG-stoic-awakening-retirement.md` for the full story. Kept below
-> for historical context on the original reasoning.
+If 60 seconds is the heartbeat and 137 days is the memory, 120 seconds was
+meant to be the gesture of welcome — an "open hand" that occasionally let a
+solo miner with a Bitaxe or NerdMiner win a block at minimum difficulty when
+the network went quiet for a moment, without taking anything away from the
+professional pools carrying the chain's regular security.
 
-If 60 seconds is the heartbeat and 137 days is the memory, 120 seconds is
-the gesture of welcome.
+The idea, in short: **if more than 120 seconds passed since the last block,
+the next one could be mined at minimum difficulty**, then the timer reset.
+Not a subsidy, not a sustained low-difficulty period — in theory, one block
+of relief per slow gap, immediately followed by a return to normal
+difficulty. The reasoning is preserved in full in the retirement changelog,
+since it's worth understanding *why* the idea seemed sound before seeing why
+it didn't hold up.
 
-The rule (Stoic Awakening, mainnet, active from height 1):
-**if more than 120 seconds have passed since the last block, the next block
-may be mined at the minimum difficulty.**
+### Why it was retired
 
-Code: `MinDifficultyActivationHeight = 1` in `src/kernel/chainparams.cpp`,
-implementation in `src/pow.cpp`.
+Reality didn't match the model. Block discovery is a Poisson process, so a
+>120s gap happens by pure statistical chance roughly **13.5% of the time**
+even at perfectly stable hashrate — not the ~5% the original design assumed.
+Worse, when one of these "relief" blocks happened to land on the *last*
+block of a 2,016-block retarget period, the standard difficulty formula
+inherited its crashed value as the baseline for the *entire next epoch*,
+depressing difficulty for days rather than one block — during which the
+chain was trivially attackable and opportunistic miners piled in to harvest
+near-free rewards, which kept prolonging the crash rather than letting it
+recover. Live mainnet data confirmed this exact failure mode in practice.
 
-### What it actually does
+The mechanism was retired on mainnet at block height **150,000**
+(`Consensus::Params::StoicAwakeningEndHeight`, `src/pow.cpp`). Difficulty
+on Elektron Net now adjusts purely through the standard 2,016-block
+retarget, same as Bitcoin. See
+[`CHANGELOG-stoic-awakening-retirement.md`](CHANGELOG-stoic-awakening-retirement.md)
+for the full technical account, including the live evidence that led to the
+decision.
 
-It is *one* block of relief, then the timer resets. The next block after
-that is back to normal difficulty unless 120 seconds pass again. This is
-not a sustained low-difficulty period — it is a single open window, and it
-only opens when the network slows down.
+### What we're taking from it
 
-### Why it is not a security hole
-
-A 51% attacker cannot use this to "chain-rush" — every min-difficulty block
-needs another 120-second gap, which means waiting in real time. The
-chainwork gained is marginal.
-
-But for a Bitaxe in someone's kitchen, those 120 seconds are everything.
-
-### The hand-up for small miners
-
-Modern small mining devices — Bitaxe, NerdMiner, hobby ASICs in the
-500 GH/s to 5 TH/s range — have essentially zero chance of finding a
-Bitcoin block. The math is brutal: a single device against a global
-exahash network is a lottery with no winners.
-
-On Elektron Net, when the 120-second window opens, the difficulty drops to
-`powLimit`. A solo Bitaxe can realistically find that block. Not often —
-but realistically. The lottery has winners now.
-
-### The barbell
-
-This produces a deliberately asymmetric miner population:
-
-- **Professional pools and data centres** mine the ~95% of blocks that
-  appear within 120 seconds, at full difficulty. They carry the cost and
-  carry the security.
-- **Solo adventurers** with Bitaxes, NerdMiners, and basement rigs catch
-  the blocks that fall through the 120-second window.
-
-Nobody is displaced. Professionals are not undercut — they still win the
-vast majority of blocks and the steady income. Hobbyists are not excluded
-— they have a real, non-zero chance every time the network breathes.
-
-### The energy ceiling
-
-Bitcoin's energy use grows because difficulty grows because hashrate
-grows. The arms race has no built-in brake. On Elektron Net, if difficulty
-rises so high that even professional miners regularly take more than 120
-seconds per block, the overflow falls to solo miners at minimum
-difficulty. This acts as an **implicit safety valve** against unbounded
-hashrate escalation. Over long horizons, the system self-regulates toward
-a hashrate level where the arms race is no longer economically attractive.
-
-This is not proof-of-work versus proof-of-stake. It is proof-of-work
-**with self-limitation built in.**
+A good intention — give small, honest hardware a real chance — collided
+with a statistical reality that wasn't modeled carefully enough before
+shipping to mainnet. The fix wasn't to patch the threshold and hope; it was
+to remove the mechanism and be plain about why. That is the more
+consequential "stoic" lesson here: not the 120-second window itself, but
+owning what didn't work instead of quietly forgetting it.
 
 ---
 
-## The Synthesis — Why the Three Numbers Need Each Other
+## The Synthesis — Why the Constants Need Each Other
 
 Each constant in isolation is interesting. Together they form an
 architecture.
 
 - **60 seconds** makes mining frequent enough that solo participation is
-  meaningful. At 600-second blocks, a Bitaxe owner would wait years
-  between meaningful chances even with min-difficulty windows. At 60
-  seconds, the chances arrive constantly.
-
-- **120 seconds** opens the door for small miners *without* taking
-  anything from large miners. The big operators still win when blocks
-  come fast (most of the time). The small operators win when blocks come
-  slow.
+  meaningful — and confirmation latency low enough to feel like a live
+  payment network rather than a settlement layer.
 
 - **137 days** keeps the chain light enough that a Raspberry Pi, a phone,
   or a low-end laptop can be a full node. Light chains attract more
@@ -220,6 +194,12 @@ Pull on any one of these threads and the others come along.
 
 A 51% attack is still possible in principle — proof-of-work makes no other
 promise. But the *shape* of the threat changes in ways that matter.
+
+*(The points below rest on 60-second blocks, mandatory pruning, and
+per-block attestation — not on Stoic Awakening, which is retired. Solo
+hobbyist participation is still real and still distributed, but without the
+120-second window a lone Bitaxe competes at full difficulty like any other
+miner, same as on Bitcoin.)*
 
 ### What is harder
 
@@ -260,9 +240,10 @@ hashrate. It is the hardest kind of hashrate to buy.
 
 ---
 
-## The Gold-Panner
+## The Gold-Panner — an image that didn't survive contact with reality
 
-There is an older image that captures what this design is trying to do.
+There is an older image that captures what Stoic Awakening was trying to do,
+worth keeping precisely because the mechanism it describes no longer exists.
 
 Before industrial mining came to the American West, the early gold rushes
 were prospectors with pans, sluices, and stubborn optimism. The Colorado
@@ -274,15 +255,18 @@ enough for individuals.
 
 Industrial mining made that economy obsolete. The same has happened to
 Bitcoin: the romance of running a node and finding a block is now mostly
-just romance.
+just romance. Stoic Awakening's 120-second window was meant to put the
+panners back at the river — a Bitaxe under a desk finding, every so often,
+a block nobody expected it to find.
 
-Elektron Net puts the panners back at the river.
+It didn't work that way in practice. The window opened far more often than
+intended, and each opening risked dragging the whole river dry for days
+rather than handing out the occasional nugget — see the section above and
+[`CHANGELOG-stoic-awakening-retirement.md`](CHANGELOG-stoic-awakening-retirement.md).
+Retiring it at height 150,000 was the honest response once the data was in.
 
-A Bitaxe under a desk is a pan in a stream. Most days it finds nothing.
-But the stream is moving, the 120-second window keeps opening, and every
-so often someone in Stuttgart or São Paulo or Sapporo will check their
-device in the morning and find a block.
-
-**Everyone, eventually, finds a nugget.**
-
-That is not just a feature. It is the security model.
+The image stays in this document anyway. Not every good idea survives
+contact with a live network, and pretending otherwise would be its own kind
+of dishonesty. **Elektron Net still values the gold-panner** — it just
+doesn't currently believe minimum-difficulty windows are how you protect
+one.

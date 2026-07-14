@@ -96,7 +96,7 @@ Bitcoin was built for institutional resilience. Elektron Net is built for human 
 |---|---|---|
 | Language | Bitcoin Core | C++20 |
 | Consensus | Bitcoin Core | SHA-256d PoW, Nakamoto longest-chain rule |
-| Difficulty Adjustment | Bitcoin Core | Every 2,016 blocks + Stoic Awakening recovery (from block 1) |
+| Difficulty Adjustment | Bitcoin Core | Every 2,016 blocks (unchanged) |
 | Script Engine | Bitcoin Core | OP_CODES unchanged |
 | P2P Network | Bitcoin Core | TCP/IP, addr relay, DoS protection |
 | Wallet | Bitcoin Core | BIP-32/39/44, descriptor wallets, Bech32m |
@@ -110,7 +110,6 @@ Bitcoin was built for institutional resilience. Elektron Net is built for human 
 | Block time | 10 minutes | **60 seconds** |
 | Blocks per day | 144 | **1,440** |
 | Retarget interval | 2,016 blocks (2 weeks) | **2,016 blocks (1.4 days)** |
-| Difficulty recovery | None | **Stoic Awakening** (min-difficulty after >120s delay, active from block 1) |
 | Pruning | Optional, user-defined | **Mandatory, 137 days** |
 
 All other consensus rules, opcodes, signature schemes (ECDSA, Schnorr/Taproot), and network behaviour are preserved exactly.
@@ -145,69 +144,25 @@ Reducing block time by 10× would inflate supply by 10× if the block reward wer
 
 **No pre-mine. No airdrop. No founder allocation.** Every Elek is earned by producing valid proof-of-work.
 
-### 3.3 Chain Liveness Guarantee (Stoic Awakening) — retired at height 150000
+### 3.3 Difficulty Adjustment
 
-> **Update (2026-07-13):** Live mainnet data showed the escape firing far more
-> often than assumed (~13.5% of blocks by the Poisson model, not the ~5%
-> estimated below) and, when it landed on the last block of a retarget
-> period, corrupting the entire next 2016-block epoch's difficulty for days.
-> Stoic Awakening is retired on mainnet at height **150000**
-> (`Consensus::Params::StoicAwakeningEndHeight`); blocks below that height
-> still validate under the rule described here. See
-> `doc-elektron/CHANGELOG-stoic-awakening-retirement.md` for the full
-> analysis and rationale. The section below describes the original design
-> intent and is kept for historical context.
+Elektron Net retargets difficulty every 2,016 blocks — identical to Bitcoin
+Core, just compressed into 1.4 days instead of two weeks by the faster block
+time. No other consensus-level difficulty mechanism is active on mainnet
+today.
 
-Elektron Net is designed to reward miners frequently — but a payment network that stops moving is not a payment network at all. It is a monument.
-
-Bitcoin’s 2,016-block difficulty retargeting window assumes a relatively stable hashrate. If a single high-hashrate miner dominates the network, drives the difficulty upward, and then abruptly disconnects, the remaining miners may lack the collective power to find the next block before the regular retargeting interval. Block times stretch from minutes into hours. Transactions stall. The chain dies of its own weight — not because the protocol failed, but because a single actor left.
-
-**A currency that can be killed by one miner leaving is not a currency. It is a hostage.**
-
-#### 3.3.1 The Mechanism
-
-To prevent this, Elektron Net introduces a **Dynamic Difficulty Recovery Mechanism** (*Stoic Awakening*), active from block **1** on the v4.0 genesis restart.
-
-Outside the regular 2,016-block retargeting interval, the protocol evaluates an additional safety condition:
-
-> **If the time elapsed since the last block exceeds 120 seconds (2× the 60-second target spacing), the next block may be mined at the minimum difficulty (`powLimit`).**
-
-Once a minimum-difficulty block is found, the target immediately returns to the regular 2,016-block average for the subsequent block. This is not a subsidy. It is not a competitive advantage for any miner. It is an emergency respiration valve — a guarantee that the chain continues to breathe when external circumstances temporarily suffocate it.
-
-| Feature | Testnet Min-Difficulty | Stoic Awakening (Mainnet) |
-|---|---|---|
-| Trigger | Always active outside retarget | Only after >120s delay |
-| Effect on next block | Returns to regular difficulty | Returns to regular difficulty |
-| Competitive impact | Lowers barrier to entry | Neutral — all miners use same template |
-| Purpose | Test mining without hardware | **Prevent chain stall after hashrate shock** |
-
-Because the node automatically updates the block template’s `nBits` field when the delay threshold is crossed, **ASIC firmware and hash-only miners need no changes**. Pool backends and GBT miners **must** include every output in `coinbase_required_outputs` (witness commitment + UTXO attestation) — see [`doc-elektron/mining-pool-integration.md`](doc-elektron/mining-pool-integration.md). Omitting the attestation produces blocks rejected with `missing-utxo-attestation`.
-
-#### 3.3.2 Consensus Properties
-
-Stoic Awakening is **height-based** (`MinDifficultyActivationHeight = 1`), not time-based. This guarantees deterministic behavior from the first post-genesis block.
-
-Protocol version is `70017`; `MIN_PEER_PROTO_VERSION` is `70017` from genesis onward.
-
-#### 3.3.2a Bootstrap After the First Snapshot
-
-Until the first on-chain UTXO checkpoint (block 197,280), the network behaves like Bitcoin Core: new nodes sync headers and blocks normally. After that checkpoint exists, fresh installations bootstrap from the latest UTXO snapshot and download only the trailing 137-day window — see *The Blind Spot of Digital Money* for the full rolling-consensus model.
-
-#### 3.3.3 Why This Protects Everyone
-
-A stalled chain harms **all** participants equally:
-
-| Stakeholder | Impact of Chain Stall |
-|---|---|
-| Miners | No new blocks to mine = no revenue |
-| Users | Transactions stuck in mempool, zero finality |
-| Exchanges | Cannot process deposits or withdrawals |
-| Developers | No block space for new transactions |
-| The Network | Reputation damage, loss of trust |
-
-The Stoic Awakening rule is therefore a **universal insurance policy**, not a redistribution. It does not favour small miners over large ones, CPU miners over ASICs, or new entrants over incumbents. It simply ensures that the network continues to function when external circumstances — a miner leaving, a power outage, a geopolitical event — temporarily reduce hashrate.
-
-> *"Mathematics secures your money. Resilience secures the network."*
+> **Historical note.** From genesis until block height 150,000, mainnet also
+> ran a second mechanism, *Stoic Awakening*: if more than 120 seconds passed
+> since the last block, the next block could be mined at minimum difficulty,
+> intended as a liveness guarantee against sudden hashrate loss. Live
+> operation showed it firing far more often than intended under ordinary,
+> stable hashrate — and interacting badly with the standard retarget
+> calculation in a way that could depress difficulty for days at a time. It
+> was retired at height **150,000** (`Consensus::Params::StoicAwakeningEndHeight`).
+> The full technical account, including the live data that led to the
+> decision, is kept at
+> [`doc-elektron/CHANGELOG-stoic-awakening-retirement.md`](doc-elektron/CHANGELOG-stoic-awakening-retirement.md)
+> — a stoic protocol records what didn't work, it doesn't erase it.
 
 ---
 
@@ -437,9 +392,14 @@ Elektron Net is Bitcoin Core with surgical modifications:
 1. **60-second blocks** — faster payments, preserved economics.
 2. **137-day pruning** — privacy by mathematics, storage bounded forever.
 3. **Per-block UTXO attestation** — continuous UTXO integrity; snapshot *files* only every 137 days.
-4. **Stoic Awakening** — minimum-difficulty recovery after >120s block delay (from block 1).
 
 No new trust models. No administrator keys. No pre-mine.
+
+A fourth mechanism, *Stoic Awakening*, ran from genesis through block
+150,000 and was retired after real-world operation showed it destabilizing
+difficulty rather than protecting it — see §3.3 and
+[`doc-elektron/CHANGELOG-stoic-awakening-retirement.md`](doc-elektron/CHANGELOG-stoic-awakening-retirement.md).
+A stoic protocol owns its outcomes, not just its intentions.
 
 The same SHA-256d proof-of-work. The same 21-million cap. The same Nakamoto consensus.
 
