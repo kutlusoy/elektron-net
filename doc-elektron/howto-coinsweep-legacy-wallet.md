@@ -16,6 +16,34 @@
 
 ---
 
+## ✅ Tested scenarios
+
+Everything described in this guide has been verified end-to-end on real
+mainnet with a real v4.0.4 build, not just reasoned about from the source
+code. Specifically confirmed to work:
+
+- A freshly created wallet automatically receives coin type 1370 addresses.
+- Sending coins from an old wallet to a new-style wallet, and back again —
+  both directions, including actually *spending* from the new wallet, not
+  just receiving into it.
+- Both transactions showing up correctly on the block explorer.
+- Restoring an existing (coin type 0) wallet backup into the updated
+  software — balance and coins are recognized automatically, and the
+  restored wallet keeps generating coin-type-0 addresses exactly as before.
+- Moving coins back and forth between an old and a new wallet loaded in the
+  same client at the same time.
+- An old client (the previous software version) and the new client working
+  together correctly on the same network, in every combination of old/new
+  client and old/new wallet.
+- A wallet backed up *before* it ever received any coins still correctly
+  discovers and shows those coins later, automatically, once restored — no
+  manual re-scan or extra steps needed.
+
+In short: whichever of the steps below you follow, it has been tried for
+real first.
+
+---
+
 ## Why this exists (short version)
 
 Elektron Net now has its own official derivation number (SLIP-44 coin type
