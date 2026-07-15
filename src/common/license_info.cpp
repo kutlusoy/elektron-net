@@ -43,5 +43,10 @@ std::string LicenseInfo()
            "\n" +
            _("This is experimental software.") + "\n" +
            strprintf(_("Distributed under the MIT software license, see the accompanying file %s or %s"), "COPYING", "<https://opensource.org/license/MIT>").translated +
+           "\n" +
+           "\n" +
+           _("Express Declaration of Will: Global Right to Be Forgotten") + "\n" +
+           _("By choosing Elektron Net, every user makes an express, informed, and irrevocable declaration of will: they affirmatively exercise their right to be forgotten. This blockchain was selected precisely because it transforms a legal claim - recognised across jurisdictions - into a protocol guarantee. No petition is required. No controller must be persuaded. The right is exercised automatically, by mathematics, every 137 days.") + "\n" +
+           "<https://github.com/kutlusoy/elektron-net/blob/main/right-to-be-forgotten.md>" +
            "\n";
 }
