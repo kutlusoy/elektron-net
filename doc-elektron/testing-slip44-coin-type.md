@@ -1,0 +1,39 @@
+# Manual Test Log: SLIP-44 Coin Type 1370 (v4.0.4, real mainnet)
+
+**Purpose:** Track the manual, real-mainnet verification of the SLIP-44 coin type
+1370 (ELEK) change (`slip-44` branch, v4.0.4) before/alongside merging it. Once
+these are confirmed, their results feed a "Tested scenarios" section in
+[`howto-coinsweep-legacy-wallet.md`](howto-coinsweep-legacy-wallet.md), so
+users know upfront which paths have actually been exercised on the live
+network rather than only reasoned about from the source.
+
+**Setup:** Two client instances on the same machine, separate datadirs/ports,
+both connected to real mainnet (no `-connect=0`):
+- **Old client** — pre-1370 build (e.g. v4.0.3), holds a pre-existing coin
+  type 0' wallet.
+- **New client** — built from `slip-44` (v4.0.4), holds two wallets: a
+  freshly created one (coin type 1370' by default) and a restored copy of an
+  old coin type 0' wallet.
+
+Each row: what's being tested, why it matters, what a pass looks like.
+Status is updated as results come in — this file is a living checklist, not
+a finished report.
+
+| ID | Test case | Expected result | Status |
+|---|---|---|---|
+| TC1 | Fresh build sanity: create a new wallet in the new client, check `listdescriptors` in the Debug Console. | Active descriptors show `/1370h/` in their path, not `/0h/`. | Pending |
+| TC2 | Send minimal ELEK: old client's 0' wallet → new client's new 1370' wallet address, on real mainnet. | Transaction confirms normally (~60s block time); new wallet's balance updates. | Pending |
+| TC3 | Send back: new client's new 1370' wallet → an address in the old client's wallet. | Spend succeeds — confirms 1370' derivation works for *signing*, not just receiving. | Pending |
+| TC4 | Check both TC2 and TC3 transactions on the `elektron-net-mempool` explorer. | Both show up like any ordinary transaction; nothing coin-type-specific visible or different. | Pending |
+| TC5 | Restore an existing 0' wallet backup into the new (v4.0.4) client via **File → Restore Wallet…**. | Wallet loads; balance/UTXOs recognized automatically; `getnewaddress`/`listdescriptors` on this wallet still show `0'`, unaffected by the new default. | Pending |
+| TC6 | Same-client round trip: with both wallets loaded in the new client, move funds back and forth via the **Wallet:** selector (old-restored ↔ new). | Both directions succeed; the receiving wallet shows the transaction at 0 confirmations immediately (same node, shared mempool), then confirms after ~60s. | Pending |
+| TC7 | Cross-version P2P test: old client and new client as peers on the same mainnet; send in all combinations — old-client-wallet ↔ new-client-old-wallet, old-client-wallet ↔ new-client-new-wallet. | No P2P incompatibility of any kind; all combinations settle normally, since this is a wallet-only change with no consensus/protocol-version impact. | Pending |
+| TC8 | UTXO-scan-without-history: back up a wallet at 0 balance, fund an address from it afterward (in the old client), then import that *pre-funding* backup into the new client, which has no record of the transaction. | New client recognizes and credits the funds automatically once synced, purely via `ScanUTXOSet` against the current UTXO set — no rescan or manual re-import of the address needed. | Pending |
+
+## Once all cases are confirmed
+
+Fold the confirmed cases into `howto-coinsweep-legacy-wallet.md` as a short
+"Tested scenarios" section near the top, next to the existing safety warning
+— plain language, no case IDs, just a list of what real users can expect to
+work because it's been verified against real mainnet, not just reasoned
+about from the source.
