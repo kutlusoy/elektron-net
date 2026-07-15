@@ -98,6 +98,10 @@ public:
     WalletDescriptor(std::shared_ptr<Descriptor> descriptor, uint64_t creation_time, int32_t range_start, int32_t range_end, int32_t next_index) : descriptor(descriptor), id(DescriptorID(*descriptor)), creation_time(creation_time), range_start(range_start), range_end(range_end), next_index(next_index) { }
 };
 
+//! Elektron Net's registered SLIP-44 coin type (symbol ELEK), used for
+//! mainnet descriptor generation. See doc-elektron/CHANGELOG-slip44-coin-type.md.
+static constexpr uint32_t ELEK_COIN_TYPE = 1370;
+
 WalletDescriptor GenerateWalletDescriptor(const CExtPubKey& master_key, const OutputType& output_type, bool internal);
 } // namespace wallet
 

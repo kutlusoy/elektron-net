@@ -68,12 +68,12 @@ WalletDescriptor GenerateWalletDescriptor(const CExtPubKey& master_key, const Ou
     assert(!desc_prefix.empty());
 
     // Mainnet derives at Elektron Net's registered SLIP-44 coin type
-    // (1370', symbol ELEK); testnet and regtest derive at 1'
-    // (SLIP-44's "testnet for all coins" convention, unrelated and unchanged).
+    // (ELEK_COIN_TYPE); testnet and regtest derive at 1' (SLIP-44's
+    // "testnet for all coins" convention, unrelated and unchanged).
     if (Params().IsTestChain()) {
         desc_prefix += "/1h";
     } else {
-        desc_prefix += "/1370h";
+        desc_prefix += "/" + std::to_string(ELEK_COIN_TYPE) + "h";
     }
 
     std::string internal_path = internal ? "/1" : "/0";
