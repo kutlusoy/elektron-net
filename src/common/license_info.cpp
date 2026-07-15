@@ -48,5 +48,7 @@ std::string LicenseInfo()
            _("Express Declaration of Will: Global Right to Be Forgotten") + "\n" +
            _("By choosing Elektron Net, every user makes an express, informed, and irrevocable declaration of will: they affirmatively exercise their right to be forgotten. This blockchain was selected precisely because it transforms a legal claim - recognised across jurisdictions - into a protocol guarantee. No petition is required. No controller must be persuaded. The right is exercised automatically, by mathematics, every 137 days.") + "\n" +
            "<https://github.com/kutlusoy/elektron-net/blob/main/right-to-be-forgotten.md>" +
-           "\n";
+           "\n" +
+           "\n" +
+           _("No party may lawfully retain, against a user's will, transaction records reaching further than 137 days into the past - including by running a modified version of this software that disables or circumvents the mandatory pruning described above. The 137-day window is the mechanism by which this right is exercised automatically in the unmodified reference client; the right itself does not depend on that mechanism. Deliberately defeating it to retain a user's data against their will is a violation of the right to be forgotten declared above, regardless of which software variant is used to do so.") + "\n";
 }
