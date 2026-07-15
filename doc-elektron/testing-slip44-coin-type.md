@@ -31,3 +31,19 @@ section in `howto-coinsweep-legacy-wallet.md` — see below.
 | TC6 | Same-client round trip: with both wallets loaded in the new client, move funds back and forth via the **Wallet:** selector (old-restored ↔ new). | Both directions succeed; the receiving wallet shows the transaction at 0 confirmations immediately (same node, shared mempool), then confirms after ~60s. | **Confirmed** |
 | TC7 | Cross-version P2P test: old client and new client as peers on the same mainnet; send in all combinations — old-client-wallet ↔ new-client-old-wallet, old-client-wallet ↔ new-client-new-wallet. | No P2P incompatibility of any kind; all combinations settle normally, since this is a wallet-only change with no consensus/protocol-version impact. | **Confirmed** |
 | TC8 | UTXO-scan-without-history: back up a wallet at 0 balance, fund an address from it afterward (in the old client), then import that *pre-funding* backup into the new client, which has no record of the transaction. | New client recognizes and credits the funds automatically once synced, purely via `ScanUTXOSet` against the current UTXO set — no rescan or manual re-import of the address needed. | **Confirmed** |
+
+## Live mainnet evidence
+
+Recorded for the record — publicly verifiable on any block explorer synced
+to this chain.
+
+**Addresses involved:**
+
+| Role | Address |
+|---|---|
+| Coin type 0', old client (v4.0.3) | `be1qc95ra8pcfpqgegjt7mt6tt70ud48ytmpw6nwlp` |
+| Coin type 0', same wallet restored into new client (v4.0.4) | `be1qufgz4h2f7ar3ueg3f65vn0umjznv6tzzqyqs9g` |
+| Coin type 1370', new wallet on new client (v4.0.4) | `be1qk24yv5cyhywx30perc7j7nelv0nx7zxjnkx3ut` |
+
+**Block heights containing the test transactions:** 109874, 109875, 109878,
+109895, 109896.
