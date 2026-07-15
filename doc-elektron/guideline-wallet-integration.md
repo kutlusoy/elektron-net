@@ -81,6 +81,17 @@ Any wallet client (Electrum fork or otherwise) MUST implement at minimum:
 - Genesis hash, `pchMessageStart`, default port 8333 (only relevant if a client ever speaks P2P directly instead of a server protocol)
 - A BIP32 path / `BIP44_COIN_TYPE` — resolved: Elektron Net has registered **SLIP-44 coin type 1370** (symbol `ELEK`), i.e. `m/44'/1370'/0'/...` (and the 49'/84'/86' equivalents). The node's reference wallet implements this in `GenerateWalletDescriptor()` (`src/wallet/walletutil.cpp`). Testnet/regtest are unaffected and keep SLIP-44's generic `1'` ("testnet for all coins"). **MUST:** any wallet implementation offering seed-based recovery must additionally scan the legacy `0'` path, since wallets created before this change hold funds there that a `1370'`-only scan would silently miss — see `doc-elektron/CHANGELOG-slip44-coin-type.md` for the dual-track model this relies on.
 
+**Example derivation paths, per output type** (`<xpub>` is the wallet's master extended public key; account is always `0'`; the wildcard covers external `/0/*` and internal/change `/1/*`):
+
+| Output type | Current (`1370'`) | Legacy, pre-registration (`0'`) — MUST also scan |
+|---|---|---|
+| Legacy (P2PKH) | `pkh(<xpub>/44h/1370h/0h/0/*)` | `pkh(<xpub>/44h/0h/0h/0/*)` |
+| Nested SegWit (P2SH-P2WPKH) | `sh(wpkh(<xpub>/49h/1370h/0h/0/*))` | `sh(wpkh(<xpub>/49h/0h/0h/0/*))` |
+| Native SegWit (P2WPKH, default) | `wpkh(<xpub>/84h/1370h/0h/0/*)` | `wpkh(<xpub>/84h/0h/0h/0/*)` |
+| Taproot (P2TR) | `tr(<xpub>/86h/1370h/0h/0/*)` | `tr(<xpub>/86h/0h/0h/0/*)` |
+
+**Known future consideration (not yet applicable — no third-party wallet software exists today):** once hardware signers (HWI) or PSBT-based multi-coin wallets are integrated, having two active coin-type descriptor sets for the same master fingerprint in one wallet may need explicit handling in those tools' key-origin matching, since some multi-coin wallet UIs assume one coin type per fingerprint. This is a design note for whoever builds that integration, not a current limitation of the node.
+
 ### 3.2 Server Protocol Choice — the Central Architectural Decision
 
 | Option | History required? | Compatible with pruning philosophy? | Effort |
