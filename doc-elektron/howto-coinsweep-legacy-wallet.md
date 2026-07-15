@@ -44,7 +44,7 @@ everything under one consistent identity going forward.
    |---|---|
    | Windows | `%LOCALAPPDATA%\Elektron\wallets\<walletname>\` (or `%APPDATA%\Elektron\` if you've had the app installed since before an older version) |
    | Linux | `~/.elektron/wallets/<walletname>/` |
-   | macOS | `~/Library/Application Support/Bitcoin/wallets/<walletname>/` — **note:** this currently says "Bitcoin", not "Elektron", on macOS specifically; this is a known naming inconsistency in the current build, not a mistake on your part. Only use this path if you're on macOS. |
+   | macOS | `~/Library/Application Support/Elektron/wallets/<walletname>/` — if you installed before this fix and that folder doesn't exist, check `~/Library/Application Support/Bitcoin/wallets/<walletname>/` instead; the app keeps using that older path automatically for installs that already had one. |
 
    Copy the whole `<walletname>` folder (it contains the wallet database
    plus a `.walletlock` file) somewhere safe.
