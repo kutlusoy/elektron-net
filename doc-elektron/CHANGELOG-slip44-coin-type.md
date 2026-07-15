@@ -1,6 +1,6 @@
 # Changelog: SLIP-44 Coin Type Registration (`ELEK` = 1370)
 
-**Status:** Implemented 2026-07-15, planned for the next release after v4.0.3.
+**Status:** Implemented 2026-07-15, shipped in **v4.0.4**.
 Mainnet wallets created from this point onward derive descriptors under
 Elektron Net's own registered SLIP-44 coin type, **1370** (symbol `ELEK`),
 instead of reusing Bitcoin's coin type `0'`. Testnet/regtest are unaffected.
