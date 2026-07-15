@@ -79,7 +79,7 @@ Any wallet client (Electrum fork or otherwise) MUST implement at minimum:
 - Bech32 HRP `be` (plus, if Electrum's native Lightning implementation is used, a corresponding BOLT11 HRP for invoices)
 - Base58 version bytes as in §2.1, with an explicit note that these are *intentionally* identical to Bitcoin mainnet
 - Genesis hash, `pchMessageStart`, default port 8333 (only relevant if a client ever speaks P2P directly instead of a server protocol)
-- A BIP32 path / `BIP44_COIN_TYPE` — it is currently unclear whether Elektron Net has registered its own SLIP-44 coin type or reuses Bitcoin's `0'`. **This must be clarified with the core protocol team before any wallet fork fixes a derivation path.**
+- A BIP32 path / `BIP44_COIN_TYPE` — resolved: Elektron Net has registered **SLIP-44 coin type 1370** (symbol `ELEK`), i.e. `m/44'/1370'/0'/...` (and the 49'/84'/86' equivalents). The node's reference wallet implements this in `GenerateWalletDescriptor()` (`src/wallet/walletutil.cpp`). Testnet/regtest are unaffected and keep SLIP-44's generic `1'` ("testnet for all coins"). **MUST:** any wallet implementation offering seed-based recovery must additionally scan the legacy `0'` path, since wallets created before this change hold funds there that a `1370'`-only scan would silently miss — see `doc-elektron/CHANGELOG-slip44-coin-type.md` for the dual-track model this relies on.
 
 ### 3.2 Server Protocol Choice — the Central Architectural Decision
 
@@ -171,7 +171,7 @@ This should be treated as a **mandatory review item** for any wallet integration
 ## 6. Implementation Plan (Phased, for Any Integrating Team)
 
 **Phase 0 — Clarification (before any code)**
-- [ ] SLIP-44/BIP44 coin type for Elektron Net must be decided (register a dedicated number, or deliberately reuse Bitcoin's `0'`?)
+- [x] SLIP-44/BIP44 coin type for Elektron Net — resolved: **1370** (`ELEK`), see §3.1 and `doc-elektron/CHANGELOG-slip44-coin-type.md`
 - [ ] A dedicated BOLT11 HRP for Lightning invoices should be decided (if Option A is chosen)
 - [ ] Option A (Electrum-native Lightning) vs. Option B (Zeus+LND/CLN) should be finalized before further work begins
 
@@ -199,5 +199,5 @@ This should be treated as a **mandatory review item** for any wallet integration
 ## 7. Open Questions for the Core Protocol Team
 
 1. Should Option A (Electrum-native Lightning) or Option B (Zeus+LND/CLN) be pursued, or should both be evaluated in parallel?
-2. Is there already a preference for registering a dedicated SLIP-44 coin type?
+2. ~~Is there already a preference for registering a dedicated SLIP-44 coin type?~~ Resolved: coin type **1370** (`ELEK`) is registered, see §3.1 and `doc-elektron/CHANGELOG-slip44-coin-type.md`.
 3. Who will own the `elektron-net-electrs` fork — an internal team or an external contractor?
