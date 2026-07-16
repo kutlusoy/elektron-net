@@ -45,10 +45,13 @@ std::string LicenseInfo()
            strprintf(_("Distributed under the MIT software license, see the accompanying file %s or %s"), "COPYING", "<https://opensource.org/license/MIT>").translated +
            "\n" +
            "\n" +
-           _("Express Declaration of Will: Global Right to Be Forgotten") + "\n" +
-           _("By choosing Elektron Net, every user makes an express, informed, and irrevocable declaration of will: they affirmatively exercise their right to be forgotten. This blockchain was selected precisely because it transforms a legal claim - recognised across jurisdictions - into a protocol guarantee. No petition is required. No controller must be persuaded. The right is exercised automatically, by mathematics, every 137 days.") + "\n" +
-           "<https://github.com/kutlusoy/elektron-net/blob/main/right-to-be-forgotten.md>" +
-           "\n" +
-           "\n" +
-           _("No party may lawfully retain, against a user's will, transaction records reaching further than 137 days into the past - including by running a modified version of this software that disables or circumvents the mandatory pruning described above. The 137-day window is the mechanism by which this right is exercised automatically in the unmodified reference client; the right itself does not depend on that mechanism. Deliberately defeating it to retain a user's data against their will is a violation of the right to be forgotten declared above, regardless of which software variant is used to do so.") + "\n";
+           _("Express Declaration of Will: Right to Be Forgotten") + "\n" +
+           _("By choosing Elektron Net, users express their informed will to exercise their right to be forgotten.") + "\n" +
+           _("This project turns a principle recognized in many legal systems into a technical protocol feature: mandatory 137-day pruning automatically and irreversibly removes transaction data from the node after exactly 137 days.") + "\n" +
+           _("The source code and reference implementation guarantee this property. Every user who runs Elektron Net supports this philosophy of structural forgetting.") + "\n" +
+           _("Important Note:") + "\n" +
+           _("Modifying the client to disable or circumvent mandatory pruning while continuing to operate on the same Elektron Net chain is considered a serious violation of the project's core principles and the declared will of its users. Such modifications undermine the right to be forgotten that this chain was built to enforce.") + "\n" +
+           _("Creating a completely separate fork or new project is always permitted under the MIT license. However, deliberately defeating the pruning mechanism on the original Elektron Net chain goes against the express intent of this software and its community.") + "\n" +
+           strprintf(_("See: %s"), "<https://github.com/kutlusoy/elektron-net/blob/main/right-to-be-forgotten.md>").translated +
+           "\n";
 }
