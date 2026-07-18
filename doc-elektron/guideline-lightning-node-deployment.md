@@ -1,6 +1,6 @@
 # Elektron Net — Lightning Trampoline/Routing Node Deployment Guideline
 
-- **Version:** 0.1 (draft)
+- **Version:** 0.2 (draft)
 - **Date:** July 18, 2026
 - **Audience:** Infrastructure operators and Lightning integrators planning the first real Elektron Net trampoline/routing node
 - **Reference implementation:** [`elektron-net`](https://github.com/kutlusoy/elektron-net) — `src/kernel/chainparams.cpp` (`CMainParams`), `src/rpc/blockchain.cpp`/`src/rpc/fees.cpp`/`src/rpc/rawtransaction.cpp` (RPC surface), `src/init.cpp` (ZMQ) — treat these as ground truth for anything this doc references
@@ -82,7 +82,13 @@ Following this project's established pattern (see the electrs guideline SS1/chec
 
 - The Eclair fork SHOULD run as its own `docker-compose` service in `elektron-net-stack`, alongside the existing `elektrond` and `electrs` services, added as a new (initially disabled/opt-in) service profile mirroring how `elektron-electrs` was introduced.
 - It SHOULD point at a **dedicated** `elektrond` instance (own RPC/ZMQ endpoints), not share the one `electrs` already depends on, so the hub operator has full, isolated control over that node's uptime and prune target size (SS4.2) independent of anything else on the stack.
-- Eclair's JVM footprint is a real, non-trivial resource cost compared to Go-based LND -- worth sizing explicitly against whatever Hetzner instance class this gets deployed to, rather than assuming it fits the same footprint as `electrs`/`elektrond` did.
+- **Resource footprint (research-based, not yet load-tested against this project's actual usage):**
+  - **RAM:** ACINQ's own documentation recommends 4GB+ for the JVM process alone as a baseline, scaling upward with channel count and payment volume, not a fixed ceiling. This is the JVM's own footprint -- it does not yet include the dedicated `elektrond` instance (SS5) running alongside it.
+  - **CPU:** No hard core-count published by ACINQ, but their own PostgreSQL connection-pool sizing guidance (`pool.max-size` = CPU cores x 2) implies a multi-core production deployment is the expected baseline, not single-core.
+  - **Additional component:** ACINQ recommends PostgreSQL over the default embedded SQLite for production deployments -- this is a separate service to provision and operate, not just extra load on the Eclair process itself.
+  - **Real-world scale reference:** ACINQ's own production node (hundreds of BTC, tens of thousands of channels) runs on Eclair, showing the software scales well at that end -- but that is a far larger deployment than Elektron Net's bootstrap phase (starting from zero channels, one or two hub nodes), so the 4GB baseline is the relevant planning number for now, not ACINQ's own production scale.
+  - **This project's current Hetzner instance has 4GB RAM total already allocated to `elektrond`/`electrs`/`mempool`/etc.** Co-locating Eclair's own 4GB+ baseline on that same box is not realistic headroom-wise. **Decision: Eclair SHOULD run on separate infrastructure from the current stack's Hetzner instance**, sized independently once this work is actually scheduled -- this is a planned future step, not an immediate one, and does not block finishing the planning/research in this document.
+- Eclair's JVM footprint is a real, non-trivial resource cost compared to Go-based LND -- confirmed by the numbers above, not just a qualitative concern.
 - Default LN P2P port (`9735` upstream) MAY be kept as-is (it's a Lightning-layer convention, not a chain-consensus parameter, and keeping it standard reduces operator confusion) unless a concrete conflict with something else on the same host requires changing it.
 
 ## 6. Checklist
@@ -94,6 +100,7 @@ Following this project's established pattern (see the electrs guideline SS1/chec
 - [ ] Confirm RPC/ZMQ-only integration (no embedded P2P client) holds for whichever Eclair version is forked, so `pchMessageStart`/P2P port truly stay irrelevant (SS4)
 - [ ] Provision a dedicated `elektrond` instance for the hub node, with prune target size set to at least Eclair's ~25GB minimum (SS4.2)
 - [ ] Set up uptime monitoring for the hub node against the ~137-day pruning window as an explicit operational SLA (SS4.2)
+- [ ] Provision separate infrastructure for the hub node (SS5) -- the current Hetzner instance's 4GB total RAM is already committed to `elektrond`/`electrs`/`mempool`; not an immediate task, but should be planned for ahead of actual deployment, not decided ad hoc when the time comes
 - [ ] Add a pre-wired `docker-compose` service profile to `elektron-net-stack` (SS5)
 - [ ] Add the resulting node's real `host`/`port`/`pubkey` as a new entry to `TRAMPOLINE_NODES_MAINNET` in `elektron-net-electrum` (`electrum/trampoline.py` already has a commented-out format example waiting for this)
 - [ ] End-to-end test: open a trampoline channel and send a trampoline payment between two real wallets through this node
