@@ -1,6 +1,6 @@
 # Elektron Net — SPV Header Difficulty Verification Guideline
 
-- **Version:** 0.1 (draft)
+- **Version:** 0.2 (draft)
 - **Date:** July 18, 2026
 - **Audience:** Any wallet vendor or library author implementing independent SPV (Simplified Payment Verification) header-chain validation for Elektron Net — i.e. any client that checks block header proof-of-work itself rather than trusting a server's word entirely
 - **Reference implementation:** [`elektron-net`](https://github.com/kutlusoy/elektron-net) — `src/pow.cpp` (`GetNextWorkRequired`, `CalculateNextWorkRequired`, `PermittedDifficultyTransition`), `src/kernel/chainparams.cpp` (`CMainParams`) — treat these as ground truth for anything this doc references
@@ -48,13 +48,21 @@ Structurally, this is **the same rule as Bitcoin's own testnet `fPowAllowMinDiff
 
 For a candidate block at height `h` (i.e. computing/verifying the difficulty required of `pindexLast->nHeight + 1` where `pindexLast` is the parent, height `h-1`):
 
-1. **If `h` is a retarget boundary** (`h % 2016 == 0`): always the classic retarget computation (§2), completely unaffected by Stoic Awakening, regardless of whether `h` is inside `[1, 150000)`.
-2. **Else, if `h` is inside `[1, 150000)`** ("stoic-active"):
+1. **If `h` is a retarget boundary** (`h % 2016 == 0`): the reference implementation's own `CalculateNextWorkRequired()` (called from `GetNextWorkRequired()`, unconditionally at every boundary) is the classic retarget computation (§2), with no explicit Stoic-Awakening branch in its code. **However, real network data contradicts what that function should mathematically produce at at least one boundary inside the window** (see §3.2.1) -- so despite reading as "boundaries are just classic retarget, unaffected," treat that as unconfirmed for SPV-verification purposes and see §3.2.1 for the workaround used by the reference SPV port.
+2. **Else, if `h` is inside `[MinDifficultyActivationHeight, StoicAwakeningEndHeight)` = `[1, 150000)`** ("stoic-active"):
    - If the candidate block's own timestamp is more than `2 * nPowTargetSpacing` (120s) after its parent's timestamp: required target = `powLimit` (easiest possible) for this one block.
    - Otherwise: required target = the bits of **the most recent ancestor that is either a retarget-boundary block, or a non-escape block** — i.e. walk backward from the parent, skipping any block whose own bits equal `powLimit`'s compact form, stopping as soon as you hit a retarget-boundary height (`height % 2016 == 0`, regardless of that block's own bits) or a block whose bits aren't `powLimit`. Use that block's bits directly.
 3. **Else** (`h >= 150000`, non-boundary): required target = parent's bits, unchanged, no escape logic at all (this is also what step 2 reduces to in spirit for a mature, non-crashing network, since escape blocks stop occurring).
 
-Note step 2's "walk backward" can, in principle, chain across *multiple* consecutive escape blocks (miner absence spanning several minute-plus gaps in a row) before finding real difficulty again — implementations must handle this, not just a single-hop lookback.
+Note step 2's "walk backward" can, in principle, chain across *multiple* consecutive escape blocks (miner absence spanning several minute-plus gaps in a row) before finding real difficulty again -- implementations must handle this, not just a single-hop lookback.
+
+### 3.2.1 Retarget boundaries inside the window: a real, unresolved discrepancy
+
+Real observed data (2026-07-18, live network) directly contradicts a literal reading of `CalculateNextWorkRequired()` applied at a boundary inside the Stoic Awakening window: at height 10080 (`10080 == 5*2016`, a retarget boundary), the real chain's block 10079 (last block of the old chunk) was an escape/min-difficulty block (`bits=0x1f7fffff`, i.e. `powLimit`), yet the real block 10080 had a genuinely *harder* bits value (`bits=0x1e7c9c07`) -- cross-checked independently via a live node's own header data and the `mempool.elektron-net.org` block explorer (hash, prev_hash, timestamp, bits, nonce all agreed exactly, ruling out a data-source error).
+
+This is a mathematical contradiction: `CalculateNextWorkRequired()`, given an escape-block (`bits==powLimit`) baseline and any `nActualTimespan >= nPowTargetTimespan`, can only ever produce `powLimit` again (the formula's own `if (bnNew > bnPowLimit) bnNew = bnPowLimit;` clamp guarantees this). It cannot mathematically produce a *harder* value from that starting point. The deployed node's actual boundary-difficulty behavior therefore differs from what a literal reading of this repo's `src/pow.cpp` predicts, in a way that could not be identified from source alone at the time of writing.
+
+**Until this is root-caused, the recommended SPV-verification approach for boundaries inside the Stoic Awakening window is: trust the boundary header's own claimed `bits` directly (same principle as the non-boundary escape blocks in step 2), bounded so it cannot claim to be easier than `powLimit`, with real proof-of-work still checked against that claimed target.** This is a deliberate relaxation, not an oversight: it keeps hash-chain integrity and real-PoW-effort fully verified, while not insisting on an independently *computed* expected value for the one case that's been shown, with real data, to be unreliable. See `elektron-net-electrum`'s `Blockchain.get_expected_target()` for the worked implementation, and `tests/test_blockchain.py`'s `test_stoic_boundary_*` tests for the exact real-world numbers this locks in. If you identify the actual root cause (a different formula variant, a version difference, additional logic elsewhere), please update this document and the reference implementation together.
 
 ### 3.3 Implementation guidance for SPV clients specifically
 
