@@ -97,7 +97,12 @@ Any wallet client (Electrum fork or otherwise) MUST implement at minimum:
 
 For transaction history predating a server's own bootstrap point, and for merkle proofs (`blockchain.transaction.get_merkle`) of already-pruned blocks, the same design choice as the native wallet applies: **unavailable by design**, communicated to the user in the client rather than surfaced as an error.
 
-**Important, but not a problem:** Header chains are, per the network's design, always retained in full (never pruned). This means standard Electrum SPV header verification (proof-of-work chain checking via `blockchain.py`/header sync) works **unmodified, with no adaptation needed** — only merkle inclusion proofs for individual old transactions are affected, not chain integrity itself.
+**Correction (found during the `elektron-net-electrum` wallet fork, confirmed against a real node -- this paragraph previously said the opposite):** header chains are indeed always retained in full (never pruned) per the network's design, so pruning itself does not affect header sync. But standard Bitcoin-derived SPV header verification (proof-of-work chain checking) does **not** work unmodified, because Elektron Net's difficulty rules differ from Bitcoin's in ways that are consensus-critical for any client validating headers independently:
+
+- `powLimit`, `nPowTargetTimespan` differ from Bitcoin's own values (expected -- any coin with different genesis difficulty/block time needs this).
+- **"Stoic Awakening"** (heights `[1, 150000)`, see `hardfork-v3.0.1-stoic-awakening.md` and `CHANGELOG-stoic-awakening-retirement.md`): a temporary min-difficulty escape between normal retarget points that has no equivalent in stock Bitcoin Core mainnet difficulty logic (it mirrors Bitcoin's own *testnet* min-difficulty rule, just time-boxed on *mainnet* instead). A client that doesn't implement this rejects the majority of currently-existing header history as invalid, since the chain tip is still inside this window.
+
+Any wallet doing independent SPV header verification for Elektron Net MUST implement this. See [`Elektron Net — SPV Header Difficulty Verification Guideline`](./guideline-spv-header-difficulty-verification.md) for the full algorithm and a reference implementation (`elektron-net-electrum`'s `electrum/blockchain.py`, `Blockchain.get_expected_target()`).
 
 ### 3.3 Lightning Integration Options
 
