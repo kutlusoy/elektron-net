@@ -1,0 +1,1 @@
+$(cat /tmp/claude-0/-home-user/33c52675-54cc-507f-954d-44cd7c2d1f42/scratchpad/guideline-coinbase-third-op-return.md)
