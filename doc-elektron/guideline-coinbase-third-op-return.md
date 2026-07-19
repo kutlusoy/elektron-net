@@ -1,6 +1,6 @@
 # Elektron Net - Coinbase Third OP_RETURN Guideline
 
-- **Version:** 0.1 (draft, forward-looking idea, not scheduled for implementation)
+- **Version:** 0.2 (draft, forward-looking idea, not scheduled for implementation)
 - **Date:** July 19, 2026
 - **Audience:** Core protocol developers, mining pool operators (`elektron-net-pool`, `-ppool`), wallet integrators
 - **Reference implementation:** [`elektron-net`](https://github.com/kutlusoy/elektron-net) - `src/node/miner.cpp` (`BlockAssembler::CreateNewBlock()`), `src/validation.cpp` (`ExtractCoinbaseUTXOAttestation()`, `ValidateUTXOCheckpoint()`, `GenerateCoinbaseCommitment()`), `src/consensus/validation.h` (`GetWitnessCommitmentIndex()`) - treat as ground truth for anything this doc references
@@ -14,13 +14,24 @@ This is a **future-idea note**, not a design that has been approved or scheduled
 
 ## 2. Current State: The Two Existing Coinbase OP_RETURN Outputs
 
-`BlockAssembler::CreateNewBlock()` in `src/node/miner.cpp` builds the coinbase `vout` list in a fixed sequence:
+`BlockAssembler::CreateNewBlock()` in `src/node/miner.cpp` actually produces **two different orderings**, depending on which of its two outputs is consumed - this was confirmed by reading the current function in full, not just a partial summary, after a real explorer screenshot surfaced the discrepancy below.
+
+**Path A - the coinbase transaction object itself (`pblock->vtx[0]`)**, used directly by in-node/solo mining (`generatetoaddress`):
 
 1. `vout[0]` - the block reward output.
-2. `vout[1]` - the **witness commitment**, added by `ChainstateManager::GenerateCoinbaseCommitment()` (`src/validation.cpp`, called at `src/node/miner.cpp:202`). Standard Bitcoin Core mechanism, unmodified: `OP_RETURN 0x24 0xaa21a9ed <32-byte hash>`.
-3. `vout[2]` - the **UTXO attestation**, an Elektron Net-specific addition (`src/node/miner.cpp:204-227`, output pushed at line 220). Format: `OP_RETURN <height> <32-byte UTXO set hash>`, computed by `ComputeBlockUTXOAttestationHash()` (`src/validation.cpp:2378-2420`).
+2. `vout[1]` - the **witness commitment**, pushed by `ChainstateManager::GenerateCoinbaseCommitment()` (called first, before the attestation block). Standard Bitcoin Core mechanism, unmodified: `OP_RETURN 0x24 0xaa21a9ed <32-byte hash>`.
+3. `vout[2]` - the **UTXO attestation**, an Elektron Net-specific addition, pushed second via `tx.vout.push_back(out)` inside the `if (nHeight > 0)` block. Format: `OP_RETURN <height> <32-byte UTXO set hash>`, computed by `ComputeBlockUTXOAttestationHash()` (`src/validation.cpp:2378-2420`).
 
-So today's real order is **reward, witness commitment, attestation** - the attestation is always the *last* output, not the first, contrary to an earlier assumption raised in discussion.
+So on this path the order is **reward, witness commitment, attestation**.
+
+**Path B - the separate `coinbase_tx.required_outputs` field**, exposed via GBT as `coinbase_required_outputs` and consumed by every external miner and every pool (`mining/miner.py`, `mining/miner.cpp`, `elektron-net-pool`, `elektron-net-ppool`):
+
+1. Inside the same `if (nHeight > 0)` attestation block, `coinbase_tx.required_outputs.push_back(out)` runs first, adding the **attestation** as the first entry.
+2. Only afterwards, near the end of `CreateNewBlock()`, `coinbase_tx.required_outputs.push_back(final_coinbase->vout[witness_index])` appends the **witness commitment** as the second entry.
+
+So `coinbase_required_outputs[0]` is the attestation and `coinbase_required_outputs[1]` is the witness commitment - the reverse of Path A. `doc-elektron/mining-pool-integration.md` documents and requires exactly this: pools build their own coinbase as `vout[0]` = payout, then `coinbase_required_outputs` appended verbatim in array order, giving a final on-chain order of **reward, attestation, witness commitment**.
+
+**Practical consequence:** since essentially all real hashrate mines via GBT (pools and the reference `miner.py`/`miner.cpp`), essentially every real block on the chain has the Path B order - attestation immediately after the reward, witness commitment last. A block explorer showing "UTXO Attestation" before "Witness Commitment" for a real transaction is showing the normal, expected case, not an anomaly. Path A's reward-then-commitment-then-attestation order is real but is only produced by in-node solo mining, which is a minority of blocks in practice. Both orders are equally consensus-valid (see Section 3).
 
 ## 3. How Each Existing OP_RETURN Is Located at Validation Time
 
@@ -40,11 +51,13 @@ Neither lookup checks the total number of outputs or requires a coinbase output 
 
 If both hold, `ExtractCoinbaseUTXOAttestation()` returns the wrong 32 bytes as "the" attestation, the recomputed hash will not match it, and an otherwise entirely valid block is rejected as consensus-invalid. Free-form text payloads are extremely unlikely to accidentally satisfy this byte pattern, but the design has no structural guard against it today - it relies entirely on convention, not on a consensus check for uniqueness.
 
+This risk is smaller in practice than it might first appear, given Section 2: on the GBT/pool path that produces essentially all real blocks, the attestation already sits at `vout[1]`, immediately after the payout - about as early as it can be. A third output built the same way pools already build `coinbase_required_outputs` today (append-only, verbatim, never reordered - see `mining-pool-integration.md` §3.1/§3.6) would naturally land at `vout[3]`, after both existing outputs, without any special-casing required. The risk described above only materializes if a future implementation deviates from that existing append-only convention.
+
 ## 5. Recommendations, Should This Be Implemented Later
 
 These are conditions for a safe implementation, not a commitment to build it:
 
-1. **MUST** append the third `OP_RETURN` strictly **after** the existing attestation output in `vout` order (i.e., always `vout[3]`, never inserted at an earlier index). This guarantees the first-match attestation scan always finds the real attestation before it can ever reach the new output.
+1. **MUST** append the third `OP_RETURN` strictly **after** the existing attestation output in `vout` order (i.e., always the last output, never inserted at an earlier index), on both Path A and Path B from Section 2. This guarantees the first-match attestation scan always finds the real attestation before it can ever reach the new output.
 2. **MUST** use a distinct magic-byte prefix at the start of the new output's data push, chosen so the payload cannot be mistaken for either existing pattern (`0xaa21a9ed` for the witness commitment, or a bare `<height><32 bytes>` shape for the attestation). A short fixed ASCII tag followed by a length-prefixed free-form field is a reasonable shape to consider.
 3. **SHOULD** decide up front whether the output is purely informational (no validation) or becomes part of protocol semantics (e.g., pool identification used by an explorer or pool-stats service) - this changes whether any node-side code ever needs to parse it at all.
 4. **SHOULD**, if this is pursued, add an explicit uniqueness check to `ExtractCoinbaseUTXOAttestation()` (reject a block if more than one output matches the attestation shape) so correctness no longer depends on convention alone. This itself would be a consensus-level code change and needs to be treated with the same care as any other consensus rule change in this codebase.
@@ -54,7 +67,7 @@ These are conditions for a safe implementation, not a commitment to build it:
 
 - [ ] Decide whether the third output is informational-only or protocol-relevant
 - [ ] Define the exact wire format (magic bytes, versioning, max length)
-- [ ] Place the new output after the attestation in `vout` order (Section 5.1)
+- [ ] Place the new output after the attestation in `vout` order on both Path A and Path B (Section 5.1)
 - [ ] Confirm no collision with the witness-commitment prefix or the attestation's `<height><32 bytes>` shape
 - [ ] Decide whether `ExtractCoinbaseUTXOAttestation()` should gain a uniqueness check regardless (Section 5.4)
 - [ ] Review impact on `elektron-net-pool`/`-ppool`, `elektron-net-mempool`/`-electrs`, and wallet integrations
