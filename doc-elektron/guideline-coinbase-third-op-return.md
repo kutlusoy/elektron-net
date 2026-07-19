@@ -1,9 +1,10 @@
 # Elektron Net - Coinbase Third OP_RETURN Guideline
 
-- **Version:** 0.2 (draft, forward-looking idea, not scheduled for implementation)
+- **Version:** 0.3 (draft, forward-looking idea, not scheduled for implementation)
 - **Date:** July 19, 2026
 - **Audience:** Core protocol developers, mining pool operators (`elektron-net-pool`, `-ppool`), wallet integrators
 - **Reference implementation:** [`elektron-net`](https://github.com/kutlusoy/elektron-net) - `src/node/miner.cpp` (`BlockAssembler::CreateNewBlock()`), `src/validation.cpp` (`ExtractCoinbaseUTXOAttestation()`, `ValidateUTXOCheckpoint()`, `GenerateCoinbaseCommitment()`), `src/consensus/validation.h` (`GetWitnessCommitmentIndex()`) - treat as ground truth for anything this doc references
+- **Consumer:** [`elektron-net-electrum`](https://github.com/kutlusoy/elektron-net-electrum) - `electrum/payment_identifier.py`, `electrum/gui/qt/send_tab.py` (Section 8)
 - **See also:** [`BITCOIN_CORE_DIFF.md`](https://github.com/kutlusoy/elektron-net/blob/main/doc-elektron/BITCOIN_CORE_DIFF.md), [`WHITEPAPER.md`](https://github.com/kutlusoy/elektron-net/blob/main/WHITEPAPER.md), [`mining-pool-integration.md`](https://github.com/kutlusoy/elektron-net/blob/main/doc-elektron/mining-pool-integration.md), [`guideline-wallet-integration.md`](./guideline-wallet-integration.md)
 
 ---
@@ -73,8 +74,25 @@ These are conditions for a safe implementation, not a commitment to build it:
 - [ ] Review impact on `elektron-net-pool`/`-ppool`, `elektron-net-mempool`/`-electrs`, and wallet integrations
 - [ ] Update `BITCOIN_CORE_DIFF.md` and `mining-pool-integration.md` if this ever moves from idea to implementation
 
-## 7. Open Questions
+## 7. Scope Boundary: This Document Is About the Coinbase, Not Ordinary Wallet Transactions
+
+Everything above (Sections 2-6) is specific to the **coinbase transaction** - the first transaction of a block, built only by miners and pools via `getblocktemplate`. Ordinary wallet-to-wallet transactions never contain a witness commitment or a UTXO attestation output; those two outputs only ever exist in the coinbase. Nothing in Sections 2-6 constrains what a normal spend transaction can contain, and a message-carrying `OP_RETURN` added by a wallet to its own transaction has no interaction with the coinbase mechanics above - there is no shared position, no shared magic-byte space, and no shared validation path.
+
+## 8. Wallet-Level Message OP_RETURN: Already Possible Today, No Code Change
+
+Separately from the coinbase idea above, the question came up whether a wallet could let a user attach a free-form message as an extra `OP_RETURN` output on an ordinary send transaction (payment output, optional change output, plus a message output). Checked directly against the current `elektron-net-electrum` code (a fork of Electrum that carries this feature over unmodified from upstream):
+
+- The Send tab's own inline help text already documents the syntax: *"an arbitrary on-chain script, e.g.: `script(OP_RETURN deadbeef)`"* (`electrum/gui/qt/send_tab.py:80`).
+- `PaymentIdentifier.parse_output()` (`electrum/payment_identifier.py:476-489`) tries to parse a recipient line as a normal address first; if that fails, it matches the `script(...)` syntax via `RE_SCRIPT_FN` and hands the contents to `parse_script()`.
+- `PaymentIdentifier.parse_script()` (`electrum/payment_identifier.py:491-500`) builds a raw script from the parsed tokens - `OP_`-prefixed words become opcodes (so `OP_RETURN` is recognized), anything else is treated as a hex data push - and the result becomes an ordinary zero-value `PartialTxOutput`.
+
+**Concretely, today, with zero code changes:** a user can enter two recipient lines in the Send tab, e.g. a normal payment address plus `script(OP_RETURN 48656c6c6f), 0`, and the wallet builds a transaction with the payment (and any change) plus a message `OP_RETURN` output - structurally the same shape as Section 7 describes, and unrelated to the coinbase-specific mechanics in Sections 2-6.
+
+Caveats worth naming for anyone revisiting this later: this is raw, technical input with no dedicated "attach a message" UI affordance, and the output is still subject to the node's ordinary relay-policy limits on datacarrier output size (independent of anything in this document).
+
+## 9. Open Questions
 
 1. Is there an actual use case that justifies the added coinbase weight (miner/pool identification, user messages, something else), or does this stay a "nice to have" indefinitely?
 2. Should the field be structured (versioned TLV) from day one, or free-form text to start?
 3. Should this be informational-only, or should any node/indexer software ever depend on its contents?
+4. Should `elektron-net-electrum` ever grow a dedicated "attach a message" UI affordance in the Send tab, given the underlying `script(OP_RETURN ...)` mechanism already works (Section 8)?
