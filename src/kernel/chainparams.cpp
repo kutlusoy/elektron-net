@@ -157,8 +157,8 @@ public:
         // service bits we want, but we should get them updated to support all service bits wanted by any
         // release ASAP to avoid it where possible.
         vSeeds.emplace_back("seed.elektron-net.org");  // operated by kutlusoy
-        vSeeds.emplace_back("seeder.eleknet.org.");  // operated by kutlusoy
-        vSeeds.emplace_back("seed0.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
+        vSeeds.emplace_back("seeder.eleknet.org.");  // operated by kutlusoy - elektron-net-1
+        vSeeds.emplace_back("seed0.eleknet.org.");   // operated by kutlusoy - elektron-net-2
         vSeeds.emplace_back("seed1.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
         vSeeds.emplace_back("seed2.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
         vSeeds.emplace_back("seed3.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
