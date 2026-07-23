@@ -121,15 +121,16 @@ public:
         consensus.MuhashAttestationActivationHeight = 137000;
         // Intra-block dependent-transaction attestation fix
         // (doc-elektron/fix-report-utxo-attestation-intra-block-chain.md): activated at
-        // height 160000 -- chosen with the user directly: mainnet tip was ~147000 when
-        // decided (2026-07-23), giving roughly a week and a half of real lead time. The
-        // network currently has only one other independent miner besides the user's own
-        // node, who upgrades reliably, so the coordination risk here is low compared to
-        // the ~4-5 week lead time used for MuhashAttestationActivationHeight and
-        // StoicAwakeningEndHeight above. See IntraBlockAttestationFixActivationHeight's doc
-        // comment in consensus/params.h for why this is height-gated at all rather than
-        // applying unconditionally the moment the fix is deployed.
-        consensus.IntraBlockAttestationFixActivationHeight = 160000;
+        // height 170000 -- chosen with the user directly: mainnet tip was ~147000 when
+        // decided (2026-07-23), giving a comfortable margin of real lead time. The network
+        // currently has only one other independent miner besides the user's own node, who
+        // upgrades reliably, so the coordination risk here is lower than for
+        // MuhashAttestationActivationHeight and StoicAwakeningEndHeight above, but the user
+        // opted for a wider margin than the minimum anyway. See
+        // IntraBlockAttestationFixActivationHeight's doc comment in consensus/params.h for
+        // why this is height-gated at all rather than applying unconditionally the moment
+        // the fix is deployed.
+        consensus.IntraBlockAttestationFixActivationHeight = 170000;
         consensus.MandatoryPruneDepth = 197280; // 137 days at 60s blocks (mainnet default, explicit for clarity)
         consensus.enforce_BIP94 = false;
         consensus.fPowNoRetargeting = false;
