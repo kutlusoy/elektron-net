@@ -2474,6 +2474,32 @@ std::optional<uint256> ExtractCoinbaseUTXOAttestation(const CTransaction& coinba
     return std::nullopt;
 }
 
+bool RegenerateUTXOAttestation(CBlock& block, int nHeight, ChainstateManager& chainman)
+{
+    if (nHeight <= 0) return true; // genesis has no attestation
+
+    CHECK_NONFATAL(!block.vtx.empty() && block.vtx[0]->IsCoinBase());
+    // Coinbase is always non-null here (StripAttestationOutput only returns nullptr for a
+    // non-coinbase input, see its own definition above).
+    block.vtx[0] = StripAttestationOutput(*block.vtx[0], nHeight);
+
+    Chainstate& active_chainstate = chainman.ActiveChainstate();
+    const auto hash = ComputeBlockUTXOAttestationHash(block, nHeight, active_chainstate.CoinsTip(), chainman.m_blockman,
+                                                        chainman.GetConsensus(), &active_chainstate.UTXOMuHash());
+    if (!hash) return false;
+
+    CMutableTransaction tx{*block.vtx[0]};
+    CTxOut out;
+    out.nValue = 0;
+    // OP_RETURN <height(4 bytes)> <hash(32 bytes)> = 37 bytes payload
+    out.scriptPubKey = CScript() << OP_RETURN << nHeight << *hash;
+    tx.vout.push_back(out);
+    block.vtx[0] = MakeTransactionRef(std::move(tx));
+
+    block.hashMerkleRoot = BlockMerkleRoot(block);
+    return true;
+}
+
 /**
  * Validate the UTXO attestation embedded in every block's coinbase (height > 0).
  * The coinbase must contain an OP_RETURN output with the serialized UTXO set hash

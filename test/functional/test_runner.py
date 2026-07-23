@@ -264,6 +264,7 @@ BASE_SCRIPTS = [
     'feature_utxo_set_hash.py',
     'feature_muhash_attestation_activation.py',
     'feature_utxo_attestation_intra_block_chain.py',
+    'feature_generateblock_utxo_attestation.py',
     'feature_rbf.py',
     'mempool_packages.py',
     'mempool_package_limits.py',

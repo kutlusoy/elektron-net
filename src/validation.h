@@ -138,6 +138,17 @@ std::optional<uint256> ComputeBlockUTXOAttestationHash(const CBlock& block, int 
                                                          const Consensus::Params& params, const kernel::UTXOMuHashState* tip_muhash);
 /** Parse OP_RETURN UTXO attestation from a coinbase at the expected height. */
 std::optional<uint256> ExtractCoinbaseUTXOAttestation(const CTransaction& coinbase, int nHeight);
+/** Elektron Net: strip block.vtx[0]'s attestation output (if any -- e.g. stale, from an
+ *  earlier, incomplete build of this same block) and recompute + re-embed one reflecting
+ *  the block's actual, final content, mirroring the attestation-embedding step inside
+ *  CreateNewBlock() (src/node/miner.cpp). Needed by generateblock (src/rpc/mining.cpp),
+ *  which builds the coinbase from an empty, mempool-less template before the caller-
+ *  supplied transactions are appended, so the attestation baked in at that point no longer
+ *  matches the block by the time this is called. Recomputes block.hashMerkleRoot too, since
+ *  changing the coinbase's own outputs changes its txid. Returns false (block left with the
+ *  stale output stripped but no replacement) if attestation computation itself fails -- see
+ *  ComputeBlockUTXOAttestationHash. Caller must hold chainman's mutex. */
+bool RegenerateUTXOAttestation(CBlock& block, int nHeight, ChainstateManager& chainman);
 bool ValidateUTXOCheckpoint(const CBlock& block, int nHeight, CCoinsView& view, node::BlockManager& blockman, BlockValidationState& state,
                              const Consensus::Params& params, const kernel::UTXOMuHashState* tip_muhash);
 
