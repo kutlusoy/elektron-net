@@ -114,6 +114,18 @@ inline bool IsMuhashAttestationActive(int nHeight, const Consensus::Params& para
     return params.MuhashAttestationActivationHeight >= 0 && nHeight >= params.MuhashAttestationActivationHeight;
 }
 
+/** Elektron Net: true once ComputeBlockUTXOAttestationHash()'s incremental path keeps its
+ *  lookup view in sync with each transaction's own outputs, so a block containing a
+ *  transaction that spends another transaction's output within that same block computes
+ *  correctly instead of failing attestation. Height-gated (see
+ *  IntraBlockAttestationFixActivationHeight's doc comment) so this fix's own rollout stays
+ *  a coordinated, flag-day-style activation rather than something that could fork the chain
+ *  on its own the moment only some nodes have upgraded. */
+inline bool IsIntraBlockAttestationFixActive(int nHeight, const Consensus::Params& params)
+{
+    return params.IntraBlockAttestationFixActivationHeight >= 0 && nHeight >= params.IntraBlockAttestationFixActivationHeight;
+}
+
 /** Compute the UTXO attestation hash after connecting all transactions in a block.
  *  Coinbase attestation OP_RETURN outputs are excluded (hash is committed before they are added).
  *  @param base_view Must be the active chain UTXO view (e.g. CoinsTip()), not the raw DB.

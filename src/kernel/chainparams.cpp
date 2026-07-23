@@ -119,6 +119,13 @@ public:
         // doc-elektron/CHANGELOG-muhash-attestation.md for the full activation history
         // (Phase 1 exercised on testnet/testnet4/regtest first).
         consensus.MuhashAttestationActivationHeight = 137000;
+        // Intra-block dependent-transaction attestation fix
+        // (doc-elektron/fix-report-utxo-attestation-intra-block-chain.md): NOT active on
+        // mainnet yet. -1 until a real activation height is chosen with the user and node/
+        // miner operators have had real lead time to upgrade -- see
+        // IntraBlockAttestationFixActivationHeight's doc comment in consensus/params.h for
+        // why this cannot just apply unconditionally the moment the fix is deployed.
+        consensus.IntraBlockAttestationFixActivationHeight = -1;
         consensus.MandatoryPruneDepth = 197280; // 137 days at 60s blocks (mainnet default, explicit for clarity)
         consensus.enforce_BIP94 = false;
         consensus.fPowNoRetargeting = false;
@@ -233,6 +240,10 @@ public:
         // doc-elektron/CHANGELOG-muhash-attestation.md). NOT active on mainnet. Lowered from 5000 to 250
         // for fast local testnet iteration (still verify against the live tip before real deployment).
         consensus.MuhashAttestationActivationHeight = 250;
+        // Intra-block dependent-transaction attestation fix, lowered for fast local
+        // testnet iteration -- see CMainParams::IntraBlockAttestationFixActivationHeight
+        // above and doc-elektron/fix-report-utxo-attestation-intra-block-chain.md.
+        consensus.IntraBlockAttestationFixActivationHeight = 260;
         // Lower checkpoint interval so the automatic UTXO snapshot cycle can actually be
         // observed on testnet without waiting for 197,280 blocks (mainnet default).
         consensus.MandatoryPruneDepth = 300;
@@ -317,6 +328,7 @@ public:
         consensus.fPowAllowMinDifficultyBlocks = true;
         // See CTestNetParams::MuhashAttestationActivationHeight / MandatoryPruneDepth above -- same values/caveats apply.
         consensus.MuhashAttestationActivationHeight = 250;
+        consensus.IntraBlockAttestationFixActivationHeight = 260;
         consensus.MandatoryPruneDepth = 300;
         consensus.enforce_BIP94 = true;
         consensus.fPowNoRetargeting = false;
@@ -514,6 +526,11 @@ public:
         // MuHash UTXO attestation: fixed low activation height so the switchover is
         // exercised in every regtest run / functional test (see fix-report §5).
         consensus.MuhashAttestationActivationHeight = 50;
+        // Intra-block dependent-transaction attestation fix: fixed low activation height,
+        // a bit above MuhashAttestationActivationHeight, so both the pre-fix (bug-compatible)
+        // and post-fix behavior are reachable within a normal regtest run -- see
+        // doc-elektron/fix-report-utxo-attestation-intra-block-chain.md.
+        consensus.IntraBlockAttestationFixActivationHeight = 60;
         // Checkpoint interval likewise fixed low so a full snapshot cycle is reachable
         // in a manual/local regtest session without mining hundreds of thousands of blocks.
         consensus.MandatoryPruneDepth = 100;
