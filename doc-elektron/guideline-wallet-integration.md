@@ -76,7 +76,7 @@ A conventional C++ DNS seeder (Bitcoin Seeder lineage) supplying peer addresses 
 
 Any wallet client (Electrum fork or otherwise) MUST implement at minimum:
 
-- Bech32 HRP `be` (plus, if Electrum's native Lightning implementation is used, a corresponding BOLT11 HRP for invoices)
+- Bech32 HRP `be` (plus, if Electrum's native Lightning implementation is used, a corresponding BOLT11 HRP for invoices -- **finalized as `be` too**, full invoice prefix `lnbe`; BOLT11 spec defines the invoice HRP as `ln` + the chain's own bech32 address HRP, confirmed by every established chain following the same address-HRP/invoice-HRP match, see `elektron-net-electrum`'s `constants.py`/`doc/elektron.md` for the full reasoning)
 - Base58 version bytes as in §2.1, with an explicit note that these are *intentionally* identical to Bitcoin mainnet
 - Genesis hash, `pchMessageStart`, default port 8333 (only relevant if a client ever speaks P2P directly instead of a server protocol)
 - A BIP32 path / `BIP44_COIN_TYPE` — resolved: Elektron Net has registered **SLIP-44 coin type 1370** (symbol `ELEK`), i.e. `m/44'/1370'/0'/...` (and the 49'/84'/86' equivalents). The node's reference wallet implements this in `GenerateWalletDescriptor()` (`src/wallet/walletutil.cpp`). Testnet/regtest are unaffected and keep SLIP-44's generic `1'` ("testnet for all coins"). **MUST:** any wallet implementation offering seed-based recovery must additionally scan the legacy `0'` path, since wallets created before this change hold funds there that a `1370'`-only scan would silently miss — see `doc-elektron/CHANGELOG-slip44-coin-type.md` for the dual-track model this relies on.
@@ -108,7 +108,12 @@ Any wallet client (Electrum fork or otherwise) MUST implement at minimum:
 
 For transaction history predating a server's own bootstrap point, and for merkle proofs (`blockchain.transaction.get_merkle`) of already-pruned blocks, the same design choice as the native wallet applies: **unavailable by design**, communicated to the user in the client rather than surfaced as an error.
 
-**Important, but not a problem:** Header chains are, per the network's design, always retained in full (never pruned). This means standard Electrum SPV header verification (proof-of-work chain checking via `blockchain.py`/header sync) works **unmodified, with no adaptation needed** — only merkle inclusion proofs for individual old transactions are affected, not chain integrity itself.
+**Correction (found during the `elektron-net-electrum` wallet fork, confirmed against a real node -- this paragraph previously said the opposite):** header chains are indeed always retained in full (never pruned) per the network's design, so pruning itself does not affect header sync. But standard Bitcoin-derived SPV header verification (proof-of-work chain checking) does **not** work unmodified, because Elektron Net's difficulty rules differ from Bitcoin's in ways that are consensus-critical for any client validating headers independently:
+
+- `powLimit`, `nPowTargetTimespan` differ from Bitcoin's own values (expected -- any coin with different genesis difficulty/block time needs this).
+- **"Stoic Awakening"** (heights `[1, 150000)`, see `hardfork-v3.0.1-stoic-awakening.md` and `CHANGELOG-stoic-awakening-retirement.md`): a temporary min-difficulty escape between normal retarget points that has no equivalent in stock Bitcoin Core mainnet difficulty logic (it mirrors Bitcoin's own *testnet* min-difficulty rule, just time-boxed on *mainnet* instead). A client that doesn't implement this rejects the majority of currently-existing header history as invalid, since the chain tip is still inside this window.
+
+Any wallet doing independent SPV header verification for Elektron Net MUST implement this. See [`Elektron Net — SPV Header Difficulty Verification Guideline`](./guideline-spv-header-difficulty-verification.md) for the full algorithm and a reference implementation (`elektron-net-electrum`'s `electrum/blockchain.py`, `Blockchain.get_expected_target()`).
 
 ### 3.3 Lightning Integration Options
 
@@ -144,7 +149,7 @@ In short: `romanz/electrs` is the recommended base over the older ElectrumX/Fulc
 
 ### 4.2 What Must Be Adapted
 
-1. Chain-parameter fork (HRP `be`, Base58 bytes, genesis hash, `pchMessageStart`, and a dedicated BOLT11 HRP for LN invoices if applicable)
+1. Chain-parameter fork (HRP `be`, Base58 bytes, genesis hash, `pchMessageStart`, and the BOLT11 HRP for LN invoices if applicable -- finalized as `be`, see §3.1)
 2. **`elektron-net-electrs` must be built** (see 3.2) — this is the actual prerequisite; without it, an Electrum fork has no server to talk to
 3. Merkle-proof handling must degrade gracefully instead of failing when a requested historical transaction falls outside the 197,280-block window
 4. The trust model must be documented clearly: since classic SPV merkle proofs for older data no longer exist, the client relies more heavily on the network-wide attestation model than on per-transaction proofs. This is not a security regression relative to the consensus model itself (which is built on exactly this foundation), but it should be named explicitly in code comments and, where relevant, in the UI, so it is never mistaken for classic Bitcoin SPV guarantees.
@@ -182,9 +187,9 @@ This should be treated as a **mandatory review item** for any wallet integration
 ## 6. Implementation Plan (Phased, for Any Integrating Team)
 
 **Phase 0 — Clarification (before any code)**
-- [x] SLIP-44/BIP44 coin type for Elektron Net — resolved: **1370** (`ELEK`), see §3.1 and `doc-elektron/CHANGELOG-slip44-coin-type.md`
-- [ ] A dedicated BOLT11 HRP for Lightning invoices should be decided (if Option A is chosen)
-- [ ] Option A (Electrum-native Lightning) vs. Option B (Zeus+LND/CLN) should be finalized before further work begins
+- [x] SLIP-44/BIP44 coin type for Elektron Net: registered as `1370`; the wallet fork deliberately kept `m/0'`/`m/1'` for its own native-seed derivation anyway (matching Electrum-LTC/Electrum-GRS precedent) -- see `elektron-net-electrum`'s `doc/elektron.md`
+- [x] BOLT11 HRP for Lightning invoices: finalized as `be` (full prefix `lnbe`), see §3.1
+- [x] Option A (Electrum-native Lightning) chosen and already implemented in `elektron-net-electrum` (trampoline mode, `TRAMPOLINE_NODES_MAINNET`)
 
 **Phase 1 — `elektron-net-electrs`**
 - [ ] Follow the standalone [`elektron-net-electrs` Fork Integration Guideline](./guideline-electrs-fork-integration.md) in full — it can be executed independently of Phase 2 by a separate developer or team
