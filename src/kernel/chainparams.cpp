@@ -526,11 +526,12 @@ public:
         // MuHash UTXO attestation: fixed low activation height so the switchover is
         // exercised in every regtest run / functional test (see fix-report §5).
         consensus.MuhashAttestationActivationHeight = 50;
-        // Intra-block dependent-transaction attestation fix: fixed low activation height,
-        // a bit above MuhashAttestationActivationHeight, so both the pre-fix (bug-compatible)
-        // and post-fix behavior are reachable within a normal regtest run -- see
+        // Intra-block dependent-transaction attestation fix: fixed activation height, kept
+        // above COINBASE_MATURITY (100) so a functional test can actually spend a real
+        // (matured) coinbase output to build a dependent-transaction pair on both sides of
+        // the gate, not just above MuhashAttestationActivationHeight -- see
         // doc-elektron/fix-report-utxo-attestation-intra-block-chain.md.
-        consensus.IntraBlockAttestationFixActivationHeight = 60;
+        consensus.IntraBlockAttestationFixActivationHeight = 110;
         // Checkpoint interval likewise fixed low so a full snapshot cycle is reachable
         // in a manual/local regtest session without mining hundreds of thousands of blocks.
         consensus.MandatoryPruneDepth = 100;
