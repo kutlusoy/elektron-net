@@ -135,6 +135,21 @@ struct Params {
      * HASH_SERIALIZED rescan to the incrementally-maintained MuHash
      * accumulator. -1 = never active (default; used on mainnet for now). */
     int MuhashAttestationActivationHeight = -1;
+    /** Block height at which ComputeBlockUTXOAttestationHash()'s incremental
+     * (post-MuhashAttestationActivationHeight) path correctly resolves a
+     * transaction that spends another transaction's output within the same
+     * candidate block, instead of failing attestation computation for that
+     * block. Below this height (or if disabled), a block containing such an
+     * intra-block dependent pair keeps being treated as attestation-invalid
+     * by every node, upgraded or not, so the rollout of this fix cannot
+     * itself cause a chain split; only nodes already upgraded before this
+     * height is reached start accepting (and can build) blocks shaped that
+     * way once it hits, so this must not be lower than every honest miner
+     * had a real chance to upgrade by. -1 = never active (default; must be
+     * set on mainnet only once a real activation height is agreed on and
+     * announced to node/miner operators). See
+     * doc-elektron/fix-report-utxo-attestation-intra-block-chain.md. */
+    int IntraBlockAttestationFixActivationHeight = -1;
     /** Elektron Net: interval (in blocks) between automatic UTXO checkpoint
      * snapshots (WriteAutomaticSnapshot) and the P2P snapshot-bootstrap
      * threshold (see src/validation.h's MANDATORY_PRUNE_DEPTH, the mainnet

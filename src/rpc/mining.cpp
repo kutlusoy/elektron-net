@@ -395,6 +395,15 @@ static RPCMethod generateblock()
         block.vtx.insert(block.vtx.end(), txs.begin(), txs.end());
         RegenerateCommitments(block, chainman);
 
+        // Elektron Net: the coinbase's attestation output was embedded by the initial,
+        // mempool-less createNewBlock() call above, so it reflects a coinbase-only block --
+        // recompute it now that the caller-supplied transactions have been added, or it
+        // would go stale and fail validation below (or on any peer receiving this block).
+        const int height{chainman.ActiveChain().Tip()->nHeight + 1};
+        if (!RegenerateUTXOAttestation(block, height, chainman)) {
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to create new block (UTXO attestation error)");
+        }
+
         if (BlockValidationState state{TestBlockValidity(chainman.ActiveChainstate(), block, /*check_pow=*/false, /*check_merkle_root=*/false)}; !state.IsValid()) {
             throw JSONRPCError(RPC_VERIFY_ERROR, strprintf("TestBlockValidity failed: %s", state.ToString()));
         }

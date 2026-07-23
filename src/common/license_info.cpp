@@ -43,5 +43,15 @@ std::string LicenseInfo()
            "\n" +
            _("This is experimental software.") + "\n" +
            strprintf(_("Distributed under the MIT software license, see the accompanying file %s or %s"), "COPYING", "<https://opensource.org/license/MIT>").translated +
+           "\n" +
+           "\n" +
+           _("Express Declaration of Will: Right to Be Forgotten") + "\n" +
+           _("By choosing Elektron Net, users express their informed will to exercise their right to be forgotten.") + "\n" +
+           _("This project turns a principle recognized in many legal systems into a technical protocol feature: mandatory 137-day pruning automatically and irreversibly removes transaction data from the node after exactly 137 days.") + "\n" +
+           _("The source code and reference implementation guarantee this property. Every user who runs Elektron Net supports this philosophy of structural forgetting.") + "\n" +
+           _("Important Note:") + "\n" +
+           _("Modifying the client to disable or circumvent mandatory pruning while continuing to operate on the same Elektron Net chain is considered a serious violation of the project's core principles and the declared will of its users. Such modifications undermine the right to be forgotten that this chain was built to enforce.") + "\n" +
+           _("Creating a completely separate fork or new project is always permitted under the MIT license. However, deliberately defeating the pruning mechanism on the original Elektron Net chain goes against the express intent of this software and its community.") + "\n" +
+           strprintf(_("See: %s"), "<https://github.com/kutlusoy/elektron-net/blob/main/right-to-be-forgotten.md>").translated +
            "\n";
 }

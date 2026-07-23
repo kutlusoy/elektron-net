@@ -998,7 +998,13 @@ public:
 
         BlockAssembler::Options assemble_options{options};
         ApplyArgsManOptions(*Assert(m_node.args), assemble_options);
-        return std::make_unique<BlockTemplateImpl>(assemble_options, BlockAssembler{chainman().ActiveChainstate(), context()->mempool.get(), assemble_options}.CreateNewBlock(), m_node);
+        // CreateNewBlock() can return nullptr (e.g. UTXO attestation computation
+        // failure) -- surface that as "no template available" instead of passing a
+        // null pointer into BlockTemplateImpl's constructor, which would otherwise
+        // abort() the entire process on its assert(m_block_template).
+        auto block_template{BlockAssembler{chainman().ActiveChainstate(), context()->mempool.get(), assemble_options}.CreateNewBlock()};
+        if (!block_template) return {};
+        return std::make_unique<BlockTemplateImpl>(assemble_options, std::move(block_template), m_node);
     }
 
     void interrupt() override

@@ -79,7 +79,18 @@ Any wallet client (Electrum fork or otherwise) MUST implement at minimum:
 - Bech32 HRP `be` (plus, if Electrum's native Lightning implementation is used, a corresponding BOLT11 HRP for invoices -- **finalized as `be` too**, full invoice prefix `lnbe`; BOLT11 spec defines the invoice HRP as `ln` + the chain's own bech32 address HRP, confirmed by every established chain following the same address-HRP/invoice-HRP match, see `elektron-net-electrum`'s `constants.py`/`doc/elektron.md` for the full reasoning)
 - Base58 version bytes as in §2.1, with an explicit note that these are *intentionally* identical to Bitcoin mainnet
 - Genesis hash, `pchMessageStart`, default port 8333 (only relevant if a client ever speaks P2P directly instead of a server protocol)
-- A BIP32 path / `BIP44_COIN_TYPE` — it is currently unclear whether Elektron Net has registered its own SLIP-44 coin type or reuses Bitcoin's `0'`. **This must be clarified with the core protocol team before any wallet fork fixes a derivation path.**
+- A BIP32 path / `BIP44_COIN_TYPE` — resolved: Elektron Net has registered **SLIP-44 coin type 1370** (symbol `ELEK`), i.e. `m/44'/1370'/0'/...` (and the 49'/84'/86' equivalents). The node's reference wallet implements this in `GenerateWalletDescriptor()` (`src/wallet/walletutil.cpp`). Testnet/regtest are unaffected and keep SLIP-44's generic `1'` ("testnet for all coins"). **MUST:** any wallet implementation offering seed-based recovery must additionally scan the legacy `0'` path, since wallets created before this change hold funds there that a `1370'`-only scan would silently miss — see `doc-elektron/CHANGELOG-slip44-coin-type.md` for the dual-track model this relies on.
+
+**Example derivation paths, per output type** (`<xpub>` is the wallet's master extended public key; account is always `0'`; the wildcard covers external `/0/*` and internal/change `/1/*`):
+
+| Output type | Current (`1370'`) | Legacy, pre-registration (`0'`) — MUST also scan |
+|---|---|---|
+| Legacy (P2PKH) | `pkh(<xpub>/44h/1370h/0h/0/*)` | `pkh(<xpub>/44h/0h/0h/0/*)` |
+| Nested SegWit (P2SH-P2WPKH) | `sh(wpkh(<xpub>/49h/1370h/0h/0/*))` | `sh(wpkh(<xpub>/49h/0h/0h/0/*))` |
+| Native SegWit (P2WPKH, default) | `wpkh(<xpub>/84h/1370h/0h/0/*)` | `wpkh(<xpub>/84h/0h/0h/0/*)` |
+| Taproot (P2TR) | `tr(<xpub>/86h/1370h/0h/0/*)` | `tr(<xpub>/86h/0h/0h/0/*)` |
+
+**Known future consideration (not yet applicable — no third-party wallet software exists today):** once hardware signers (HWI) or PSBT-based multi-coin wallets are integrated, having two active coin-type descriptor sets for the same master fingerprint in one wallet may need explicit handling in those tools' key-origin matching, since some multi-coin wallet UIs assume one coin type per fingerprint. This is a design note for whoever builds that integration, not a current limitation of the node.
 
 ### 3.2 Server Protocol Choice — the Central Architectural Decision
 
@@ -204,5 +215,5 @@ This should be treated as a **mandatory review item** for any wallet integration
 ## 7. Open Questions for the Core Protocol Team
 
 1. Should Option A (Electrum-native Lightning) or Option B (Zeus+LND/CLN) be pursued, or should both be evaluated in parallel?
-2. Is there already a preference for registering a dedicated SLIP-44 coin type?
+2. ~~Is there already a preference for registering a dedicated SLIP-44 coin type?~~ Resolved: coin type **1370** (`ELEK`) is registered, see §3.1 and `doc-elektron/CHANGELOG-slip44-coin-type.md`.
 3. Who will own the `elektron-net-electrs` fork — an internal team or an external contractor?

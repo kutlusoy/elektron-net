@@ -114,6 +114,18 @@ inline bool IsMuhashAttestationActive(int nHeight, const Consensus::Params& para
     return params.MuhashAttestationActivationHeight >= 0 && nHeight >= params.MuhashAttestationActivationHeight;
 }
 
+/** Elektron Net: true once ComputeBlockUTXOAttestationHash()'s incremental path keeps its
+ *  lookup view in sync with each transaction's own outputs, so a block containing a
+ *  transaction that spends another transaction's output within that same block computes
+ *  correctly instead of failing attestation. Height-gated (see
+ *  IntraBlockAttestationFixActivationHeight's doc comment) so this fix's own rollout stays
+ *  a coordinated, flag-day-style activation rather than something that could fork the chain
+ *  on its own the moment only some nodes have upgraded. */
+inline bool IsIntraBlockAttestationFixActive(int nHeight, const Consensus::Params& params)
+{
+    return params.IntraBlockAttestationFixActivationHeight >= 0 && nHeight >= params.IntraBlockAttestationFixActivationHeight;
+}
+
 /** Compute the UTXO attestation hash after connecting all transactions in a block.
  *  Coinbase attestation OP_RETURN outputs are excluded (hash is committed before they are added).
  *  @param base_view Must be the active chain UTXO view (e.g. CoinsTip()), not the raw DB.
@@ -126,6 +138,17 @@ std::optional<uint256> ComputeBlockUTXOAttestationHash(const CBlock& block, int 
                                                          const Consensus::Params& params, const kernel::UTXOMuHashState* tip_muhash);
 /** Parse OP_RETURN UTXO attestation from a coinbase at the expected height. */
 std::optional<uint256> ExtractCoinbaseUTXOAttestation(const CTransaction& coinbase, int nHeight);
+/** Elektron Net: strip block.vtx[0]'s attestation output (if any -- e.g. stale, from an
+ *  earlier, incomplete build of this same block) and recompute + re-embed one reflecting
+ *  the block's actual, final content, mirroring the attestation-embedding step inside
+ *  CreateNewBlock() (src/node/miner.cpp). Needed by generateblock (src/rpc/mining.cpp),
+ *  which builds the coinbase from an empty, mempool-less template before the caller-
+ *  supplied transactions are appended, so the attestation baked in at that point no longer
+ *  matches the block by the time this is called. Recomputes block.hashMerkleRoot too, since
+ *  changing the coinbase's own outputs changes its txid. Returns false (block left with the
+ *  stale output stripped but no replacement) if attestation computation itself fails -- see
+ *  ComputeBlockUTXOAttestationHash. Caller must hold chainman's mutex. */
+bool RegenerateUTXOAttestation(CBlock& block, int nHeight, ChainstateManager& chainman);
 bool ValidateUTXOCheckpoint(const CBlock& block, int nHeight, CCoinsView& view, node::BlockManager& blockman, BlockValidationState& state,
                              const Consensus::Params& params, const kernel::UTXOMuHashState* tip_muhash);
 

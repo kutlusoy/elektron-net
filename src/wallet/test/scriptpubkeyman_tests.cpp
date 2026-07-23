@@ -6,8 +6,10 @@
 #include <key_io.h>
 #include <test/util/setup_common.h>
 #include <script/solver.h>
+#include <util/strencodings.h>
 #include <wallet/scriptpubkeyman.h>
 #include <wallet/wallet.h>
+#include <wallet/walletutil.h>
 #include <wallet/test/util.h>
 
 #include <boost/test/unit_test.hpp>
@@ -37,5 +39,39 @@ BOOST_AUTO_TEST_CASE(DescriptorScriptPubKeyManTests)
     BOOST_CHECK(signprov_keypath_nums_h == nullptr);
 }
 
+BOOST_AUTO_TEST_CASE(GenerateWalletDescriptorCoinTypeMainnet)
+{
+    // BasicTestingSetup defaults to ChainType::MAIN, so mainnet descriptors
+    // here must use Elektron Net's registered SLIP-44 coin type (1370').
+    std::vector<std::byte> seed{ParseHex<std::byte>("000102030405060708090a0b0c0d0e0f")};
+    CExtKey ext_key;
+    ext_key.SetSeed(seed);
+    CExtPubKey ext_pubkey = ext_key.Neuter();
+
+    WalletDescriptor desc = GenerateWalletDescriptor(ext_pubkey, OutputType::BECH32, /*internal=*/false);
+    BOOST_CHECK(desc.descriptor->ToString().find("/1370h/") != std::string::npos);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
+
+namespace {
+struct RegtestBasicSetup : public BasicTestingSetup {
+    RegtestBasicSetup() : BasicTestingSetup(ChainType::REGTEST) {}
+};
+} // namespace
+
+BOOST_FIXTURE_TEST_CASE(GenerateWalletDescriptorCoinTypeRegtest, RegtestBasicSetup)
+{
+    // Testnet/regtest keep SLIP-44's "testnet for all coins" coin type (1'),
+    // unrelated to and unaffected by Elektron Net's own mainnet coin type.
+    std::vector<std::byte> seed{ParseHex<std::byte>("000102030405060708090a0b0c0d0e0f")};
+    CExtKey ext_key;
+    ext_key.SetSeed(seed);
+    CExtPubKey ext_pubkey = ext_key.Neuter();
+
+    WalletDescriptor desc = GenerateWalletDescriptor(ext_pubkey, OutputType::BECH32, /*internal=*/false);
+    std::string desc_str = desc.descriptor->ToString();
+    BOOST_CHECK(desc_str.find("/1h/") != std::string::npos);
+    BOOST_CHECK(desc_str.find("/1370h/") == std::string::npos);
+}
 } // namespace wallet

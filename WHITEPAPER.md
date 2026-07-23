@@ -99,7 +99,7 @@ Bitcoin was built for institutional resilience. Elektron Net is built for human 
 | Difficulty Adjustment | Bitcoin Core | Every 2,016 blocks (unchanged) |
 | Script Engine | Bitcoin Core | OP_CODES unchanged |
 | P2P Network | Bitcoin Core | TCP/IP, addr relay, DoS protection |
-| Wallet | Bitcoin Core | BIP-32/39/44, descriptor wallets, Bech32m |
+| Wallet | Bitcoin Core | BIP-32/39/44, descriptor wallets, Bech32m; SLIP-44 coin type 1370 (`ELEK`) |
 | Storage | Bitcoin Core | LevelDB / RocksDB |
 | RPC / P2P | Bitcoin Core | Port **8332** / **8333** (unchanged) |
 
@@ -313,7 +313,7 @@ Compared to Bitcoin's unbounded growth, this is a **~100× reduction** after 10 
 Recovery follows the **Pocket philosophy**: your seed finds your pocket (the current UTXO set), not your receipts.
 
 1. Enter 24-word BIP-39 seed.
-2. Derive all wallet descriptors (BIP-44/84/86).
+2. Derive all wallet descriptors (BIP-44/49/84/86) under SLIP-44 coin type 1370 (`ELEK`). Wallets created before this coin type was registered additionally retain descriptors under Bitcoin's coin type `0'` — see [`doc-elektron/CHANGELOG-slip44-coin-type.md`](doc-elektron/CHANGELOG-slip44-coin-type.md).
 3. On wallet load, if pruned block history is unavailable for the wallet's last-synced height, the node runs **`ScanUTXOSet`** automatically (`CWallet::AttachChain` → `Chain::forEachCoin` → `CreditUTXOFromChain`).
 4. Outputs matching derived addresses are credited; balance is spendable immediately.
 5. **Transaction history before the 137-day pruning window is not recoverable** from the network — by design. `rescanblockchain` beyond the prune height still fails; reload the wallet to trigger UTXO scan.
@@ -373,6 +373,7 @@ If a credible quantum threat emerges, the network can soft-fork to post-quantum 
 | **Privacy** | Pruning window | 137 days (197,280 blocks) |
 | | Address format | Bech32m (`be1q...` / `be1p...`) |
 | | Default output type | P2WPKH / P2TR (Taproot) |
+| | SLIP-44 coin type | 1370 (`ELEK`) |
 | **Node** | Minimum storage | ~100 MB (Year 1) |
 | | Full node storage | ~5–8 GB (Year 10); GUI shows measured on-disk usage |
 | | Pruning | Mandatory; `-prune` size ignored; `nPruneAfterHeight = 197,280`; no 274-day grace |

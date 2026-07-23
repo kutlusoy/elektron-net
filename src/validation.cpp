@@ -2383,6 +2383,19 @@ std::optional<uint256> ComputeBlockUTXOAttestationHash(const CBlock& block, int 
         // only this block's coin changes, instead of rescanning the whole UTXO set.
         // base_view is read-only here -- used only for point lookups of spent coins, via
         // a throwaway cache that is never flushed.
+        //
+        // fix_active gates whether lookup_view is kept in sync with each processed
+        // transaction's own outputs as we go (mirroring what UpdateCoins does for the
+        // legacy path below). Without that, a later transaction in this same block that
+        // spends an earlier one's output within this same block -- a normal, expected
+        // mempool-chain/CPFP shape, not an error case -- looks like a missing/already-spent
+        // coin and fails attestation computation for the whole block. That was true for
+        // every node before this fix existed, so until IntraBlockAttestationFixActivationHeight
+        // is reached, every node (upgraded or not) keeps computing it the old way, and only
+        // once that height is reached do upgraded nodes switch to resolving it correctly --
+        // see IntraBlockAttestationFixActivationHeight's doc comment for why this is
+        // height-gated instead of applying unconditionally.
+        const bool fix_active = IsIntraBlockAttestationFixActive(nHeight, params);
         kernel::UTXOMuHashState candidate{*tip_muhash};
         CCoinsViewCache lookup_view{&base_view};
         for (const auto& tx : block.vtx) {
@@ -2393,11 +2406,14 @@ std::optional<uint256> ComputeBlockUTXOAttestationHash(const CBlock& block, int 
                     const Coin& coin = lookup_view.AccessCoin(txin.prevout);
                     if (coin.IsSpent()) return std::nullopt; // should not happen; inputs were already checked
                     candidate.RemoveCoin(txin.prevout, coin);
+                    if (fix_active) lookup_view.SpendCoin(txin.prevout);
                 }
             }
             for (size_t o = 0; o < cur_tx.vout.size(); ++o) {
                 if (cur_tx.vout[o].scriptPubKey.IsUnspendable()) continue;
-                candidate.AddCoin(COutPoint(cur_tx.GetHash(), o), Coin(cur_tx.vout[o], nHeight, cur_tx.IsCoinBase()));
+                Coin new_coin(cur_tx.vout[o], nHeight, cur_tx.IsCoinBase());
+                candidate.AddCoin(COutPoint(cur_tx.GetHash(), o), new_coin);
+                if (fix_active) lookup_view.AddCoin(COutPoint(cur_tx.GetHash(), o), std::move(new_coin), false);
             }
         }
         return candidate.GetHash();
@@ -2456,6 +2472,32 @@ std::optional<uint256> ExtractCoinbaseUTXOAttestation(const CTransaction& coinba
         }
     }
     return std::nullopt;
+}
+
+bool RegenerateUTXOAttestation(CBlock& block, int nHeight, ChainstateManager& chainman)
+{
+    if (nHeight <= 0) return true; // genesis has no attestation
+
+    CHECK_NONFATAL(!block.vtx.empty() && block.vtx[0]->IsCoinBase());
+    // Coinbase is always non-null here (StripAttestationOutput only returns nullptr for a
+    // non-coinbase input, see its own definition above).
+    block.vtx[0] = StripAttestationOutput(*block.vtx[0], nHeight);
+
+    Chainstate& active_chainstate = chainman.ActiveChainstate();
+    const auto hash = ComputeBlockUTXOAttestationHash(block, nHeight, active_chainstate.CoinsTip(), chainman.m_blockman,
+                                                        chainman.GetConsensus(), &active_chainstate.UTXOMuHash());
+    if (!hash) return false;
+
+    CMutableTransaction tx{*block.vtx[0]};
+    CTxOut out;
+    out.nValue = 0;
+    // OP_RETURN <height(4 bytes)> <hash(32 bytes)> = 37 bytes payload
+    out.scriptPubKey = CScript() << OP_RETURN << nHeight << *hash;
+    tx.vout.push_back(out);
+    block.vtx[0] = MakeTransactionRef(std::move(tx));
+
+    block.hashMerkleRoot = BlockMerkleRoot(block);
+    return true;
 }
 
 /**
