@@ -2382,7 +2382,12 @@ std::optional<uint256> ComputeBlockUTXOAttestationHash(const CBlock& block, int 
         // Incremental path: clone the (cheap, few-hundred-byte) tip accumulator and apply
         // only this block's coin changes, instead of rescanning the whole UTXO set.
         // base_view is read-only here -- used only for point lookups of spent coins, via
-        // a throwaway cache that is never flushed.
+        // a throwaway cache that is never flushed. lookup_view is kept in sync with each
+        // processed transaction's own outputs as we go (mirroring what UpdateCoins does
+        // for the legacy path below), so a later transaction in this same block that
+        // spends an earlier one's output within this same block -- a normal, expected
+        // mempool-chain/CPFP shape, not an error case -- resolves correctly instead of
+        // looking like a missing/already-spent coin.
         kernel::UTXOMuHashState candidate{*tip_muhash};
         CCoinsViewCache lookup_view{&base_view};
         for (const auto& tx : block.vtx) {
@@ -2393,11 +2398,14 @@ std::optional<uint256> ComputeBlockUTXOAttestationHash(const CBlock& block, int 
                     const Coin& coin = lookup_view.AccessCoin(txin.prevout);
                     if (coin.IsSpent()) return std::nullopt; // should not happen; inputs were already checked
                     candidate.RemoveCoin(txin.prevout, coin);
+                    lookup_view.SpendCoin(txin.prevout);
                 }
             }
             for (size_t o = 0; o < cur_tx.vout.size(); ++o) {
                 if (cur_tx.vout[o].scriptPubKey.IsUnspendable()) continue;
-                candidate.AddCoin(COutPoint(cur_tx.GetHash(), o), Coin(cur_tx.vout[o], nHeight, cur_tx.IsCoinBase()));
+                Coin new_coin(cur_tx.vout[o], nHeight, cur_tx.IsCoinBase());
+                candidate.AddCoin(COutPoint(cur_tx.GetHash(), o), new_coin);
+                lookup_view.AddCoin(COutPoint(cur_tx.GetHash(), o), std::move(new_coin), false);
             }
         }
         return candidate.GetHash();
