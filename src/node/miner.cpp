@@ -314,6 +314,22 @@ void BlockAssembler::addChunks()
     constexpr int32_t BLOCK_FULL_ENOUGH_WEIGHT_DELTA = 4000;
     int64_t nConsecutiveFailed = 0;
 
+    // Elektron Net: pre-activation (see IsIntraBlockAttestationFixActive()'s doc
+    // comment in validation.h), a chunk containing more than one transaction
+    // necessarily contains an intra-block spend dependency -- that dependency is
+    // exactly what groups separate mempool entries into one multi-entry chunk in
+    // the first place (typically a CPFP-style chain of near-zero-fee parents paying
+    // for themselves via one fee-paying child). Including such a chunk makes
+    // ComputeBlockUTXOAttestationHash() fail for the whole candidate block further
+    // below, which aborts template creation entirely instead of just leaving those
+    // transactions out. Skip multi-transaction chunks here instead, so single-
+    // transaction chunks (and, absent any, at least the coinbase) keep flowing into
+    // blocks while the fix's activation height hasn't been reached yet. This is a
+    // local mining-policy choice about what this node puts in its own candidate
+    // block, not a validation rule, so unlike the activation height itself it needs
+    // no coordinated rollout and cannot cause a chain split.
+    const bool skip_dependent_chunks = !IsIntraBlockAttestationFixActive(nHeight, chainparams.GetConsensus());
+
     std::vector<CTxMemPoolEntry::CTxMemPoolEntryRef> selected_transactions;
     selected_transactions.reserve(MAX_CLUSTER_COUNT_LIMIT);
     FeePerWeight chunk_feerate;
@@ -335,8 +351,10 @@ void BlockAssembler::addChunks()
         }
 
         // Check to see if this chunk will fit.
-        if (!TestChunkBlockLimits(chunk_feerate, chunk_sig_ops) || !TestChunkTransactions(selected_transactions)) {
-            // This chunk won't fit, so we skip it and will try the next best one.
+        if (!TestChunkBlockLimits(chunk_feerate, chunk_sig_ops) || !TestChunkTransactions(selected_transactions) ||
+                (skip_dependent_chunks && selected_transactions.size() > 1)) {
+            // This chunk won't fit (or is being held back pre-activation), so we
+            // skip it and will try the next best one.
             m_mempool->SkipBuilderChunk();
             ++nConsecutiveFailed;
 
