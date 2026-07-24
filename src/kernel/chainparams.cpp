@@ -104,12 +104,17 @@ public:
         // entire next 2016-block epoch, requiring multiple +300%-capped
         // periods to recover -- days of anomalously low, easily-attackable
         // difficulty from a single unlucky timestamp, not an actual hashrate
-        // shock. Chosen with the user directly: mainnet tip was ~86829 when
-        // decided (2026-07-13), giving ~4-5 weeks of real lead time at the
-        // then-current (bug-inflated) ~2150 blocks/day rate for every
-        // operator to update. See
+        // shock. Originally planned for height 150000 (chosen 2026-07-13 with
+        // ~4-5 weeks of lead time from the then-current tip ~86829). Moved up
+        // to 148360 as part of an emergency rollout alongside
+        // IntraBlockAttestationFixActivationHeight below: the chain had
+        // already stalled network-wide (see that parameter's comment) and
+        // every block mined in the meantime under the old rule risks landing
+        // on the >120s escape, so there is no benefit to waiting for the
+        // original date. Rollout: relay/service nodes upgrade first, mining
+        // nodes upgrade last, right before the activation height. See
         // doc-elektron/CHANGELOG-stoic-awakening-retirement.md.
-        consensus.StoicAwakeningEndHeight = 150000;
+        consensus.StoicAwakeningEndHeight = 148360;
         // MuHash UTXO attestation (doc-elektron/fix-report-utxo-attestation-scalability.md):
         // activated 2026-07-02 at height 137000 -- chosen with real lead time from the
         // then-current tip (63214) for every operator to update, and deliberately before
@@ -120,17 +125,22 @@ public:
         // (Phase 1 exercised on testnet/testnet4/regtest first).
         consensus.MuhashAttestationActivationHeight = 137000;
         // Intra-block dependent-transaction attestation fix
-        // (doc-elektron/fix-report-utxo-attestation-intra-block-chain.md): activated at
-        // height 170000 -- chosen with the user directly: mainnet tip was ~147000 when
-        // decided (2026-07-23), giving a comfortable margin of real lead time. The network
-        // currently has only one other independent miner besides the user's own node, who
-        // upgrades reliably, so the coordination risk here is lower than for
-        // MuhashAttestationActivationHeight and StoicAwakeningEndHeight above, but the user
-        // opted for a wider margin than the minimum anyway. See
+        // (doc-elektron/fix-report-utxo-attestation-intra-block-chain.md): originally
+        // planned for height 170000 (chosen 2026-07-23 with mainnet tip ~147000, a wide
+        // lead-time margin). Moved up to 148360 as an emergency activation: a
+        // dependent-transaction pair sitting in the mempool made block template creation
+        // fail on every attempt network-wide (every miner, not just one pool), stalling
+        // block production entirely, well before height 170000 could be reached, so
+        // waiting for the original date was no longer viable. 148360 is the tip (148302)
+        // plus the minimum safe window for every node to upgrade before activation; the
+        // network currently has only one other independent miner besides the operator's
+        // own node, who upgrades reliably. Rollout: relay/service nodes upgrade first,
+        // mining nodes upgrade last, right before the activation height, to minimize
+        // blocks mined on old rules once upgrades start landing. See
         // IntraBlockAttestationFixActivationHeight's doc comment in consensus/params.h for
         // why this is height-gated at all rather than applying unconditionally the moment
         // the fix is deployed.
-        consensus.IntraBlockAttestationFixActivationHeight = 170000;
+        consensus.IntraBlockAttestationFixActivationHeight = 148360;
         consensus.MandatoryPruneDepth = 197280; // 137 days at 60s blocks (mainnet default, explicit for clarity)
         consensus.enforce_BIP94 = false;
         consensus.fPowNoRetargeting = false;
@@ -187,7 +197,7 @@ public:
         vSeeds.emplace_back("seed14.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
         vSeeds.emplace_back("seed15.eleknet.org.");   // reserved, currently kutlusoy's node — open for operators
 
-        
+
 
         base58Prefixes[PUBKEY_ADDRESS] = std::vector<unsigned char>(1,0);
         base58Prefixes[SCRIPT_ADDRESS] = std::vector<unsigned char>(1,5);
