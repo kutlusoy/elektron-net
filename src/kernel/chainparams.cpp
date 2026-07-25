@@ -105,16 +105,19 @@ public:
         // periods to recover -- days of anomalously low, easily-attackable
         // difficulty from a single unlucky timestamp, not an actual hashrate
         // shock. Originally planned for height 150000 (chosen 2026-07-13 with
-        // ~4-5 weeks of lead time from the then-current tip ~86829). Moved up
-        // to 148360 as part of an emergency rollout alongside
-        // IntraBlockAttestationFixActivationHeight below: the chain had
-        // already stalled network-wide (see that parameter's comment) and
-        // every block mined in the meantime under the old rule risks landing
-        // on the >120s escape, so there is no benefit to waiting for the
-        // original date. Rollout: relay/service nodes upgrade first, mining
-        // nodes upgrade last, right before the activation height. See
+        // ~4-5 weeks of lead time from the then-current tip ~86829), then moved
+        // to 148360 as a first emergency step alongside
+        // IntraBlockAttestationFixActivationHeight below. That first move's
+        // buffer proved too small: the chain reached 148360 (one not-yet-
+        // upgraded node was already at 148428) before every miner had actually
+        // upgraded, which risked exactly the kind of split this height-gating
+        // exists to prevent. Raised again to 151000 on 2026-07-25, this time
+        // with a much wider buffer past the tip (~148428) at decision time, so
+        // upgrades have real time to land everywhere before the height is
+        // reached. Rollout: relay/service nodes upgrade first, mining nodes
+        // upgrade last, right before the activation height. See
         // doc-elektron/CHANGELOG-stoic-awakening-retirement.md.
-        consensus.StoicAwakeningEndHeight = 148360;
+        consensus.StoicAwakeningEndHeight = 151000;
         // MuHash UTXO attestation (doc-elektron/fix-report-utxo-attestation-scalability.md):
         // activated 2026-07-02 at height 137000 -- chosen with real lead time from the
         // then-current tip (63214) for every operator to update, and deliberately before
@@ -126,21 +129,25 @@ public:
         consensus.MuhashAttestationActivationHeight = 137000;
         // Intra-block dependent-transaction attestation fix
         // (doc-elektron/fix-report-utxo-attestation-intra-block-chain.md): originally
-        // planned for height 170000 (chosen 2026-07-23 with mainnet tip ~147000, a wide
-        // lead-time margin). Moved up to 148360 as an emergency activation: a
-        // dependent-transaction pair sitting in the mempool made block template creation
-        // fail on every attempt network-wide (every miner, not just one pool), stalling
-        // block production entirely, well before height 170000 could be reached, so
-        // waiting for the original date was no longer viable. 148360 is the tip (148302)
-        // plus the minimum safe window for every node to upgrade before activation; the
-        // network currently has only one other independent miner besides the operator's
-        // own node, who upgrades reliably. Rollout: relay/service nodes upgrade first,
-        // mining nodes upgrade last, right before the activation height, to minimize
-        // blocks mined on old rules once upgrades start landing. See
-        // IntraBlockAttestationFixActivationHeight's doc comment in consensus/params.h for
-        // why this is height-gated at all rather than applying unconditionally the moment
-        // the fix is deployed.
-        consensus.IntraBlockAttestationFixActivationHeight = 148360;
+        // planned for height 170000 (chosen 2026-07-23 with mainnet tip ~147000), then
+        // moved to 148360 as a first emergency activation once a dependent-transaction
+        // pair sitting in the mempool stalled block production entirely network-wide.
+        // That first move's buffer (tip + ~58 blocks) proved too small: the chain
+        // reached 148360 -- at least one not-yet-upgraded node was already at 148428 --
+        // before every miner had actually installed the build carrying this change.
+        // That is a real chain-split risk, not just a theoretical one: any upgraded
+        // miner including the pair in a block from 148360 onward would be accepted by
+        // upgraded nodes (new rule active) and rejected by not-yet-upgraded nodes (old
+        // rule still active until their own compiled-in height), forking the two groups
+        // apart. Raised again to 151000 on 2026-07-25, this time with a wide buffer
+        // (~2500+ blocks past the 148428 tip at decision time) so there is real time to
+        // confirm every miner -- not just the operator's own nodes -- has upgraded
+        // before the height is reached. Rollout: relay/service nodes upgrade first,
+        // mining nodes upgrade last, right before the activation height. See
+        // IntraBlockAttestationFixActivationHeight's doc comment in consensus/params.h
+        // for why this is height-gated at all rather than applying unconditionally the
+        // moment the fix is deployed.
+        consensus.IntraBlockAttestationFixActivationHeight = 151000;
         consensus.MandatoryPruneDepth = 197280; // 137 days at 60s blocks (mainnet default, explicit for clarity)
         consensus.enforce_BIP94 = false;
         consensus.fPowNoRetargeting = false;
