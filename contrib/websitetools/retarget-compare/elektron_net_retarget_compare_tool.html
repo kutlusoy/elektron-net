@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Elektron Net Retarget Compare — Live</title>
+<style>
+  :root {
+    --bg: #000000;
+    --fg: #cccccc;
+    --dim: #6b6b6b;
+    --cyan: #29d9d9;
+    --yellow: #d7c04a;
+    --green: #3ddc5b;
+    --magenta: #d64dd6;
+    --red: #e5484d;
+    --input-bg: #0d0d0d;
+    --input-border: #2a2a2a;
+    --font: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", ui-monospace, "Roboto Mono", monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font);
+  }
+  body {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 16px;
+  }
+  @media (max-width: 400px) {
+    body { padding: 20px 8px; }
+  }
+
+  .screen {
+    width: 100%;
+    max-width: 820px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-width: 0;
+  }
+
+  /* Control row, styled like a shell prompt line */
+  .promptline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--dim);
+  }
+  .promptline .sigil { color: var(--green); }
+  .promptline input[type="text"] {
+    flex: 1 1 240px;
+    min-width: 180px;
+    background: var(--input-bg);
+    border: 1px solid var(--input-border);
+    border-radius: 4px;
+    color: var(--fg);
+    font-family: var(--font);
+    font-size: 13px;
+    padding: 6px 8px;
+  }
+  .promptline input[type="text"]:focus {
+    outline: 1px solid var(--cyan);
+    outline-offset: 0;
+  }
+  .promptline button {
+    background: var(--input-bg);
+    border: 1px solid var(--input-border);
+    color: var(--fg);
+    font-family: var(--font);
+    font-size: 12px;
+    border-radius: 4px;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  .promptline button:hover { border-color: var(--cyan); color: var(--cyan); }
+  .promptline button:focus-visible { outline: 1px solid var(--cyan); }
+
+  .status {
+    margin-left: auto;
+    white-space: nowrap;
+  }
+  .status.live { color: var(--green); }
+  .status.poll { color: var(--yellow); }
+  .status.err  { color: var(--red); }
+
+  .termbox {
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    scrollbar-color: #333 transparent;
+  }
+  .termbox::-webkit-scrollbar { height: 6px; }
+  .termbox::-webkit-scrollbar-track { background: transparent; }
+  .termbox::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+
+  pre#out {
+    margin: 0;
+    font-family: var(--font);
+    font-size: clamp(9.2px, 2.85vw, 14px);
+    line-height: 1.55;
+    white-space: pre;
+  }
+
+  .l-cyan { color: var(--cyan); }
+  .l-yellow { color: var(--yellow); }
+  .l-green { color: var(--green); }
+  .l-magenta { color: var(--magenta); }
+  .l-red { color: var(--red); }
+  .l-dim { color: var(--dim); }
+
+  .cursor {
+    display: inline-block;
+    width: 0.55em;
+    height: 1em;
+    background: var(--fg);
+    vertical-align: text-bottom;
+    animation: blink 1s steps(1) infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cursor { animation: none; opacity: 0.6; }
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+</style>
+</head>
+<body>
+<div class="screen">
+
+  <div class="promptline">
+    <span class="sigil">$</span>
+    <input type="text" id="apiBase" placeholder="https://mempool.elektron-net.org" autocomplete="off" spellcheck="false">
+    <button id="connectBtn">connect</button>
+    <button id="refreshBtn">refresh</button>
+    <span class="status" id="statusText">disconnected</span>
+  </div>
+
+  <div class="termbox"><pre id="out"></pre></div>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  const INTERVAL = 2016;
+  const TARGET_SPACING = 60;
+  const TARGET_TIMESPAN = INTERVAL * TARGET_SPACING;
+  const POLL_MS = 20000;
+  const WS_RECONNECT_BASE_MS = 5000;
+  const WS_RECONNECT_MAX_MS = 30000;
+
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    apiBase: $("apiBase"), connectBtn: $("connectBtn"), refreshBtn: $("refreshBtn"),
+    statusText: $("statusText"), out: $("out"),
+  };
+
+  let ws = null;
+  let pollTimer = null;
+  let reconnectTimer = null;
+  let reconnectDelay = WS_RECONNECT_BASE_MS;
+  let refreshInFlight = false;
+  let refreshQueued = false;
+  let wsBlockDebounce = null;
+  let lastData = null;
+  let resizeDebounce = null;
+
+  function normalizeBase(v) { return v.trim().replace(/\/+$/, ""); }
+
+  function setStatus(kind, text) {
+    els.statusText.className = "status" + (kind ? " " + kind : "");
+    els.statusText.textContent = text;
+  }
+
+  // Plain integer, no thousands grouping (matches PowerShell's default {0} interpolation).
+  function plain(n) { return String(Math.round(n)); }
+  // Culture-formatted number with fixed decimals + grouping (matches PowerShell's {0:N#}).
+  function nfmt(n, decimals) {
+    if (!isFinite(n)) return "—";
+    return n.toLocaleString("de-DE", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  }
+
+  async function fetchText(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`);
+    return (await res.text()).trim();
+  }
+  async function fetchJson(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`${url} -> HTTP ${res.status}`);
+    return res.json();
+  }
+  async function getBlockByHeight(base, height) {
+    const hash = await fetchText(`${base}/api/block-height/${height}`);
+    return fetchJson(`${base}/api/block/${hash}`);
+  }
+
+  function difficultyOf(block) {
+    if (typeof block.difficulty === "number" && block.difficulty > 0) return block.difficulty;
+    return bitsToDifficulty(block.bits);
+  }
+  function bitsToDifficulty(bitsRaw) {
+    const bits = typeof bitsRaw === "string" ? parseInt(bitsRaw, 16) : bitsRaw;
+    const exp = (bits >>> 24) & 0xff;
+    const mantissa = bits & 0x00ffffff;
+    const ratio = 65535.0 / mantissa;
+    const shift = 8 * (0x1d - exp);
+    return ratio * Math.pow(2, shift);
+  }
+  function bitsHex(bitsRaw) {
+    const bits = typeof bitsRaw === "string" ? parseInt(bitsRaw, 16) : bitsRaw;
+    return (bits >>> 0).toString(16).padStart(8, "0");
+  }
+
+  function esc(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function line(cls, text) {
+    return cls ? `<span class="${cls}">${esc(text)}</span>` : esc(text);
+  }
+
+  function printMessage(cls, text) {
+    els.out.innerHTML = line(cls, text);
+  }
+
+  async function refreshAll() {
+    if (refreshInFlight) { refreshQueued = true; return; }
+    refreshInFlight = true;
+    const base = normalizeBase(els.apiBase.value);
+    try {
+      const tip = parseInt(await fetchText(`${base}/api/blocks/tip/height`), 10);
+
+      const curRetargetH = Math.floor(tip / INTERVAL) * INTERVAL;
+      const prevRetargetH = curRetargetH - INTERVAL;
+      const nextRetargetH = curRetargetH + INTERVAL;
+
+      if (prevRetargetH < 0) {
+        printMessage("l-yellow", "Not enough blocks yet for a comparison.");
+        return;
+      }
+
+      const [tipBlock, curRetarget, prevRetarget, prevLast] = await Promise.all([
+        getBlockByHeight(base, tip),
+        getBlockByHeight(base, curRetargetH),
+        getBlockByHeight(base, prevRetargetH),
+        getBlockByHeight(base, curRetargetH - 1),
+      ]);
+
+      const prevTimespan = prevLast.timestamp - prevRetarget.timestamp;
+      const prevAvg = prevTimespan / (INTERVAL - 1);
+
+      const curElapsed = tipBlock.timestamp - curRetarget.timestamp;
+      const curMined = tip - curRetargetH;
+      const curRemaining = nextRetargetH - tip;
+      const curAvg = curMined > 0 ? curElapsed / curMined : 0;
+
+      const prevDiff = difficultyOf(prevRetarget);
+      const curDiff = difficultyOf(curRetarget);
+      const jumpFactor = curDiff / prevDiff;
+
+      const projTimespan = curAvg > 0 ? curAvg * INTERVAL : TARGET_TIMESPAN;
+      const rawFactor = TARGET_TIMESPAN / projTimespan;
+      const clampedFactor = Math.max(0.25, Math.min(4.0, rawFactor));
+      const projDiff = curDiff * clampedFactor;
+
+      renderOut({
+        tip, curRetargetH, prevRetargetH, nextRetargetH, curRemaining,
+        prevRetarget, prevDiff, prevTimespan, prevAvg,
+        curRetarget, curDiff, jumpFactor, curMined, curElapsed, curAvg,
+        rawFactor, clampedFactor, projTimespan, projDiff,
+        renderedAt: new Date(),
+      });
+      setStatus(ws && ws.readyState === 1 ? "live" : "poll", ws && ws.readyState === 1 ? "live" : "polling");
+    } catch (e) {
+      const mixed = location.protocol === "https:" && base.startsWith("http://");
+      const hint = mixed
+        ? " (Mixed Content: Seite läuft über HTTPS, API-URL ist HTTP)"
+        : " (URL/CORS prüfen: Access-Control-Allow-Origin auf dem mempool-Server?)";
+      printMessage("l-red", `ERROR: ${e.message}${hint}`);
+      setStatus("err", "error");
+    } finally {
+      refreshInFlight = false;
+      if (refreshQueued) { refreshQueued = false; refreshAll(); }
+    }
+  }
+
+  // Decorative divider width only — shrinks on narrow viewports so header
+  // lines never become the widest (and thus scroll-forcing) line on screen.
+  function dividerWidth() {
+    const w = window.innerWidth;
+    if (w < 360) return 38;
+    if (w < 400) return 44;
+    if (w < 480) return 50;
+    if (w < 600) return 56;
+    return 62;
+  }
+  function headerLine(title) {
+    const totalLen = dividerWidth();
+    const prefix = `--- ${title} `;
+    const dashes = Math.max(3, totalLen - prefix.length);
+    return prefix + "-".repeat(dashes);
+  }
+
+  function renderOut(d) {
+    lastData = d;
+    const curEpoch = d.curRetargetH / INTERVAL;
+    const prevEpoch = d.prevRetargetH / INTERVAL;
+
+    const L = [];
+    L.push(line("l-cyan", "===== Elektron Net Retarget Compare ====="));
+    L.push("");
+    L.push(`Tip height:           ${plain(d.tip)}`);
+    L.push(`Current epoch start:  ${plain(d.curRetargetH)}`);
+    L.push(`Previous epoch:       ${plain(d.prevRetargetH)} - ${plain(d.curRetargetH - 1)}`);
+    L.push(`Next retarget at:     ${plain(d.nextRetargetH)}   (${plain(d.curRemaining)} blocks remaining)`);
+    L.push("");
+
+    L.push(line("l-yellow", headerLine(`Previous epoch ${plain(prevEpoch)}`)));
+    L.push(`  bits        : ${bitsHex(d.prevRetarget.bits)}`);
+    L.push(`  difficulty  : ${nfmt(d.prevDiff, 8)}`);
+    L.push(`  timespan    : ${plain(d.prevTimespan)} s   (target ${TARGET_TIMESPAN} s)`);
+    L.push(`  avg block   : ${nfmt(d.prevAvg, 2)} s  (target ${TARGET_SPACING} s)`);
+    L.push("");
+
+    L.push(line("l-green", headerLine(`Current epoch ${plain(curEpoch)} (in progress)`)));
+    L.push(`  bits        : ${bitsHex(d.curRetarget.bits)}`);
+    L.push(`  difficulty  : ${nfmt(d.curDiff, 8)}`);
+    L.push(`  jump vs prev: ${nfmt(d.jumpFactor, 4)}x`);
+    L.push(`  blocks mined: ${plain(d.curMined)} / ${INTERVAL}`);
+    L.push(`  elapsed     : ${plain(d.curElapsed)} s`);
+    if (d.curMined > 0) {
+      L.push(`  avg block   : ${nfmt(d.curAvg, 2)} s  (target ${TARGET_SPACING} s)`);
+    }
+    L.push("");
+
+    L.push(line("l-magenta", headerLine("Projection for next retarget")));
+    L.push(`  if pace holds, full epoch timespan : ${nfmt(d.projTimespan, 0)} s`);
+    L.push(`  raw adjustment factor              : ${nfmt(d.rawFactor, 3)}x`);
+    L.push(`  clamped (max 4x per Bitcoin rule)  : ${nfmt(d.clampedFactor, 3)}x`);
+    L.push(`  projected new difficulty           : ${nfmt(d.projDiff, 8)}`);
+    if (d.rawFactor > 4.0) {
+      L.push(line("l-red", "  NOTE: raw factor exceeds 4x cap. Several retargets needed to fully catch up."));
+    } else if (d.rawFactor < 0.25) {
+      L.push(line("l-red", "  NOTE: raw factor below 0.25x cap. Stoic Awakening likely active."));
+    }
+    L.push("");
+    L.push(`<span class="l-dim">tip block ${plain(d.tip)} · ${d.renderedAt.toLocaleTimeString("de-DE")}</span><span class="cursor"></span>`);
+
+    els.out.innerHTML = L.join("\n");
+  }
+
+  function stopAll() {
+    if (ws) { ws.onclose = null; ws.close(); ws = null; }
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    if (wsBlockDebounce) { clearTimeout(wsBlockDebounce); wsBlockDebounce = null; }
+  }
+
+  function connectWs(base) {
+    let wsUrl;
+    try {
+      const u = new URL(base);
+      u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
+      u.pathname = u.pathname.replace(/\/+$/, "") + "/api/v1/ws";
+      wsUrl = u.toString();
+    } catch (e) { return; }
+
+    try { ws = new WebSocket(wsUrl); } catch (e) { scheduleReconnect(base); return; }
+
+    ws.onopen = () => {
+      reconnectDelay = WS_RECONNECT_BASE_MS;
+      ws.send(JSON.stringify({ action: "init" }));
+      ws.send(JSON.stringify({ action: "want", data: ["blocks"] }));
+      setStatus("live", "live");
+    };
+    ws.onmessage = () => {
+      if (wsBlockDebounce) clearTimeout(wsBlockDebounce);
+      wsBlockDebounce = setTimeout(refreshAll, 800);
+    };
+    ws.onerror = () => {};
+    ws.onclose = () => {
+      if (pollTimer) setStatus("poll", "polling");
+      scheduleReconnect(base);
+    };
+  }
+
+  function scheduleReconnect(base) {
+    if (reconnectTimer) return;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      if (pollTimer) connectWs(base);
+    }, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, WS_RECONNECT_MAX_MS);
+  }
+
+  function start() {
+    const base = normalizeBase(els.apiBase.value);
+    if (!base) { printMessage("l-red", "ERROR: please enter a node API URL."); return; }
+    stopAll();
+    localStorage.setItem("elektron_mempool_base", base);
+    setStatus("poll", "connecting…");
+    refreshAll();
+    pollTimer = setInterval(refreshAll, POLL_MS);
+    reconnectDelay = WS_RECONNECT_BASE_MS;
+    connectWs(base);
+  }
+
+  els.connectBtn.addEventListener("click", start);
+  els.refreshBtn.addEventListener("click", refreshAll);
+  els.apiBase.addEventListener("keydown", (e) => { if (e.key === "Enter") start(); });
+
+  // Re-render (no refetch) when the viewport crosses a divider-width breakpoint,
+  // e.g. on mobile orientation change, so the layout adapts without a network round-trip.
+  window.addEventListener("resize", () => {
+    if (resizeDebounce) clearTimeout(resizeDebounce);
+    resizeDebounce = setTimeout(() => { if (lastData) renderOut(lastData); }, 150);
+  });
+
+  const saved = localStorage.getItem("elektron_mempool_base");
+  els.apiBase.value = saved || "https://mempool.elektron-net.org";
+  if (saved) start();
+})();
+</script>
+</body>
+</html>
