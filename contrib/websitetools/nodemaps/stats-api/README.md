@@ -4,7 +4,11 @@ Discovers Elektron Net peers the same way any real node does &mdash; no access
 to the seeder host needed at all:
 
 1. **DNS-seed sampling**: queries the seed hostname for A/AAAA records
-   (repeatedly, since one answer only carries a rotating subset).
+   (repeatedly, since one answer only carries a rotating subset), plus a
+   plain hostname lookup for a handful of well-known always-on bootstrap
+   nodes (`EXTRA_SEED_HOSTS`, e.g. the network's main nodes that every
+   normal client also connects to) &mdash; these tend to have far richer
+   peer lists than a small/young node, making them good extra crawl roots.
 2. **P2P peer discovery**: connects directly to known peers over the P2P
    protocol (version/verack/getaddr handshake, byte-for-byte matching
    `elektron-net-seeder`'s own `elektron.cpp` &mdash; same magic bytes, port,
@@ -55,17 +59,30 @@ schedule &mdash; page traffic itself drives the crawl forward.
 PHP 8.1+ with the `curl` extension. No Composer dependencies. Outbound DNS
 (port 53), outbound TCP to arbitrary peer IPs on the P2P port (default
 8333), and outbound HTTPS to `ipwho.is` (primary GeoIP) and `ipapi.co`
-(fallback) must all be reachable from wherever this runs. (An earlier
-version used ip-api.com for GeoIP, but that turned out to be unreachable
--- connections just timed out -- from at least one real deployment, likely
-an IP-range block on their end against hosting/cloud providers; ipwho.is
-and ipapi.co were confirmed working from that same server instead.)
+(fallback) must all be reachable from wherever this runs.
+
+**Important:** many shared/managed PHP hosting plans only allow outbound
+traffic on ports 80/443 and block everything else, including 8333 -- in
+that case the P2P crawl step will simply never connect to any peer (DNS
+sampling still works fine, since that's port 53/normal DNS resolution, and
+GeoIP still works since that's plain HTTPS). If `stats-api` reports it can
+resolve DNS and GeoIP but every P2P connection times out, that's almost
+certainly this, not a bug -- run `stats-api` on a host that allows
+outbound TCP on arbitrary ports (a regular VPS, or the same box as any
+node you already run) instead.
+
+(An earlier version used ip-api.com for GeoIP, but that turned out to be
+unreachable -- connections just timed out -- from at least one real
+deployment, likely an IP-range block on their end against hosting/cloud
+providers; ipwho.is and ipapi.co were confirmed working from that same
+server instead.)
 
 ## Configuration (environment variables, all optional)
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SEED_HOST` | `seeder.eleknet.org` | the DNS seed hostname to query |
+| `SEED_HOST` | `seeder.eleknet.org,seed0.eleknet.org` | comma-separated DNS seed hostname(s) to query |
+| `EXTRA_SEED_HOSTS` | `node1.elektron-net.org,node2.elektron-net.org` | comma-separated always-on bootstrap hostnames used as extra crawl roots |
 | `DNS_QUERY_ROUNDS` | `6` | repeated DNS queries per request |
 | `DNS_QUERY_DELAY_MS` | `400` | delay between DNS rounds, in ms |
 | `P2P_PORT` | `8333` | default P2P port for peers without one specified |

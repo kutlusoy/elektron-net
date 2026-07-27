@@ -1,0 +1,16 @@
+{
+  "name": "elektron-nodemap-worker",
+  "version": "1.0.0",
+  "description": "Elektron Net node map backend, running as a Cloudflare Worker.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node test/protocol.test.mjs && node test/crawl.test.mjs && node test/snapshot.test.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "license": "ISC",
+  "devDependencies": {
+    "wrangler": "^4.114.0"
+  }
+}

@@ -11,6 +11,19 @@ function check(bool $cond, string $msg): void {
     if (!$cond) { echo "FAIL: $msg\n"; $failures++; }
 }
 
+echo "--- sample_seed_ips() across multiple seeder hostnames ---\n";
+$GLOBALS['SEEDER_STATS_DNS_FETCHER'] = function (string $host) {
+    return match ($host) {
+        'seeder.fake' => ['203.0.113.10'],
+        'seed0.fake' => ['203.0.113.11'],
+        default => [],
+    };
+};
+$multiHostIps = sample_seed_ips(['seeder.fake', 'seed0.fake'], 1, 0);
+sort($multiHostIps);
+check($multiHostIps === ['203.0.113.10', '203.0.113.11'], "sample_seed_ips merges results across multiple hostnames, got " . json_encode($multiHostIps));
+unset($GLOBALS['SEEDER_STATS_DNS_FETCHER']);
+
 // ============================================================================
 // Low-level P2P wire-format round trips
 // ============================================================================
@@ -118,7 +131,7 @@ $fakePeers = [
 $GLOBALS['SEEDER_STATS_P2P_FETCHER'] = fn(string $ip, int $port) => $fakePeers[$ip] ?? null;
 
 // Round 1: only the root is known, so only the root gets crawled this round.
-$store = advance_crawl('fake.seed', 1, 0, $storePath, 30, 8333, 8, 12, 1.0, 1.0);
+$store = advance_crawl(['fake.seed'], [], 1, 0, $storePath, 30, 8333, 8, 12, 1.0, 1.0);
 check(isset($store['203.0.113.1']) && $store['203.0.113.1']['depth'] === 0, "root at depth 0");
 check(isset($store['203.0.113.2']) && $store['203.0.113.2']['depth'] === 1, "peer 'a' discovered at depth 1");
 check(isset($store['203.0.113.3']) && $store['203.0.113.3']['depth'] === 1, "peer 'b' discovered at depth 1");
@@ -127,8 +140,23 @@ check($store['203.0.113.1']['subver'] === '/root:1.0/', "root subver recorded");
 
 // Round 2: 'a' and 'b' are now known (never crawled -> highest priority),
 // so this round crawls them and should discover 'c' via 'a'.
-$store = advance_crawl('fake.seed', 1, 0, $storePath, 30, 8333, 8, 12, 1.0, 1.0);
+$store = advance_crawl(['fake.seed'], [], 1, 0, $storePath, 30, 8333, 8, 12, 1.0, 1.0);
 check(isset($store['203.0.113.4']) && $store['203.0.113.4']['depth'] === 2, "peer 'c' discovered at depth 2 via 'a' after round 2");
+
+echo "\n--- extra seed hosts become depth-0 roots too ---\n";
+$storePath2 = $tmpDir . '/known-peers-extra.json';
+$GLOBALS['SEEDER_STATS_DNS_FETCHER'] = function (string $host) {
+    return match ($host) {
+        'fake.seed' => ['203.0.113.1'],
+        'node1.fake' => ['198.51.100.1'],
+        'node2.fake' => ['198.51.100.2'],
+        default => [],
+    };
+};
+$GLOBALS['SEEDER_STATS_P2P_FETCHER'] = fn(string $ip, int $port) => null; // unreachable is fine for this check
+$store2 = advance_crawl(['fake.seed'], ['node1.fake', 'node2.fake'], 1, 0, $storePath2, 30, 8333, 8, 12, 1.0, 1.0);
+check(isset($store2['198.51.100.1']) && $store2['198.51.100.1']['depth'] === 0, "extra seed host node1.fake resolved to a depth-0 root");
+check(isset($store2['198.51.100.2']) && $store2['198.51.100.2']['depth'] === 0, "extra seed host node2.fake resolved to a depth-0 root");
 
 unset($GLOBALS['SEEDER_STATS_DNS_FETCHER'], $GLOBALS['SEEDER_STATS_P2P_FETCHER']);
 

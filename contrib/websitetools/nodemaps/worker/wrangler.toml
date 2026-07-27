@@ -1,0 +1,27 @@
+name = "elektron-nodemap"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+# Runs the discovery + snapshot pass every 5 minutes (288/day) -- visitor
+# page loads (the fetch() handler) never trigger this work themselves, they
+# only read the already-built snapshot from KV, so this cadence is about
+# crawl progress, not about spending request budget on visitors. The
+# expensive GeoIP-heavy snapshot rebuild step stays independently throttled
+# by REFRESH_SECONDS (in src/index.js), so it doesn't run on every tick.
+# Confirmed safe against the Cloudflare free plan's limits: ~330-480 KV
+# writes/day (cap is 1,000/day) and 288 Worker invocations/day (cap is
+# 100,000/day).
+[triggers]
+crons = ["*/5 * * * *"]
+
+# Create this KV namespace once (`wrangler kv namespace create NODEMAP_KV`,
+# or via the dashboard: Workers & Pages -> KV -> Create namespace), then
+# replace the id below with the one it prints out.
+[[kv_namespaces]]
+binding = "NODEMAP_KV"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+[vars]
+SEED_HOST = "seeder.eleknet.org,seed0.eleknet.org"
+EXTRA_SEED_HOSTS = "node1.elektron-net.org,node2.elektron-net.org"
+CORS_ORIGIN = "*"

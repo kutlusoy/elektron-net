@@ -29,7 +29,16 @@
  *   php index.php --cron
  *
  * Configuration is via environment variables, all optional:
- *   SEED_HOST            DNS seed hostname to query           (default: seeder.eleknet.org)
+ *   SEED_HOST            comma-separated DNS seed hostname(s) to query
+ *                        (default: seeder.eleknet.org,seed0.eleknet.org)
+ *   EXTRA_SEED_HOSTS     comma-separated list of additional always-on
+ *                        bootstrap nodes to use as extra crawl roots (not
+ *                        queried via the seeder's rotating-answer protocol,
+ *                        just a plain hostname -> IP lookup) -- well-known
+ *                        main nodes that every normal client also connects
+ *                        to tend to have far richer peer lists than a
+ *                        small/young node, making them good crawl starting
+ *                        points          (default: node1.elektron-net.org,node2.elektron-net.org)
  *   DNS_QUERY_ROUNDS     repeated DNS queries per request, to sample more
  *                        of the seeder's rotating answer set   (default: 6)
  *   DNS_QUERY_DELAY_MS   delay between DNS rounds, in ms       (default: 400)
@@ -53,7 +62,12 @@
 
 declare(strict_types=1);
 
-$seedHost           = getenv('SEED_HOST') ?: 'seeder.eleknet.org';
+$seedHosts           = array_filter(array_map('trim', explode(',',
+    getenv('SEED_HOST') !== false ? getenv('SEED_HOST') : 'seeder.eleknet.org,seed0.eleknet.org'
+)));
+$extraSeedHosts      = array_filter(array_map('trim', explode(',',
+    getenv('EXTRA_SEED_HOSTS') !== false ? getenv('EXTRA_SEED_HOSTS') : 'node1.elektron-net.org,node2.elektron-net.org'
+)));
 $dnsQueryRounds      = (int)(getenv('DNS_QUERY_ROUNDS') ?: 6);
 $dnsQueryDelayMs     = (int)(getenv('DNS_QUERY_DELAY_MS') ?: 400);
 $p2pPort             = (int)(getenv('P2P_PORT') ?: 8333);
@@ -96,18 +110,36 @@ function fetch_seed_ips_once(string $host): array {
 }
 
 /**
- * Samples the seed hostname repeatedly (a single DNS answer only carries a
- * rotating subset of the seeder's known-good peers) and returns the union
- * of every IP seen across all rounds.
+ * Samples one or more seeder hostnames repeatedly (a single DNS answer only
+ * carries a rotating subset of a seeder's known-good peers) and returns the
+ * union of every IP seen across all rounds and all seeders.
  */
-function sample_seed_ips(string $host, int $rounds, int $delayMs): array {
+function sample_seed_ips(array $hosts, int $rounds, int $delayMs): array {
     $seen = [];
     for ($i = 0; $i < max(1, $rounds); $i++) {
-        foreach (fetch_seed_ips_once($host) as $ip) {
-            $seen[$ip] = true;
+        foreach ($hosts as $host) {
+            foreach (fetch_seed_ips_once($host) as $ip) {
+                $seen[$ip] = true;
+            }
         }
         if ($i < $rounds - 1 && $delayMs > 0) {
             usleep($delayMs * 1000);
+        }
+    }
+    return array_keys($seen);
+}
+
+/**
+ * Resolves a handful of well-known, always-on bootstrap hostnames (a plain
+ * A/AAAA lookup, not the seeder's rotating-answer protocol) to use as
+ * additional crawl roots. These tend to have far richer peer lists than a
+ * small/young node, since every normal client connects to them too.
+ */
+function resolve_extra_seed_ips(array $hosts): array {
+    $seen = [];
+    foreach ($hosts as $host) {
+        foreach (fetch_seed_ips_once($host) as $ip) {
+            $seen[$ip] = true;
         }
     }
     return array_keys($seen);
@@ -376,7 +408,7 @@ function atomic_write(string $path, string $contents): void {
  * not seen in over $staleAfterDays days.
  */
 function advance_crawl(
-    string $seedHost, int $dnsRounds, int $dnsDelayMs,
+    array $seedHosts, array $extraSeedHosts, int $dnsRounds, int $dnsDelayMs,
     string $peersStorePath, int $staleAfterDays,
     int $p2pPort, int $maxDepth, int $maxPeersPerRun,
     float $connectTimeout, float $totalTimeout
@@ -384,7 +416,11 @@ function advance_crawl(
     $now = time();
     $store = load_json_file($peersStorePath);
 
-    foreach (sample_seed_ips($seedHost, $dnsRounds, $dnsDelayMs) as $ip) {
+    $roots = array_merge(
+        sample_seed_ips($seedHosts, $dnsRounds, $dnsDelayMs),
+        resolve_extra_seed_ips($extraSeedHosts)
+    );
+    foreach (array_unique($roots) as $ip) {
         if (!isset($store[$ip])) {
             $store[$ip] = ['firstSeen' => $now, 'depth' => 0];
         } else {
@@ -407,7 +443,17 @@ function advance_crawl(
         $result = crawl_peer_once($ip, $port, $connectTimeout, $totalTimeout);
         $store[$ip]['lastCrawled'] = $now;
 
-        if ($result === null) continue; // unreachable this round; keep as known, just don't refresh lastSeen
+        if ($result === null) {
+            $store[$ip]['lastCrawlOk'] = false;
+            error_log("[seeder-stats] P2P crawl of $ip:$port failed (no TCP connect or no version handshake within timeout)");
+            continue; // unreachable this round; keep as known, just don't refresh lastSeen
+        }
+
+        $store[$ip]['lastCrawlOk'] = true;
+        $store[$ip]['lastCrawlAddrCount'] = count($result['addresses']);
+        if (count($result['addresses']) === 0) {
+            error_log("[seeder-stats] P2P crawl of $ip:$port: handshake OK, subver=\"{$result['subver']}\", but getaddr returned 0 addresses (peer's own known-peer count is likely still below Bitcoin Core's 23%-of-addrman response floor)");
+        }
 
         $store[$ip]['lastSeen'] = $now;
         $store[$ip]['services'] = $result['services'];
@@ -612,7 +658,7 @@ $forceRebuild = $isCli && in_array('--cron', $argv ?? [], true);
 try {
     // Peer discovery advances on every single call, cron or not.
     $store = advance_crawl(
-        $seedHost, $dnsQueryRounds, $dnsQueryDelayMs,
+        $seedHosts, $extraSeedHosts, $dnsQueryRounds, $dnsQueryDelayMs,
         $peersStorePath, $staleAfterDays,
         $p2pPort, $crawlMaxDepth, $crawlMaxPeersPerRun,
         $crawlConnectTimeout, $crawlTotalTimeout

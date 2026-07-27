@@ -220,6 +220,46 @@
     font-size: 12px;
   }
   .crow .flag { font-size: 15px; line-height: 1; }
+  .flag-img {
+    width: 20px; height: 15px;
+    object-fit: cover;
+    border-radius: 2px;
+    box-shadow: 0 0 4px rgba(34,231,255,0.35);
+    vertical-align: middle;
+    flex-shrink: 0;
+  }
+  .crow .flag-img { width: 18px; height: 13px; }
+  .flag-fallback { font-size: 14px; }
+
+  /* Network-type filter chips (IPv4 / IPv6 / Tor / I2P / CJDNS) */
+  .nettoggles {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .nettoggle {
+    display: flex; align-items: center; gap: 5px;
+    background: #060b16;
+    border: 1px solid var(--border);
+    color: var(--dim);
+    font-family: var(--font-ui);
+    font-size: 10.5px;
+    letter-spacing: 0.04em;
+    border-radius: 20px;
+    padding: 4px 9px;
+    cursor: pointer;
+    transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  }
+  .nettoggle .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); }
+  .nettoggle .n {
+    font-family: var(--font-data);
+    font-variant-numeric: tabular-nums;
+  }
+  .nettoggle:hover { background: #0f1d34; }
+  .nettoggle.on { color: var(--node-color, var(--cyan)); border-color: var(--node-color, var(--cyan-dim)); }
+  .nettoggle.on .dot { background: var(--node-color, var(--cyan)); box-shadow: 0 0 5px var(--node-color, var(--cyan)); }
+  .nettoggle.off { opacity: 0.5; }
+  .nettoggle.off .dot { background: var(--dim); }
   .crow .name {
     flex: 1;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -247,18 +287,19 @@
     line-height: 1.5;
   }
 
-  /* Custom node marker (Leaflet divIcon) */
+  /* Custom node marker (Leaflet divIcon) -- color set per-instance via the
+     --node-color custom property (see NETWORK_COLORS in the script). */
   .node-marker { position: relative; width: 1px; height: 1px; }
   .node-marker .core {
     position: absolute; top: -3px; left: -3px;
     width: 6px; height: 6px; border-radius: 50%;
-    background: var(--cyan);
-    box-shadow: 0 0 6px var(--cyan), 0 0 14px rgba(34,231,255,0.7);
+    background: var(--node-color, var(--cyan));
+    box-shadow: 0 0 6px var(--node-color, var(--cyan)), 0 0 14px var(--node-color, var(--cyan));
   }
   .node-marker .ring {
     position: absolute; top: -10px; left: -10px;
     width: 20px; height: 20px; border-radius: 50%;
-    border: 1px solid var(--cyan);
+    border: 1px solid var(--node-color, var(--cyan));
     opacity: 0;
     animation: ping 2.6s ease-out infinite;
   }
@@ -267,6 +308,21 @@
     80%  { opacity: 0; transform: scale(1.6); }
     100% { opacity: 0; transform: scale(1.6); }
   }
+
+  /* Connection lines between a peer and its hub/discoverer -- animated
+     dashes give the impression of data flowing outward from hub nodes,
+     combined with a pulsing glow so the whole web reads as "alive". */
+  .edge-line {
+    stroke-dasharray: 8 6;
+    animation: edgeflow 1.2s linear infinite, edgepulse 2.4s ease-in-out infinite;
+  }
+  @keyframes edgeflow { to { stroke-dashoffset: -28; } }
+  @keyframes edgepulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+
+  /* Decorative golden web connecting every mappable node to every other
+     one, underneath the real/hub connection lines -- purely cosmetic. */
+  .mesh-line { pointer-events: none; }
+
   .leaflet-tooltip.node-tooltip {
     background: var(--panel-solid);
     color: var(--ink);
@@ -280,11 +336,13 @@
   .popup-body { font-family: var(--font-data); font-size: 11.5px; line-height: 1.6; }
   .popup-body .p-ip { color: var(--cyan); font-weight: 700; }
   .popup-body .p-flag { font-size: 14px; }
+  .popup-body .p-net { font-weight: 700; }
 
   @media (prefers-reduced-motion: reduce) {
     .scanline { animation: none; opacity: 0.4; }
     .node-marker .ring { animation: none; opacity: 0.3; }
     .livedot { animation: none; }
+    .edge-line { animation: none; }
   }
 
   @media (max-width: 820px) {
@@ -326,6 +384,7 @@
 </div>
 
 <div class="sidepanel">
+  <div class="nettoggles" id="netToggles"></div>
   <h2>Nodes by country</h2>
   <div class="countrylist" id="countryList">
     <div class="empty-note">No data yet &mdash; enter the stats API URL above and click connect.</div>
@@ -344,11 +403,31 @@
   const els = {
     apiBase: $("apiBase"), connectBtn: $("connectBtn"), refreshBtn: $("refreshBtn"),
     statusChip: $("statusChip"), nodeCount: $("nodeCount"), knownSub: $("knownSub"),
-    countryList: $("countryList"),
+    countryList: $("countryList"), netToggles: $("netToggles"),
   };
 
-  let map, markerLayer;
+  let map, markerLayer, edgeLayer, meshLayer;
   let pollTimer = null;
+  let lastData = null;
+
+  const NETWORK_ORDER = ["ipv4", "ipv6", "tor", "i2p", "cjdns"];
+  const NETWORK_META = {
+    ipv4: { label: "IPv4", mappable: true, color: "#7bff7a" },
+    ipv6: { label: "IPv6", mappable: true, color: "#22e7ff" },
+    tor: { label: "Tor", mappable: false, color: "#ff9f40" },
+    i2p: { label: "I2P", mappable: false, color: "#ff3ec9" },
+    cjdns: { label: "CJDNS", mappable: false, color: "#ffe066" },
+  };
+  const NET_STORAGE_KEY = "elektron_nodemap_networks";
+  let enabledNetworks = new Set(NETWORK_ORDER);
+  try {
+    const saved = JSON.parse(localStorage.getItem(NET_STORAGE_KEY) || "null");
+    if (Array.isArray(saved) && saved.length) enabledNetworks = new Set(saved);
+  } catch (e) { /* ignore malformed stored state */ }
+
+  function networkOf(n) {
+    return n.network || (n.ip && n.ip.includes(":") ? "ipv6" : "ipv4");
+  }
 
   function initMap() {
     map = L.map("map", {
@@ -365,21 +444,47 @@
       maxZoom: 19,
     }).addTo(map);
 
+    // meshLayer (the decorative golden all-to-all web) sits beneath the
+    // real/hub connection lines, which sit beneath the markers.
+    meshLayer = L.layerGroup().addTo(map);
+    edgeLayer = L.layerGroup().addTo(map);
     markerLayer = L.layerGroup().addTo(map);
   }
 
   function normalizeBase(v) { return v.trim().replace(/\/+$/, ""); }
+
+  /**
+   * Quadratic-bezier arc between two [lat,lon] points, bent perpendicular
+   * to the straight line between them -- gives connection lines a slight
+   * "rising off the globe" curve instead of a flat straight segment, like
+   * typical flight-path visualizations.
+   */
+  function arcLatLngs(a, b, bend, segments) {
+    const [lat1, lon1] = a, [lat2, lon2] = b;
+    const dLon = lon2 - lon1, dLat = lat2 - lat1;
+    const ctrlLat = (lat1 + lat2) / 2 - dLon * bend;
+    const ctrlLon = (lon1 + lon2) / 2 + dLat * bend;
+    const pts = [];
+    for (let i = 0; i <= segments; i++) {
+      const t = i / segments;
+      const mt = 1 - t;
+      pts.push([
+        mt * mt * lat1 + 2 * mt * t * ctrlLat + t * t * lat2,
+        mt * mt * lon1 + 2 * mt * t * ctrlLon + t * t * lon2,
+      ]);
+    }
+    return pts;
+  }
 
   function setStatus(kind, text) {
     els.statusChip.className = "status-chip" + (kind ? " " + kind : "");
     els.statusChip.textContent = text;
   }
 
-  function countryFlag(code) {
-    if (!code || code.length !== 2) return "🏳️";
-    const A = 0x1F1E6;
-    const chars = code.toUpperCase().split("").map((c) => String.fromCodePoint(A + (c.charCodeAt(0) - 65)));
-    return chars.join("");
+  function flagImgHtml(code) {
+    if (!code || code.length !== 2) return '<span class="flag-fallback">🏳️</span>';
+    const cc = code.toLowerCase();
+    return `<img class="flag-img" src="https://flagcdn.com/24x18/${cc}.png" srcset="https://flagcdn.com/48x36/${cc}.png 2x" width="24" height="18" alt="${escapeHtml(code)}" loading="lazy">`;
   }
 
   function animateCount(el, to) {
@@ -396,18 +501,71 @@
   }
 
   function renderNodes(data) {
-    markerLayer.clearLayers();
+    lastData = data;
+    applyFilterAndRender();
+  }
 
-    const nodes = Array.isArray(data.nodes) ? data.nodes : [];
-    for (const n of nodes) {
+  const MESH_COLOR = "#ffd24d";
+  const MESH_MAX_NODES = 40; // skip the decorative full mesh above this many mappable nodes -- O(n^2) lines otherwise
+
+  function applyFilterAndRender() {
+    if (!lastData) return;
+    markerLayer.clearLayers();
+    edgeLayer.clearLayers();
+    meshLayer.clearLayers();
+
+    const nodes = Array.isArray(lastData.nodes) ? lastData.nodes : [];
+    const filtered = nodes.filter((n) => enabledNetworks.has(networkOf(n)));
+
+    // Keyed by ip -- for ipv4/ipv6 that's the same identifier a `parent`
+    // field points at, so this doubles as the lookup for drawing edges.
+    const mappableByIp = new Map();
+    for (const n of filtered) {
+      if (typeof n.lat === "number" && typeof n.lon === "number" && n.ip) mappableByIp.set(n.ip, n);
+    }
+
+    // Decorative golden web connecting every mappable node to every other
+    // one, independent of the real/hub connection lines drawn below.
+    const mappableList = [...mappableByIp.values()];
+    if (mappableList.length <= MESH_MAX_NODES) {
+      for (let i = 0; i < mappableList.length; i++) {
+        for (let j = i + 1; j < mappableList.length; j++) {
+          const a = mappableList[i], b = mappableList[j];
+          L.polyline(arcLatLngs([a.lat, a.lon], [b.lat, b.lon], 0.12, 24), {
+            color: MESH_COLOR, weight: 1, opacity: 0.15, className: "mesh-line",
+          }).addTo(meshLayer);
+        }
+      }
+    }
+    // Hub nodes (the seeded depth-0 roots) always get a line drawn to them
+    // from every other visible node, even when the real discoverer (`parent`)
+    // isn't known -- e.g. for peers first seen before parent-tracking existed,
+    // or simply never re-discovered since. This guarantees a fully connected,
+    // always-visible web instead of one that depends entirely on having
+    // exact discovery data for every single peer.
+    const hubs = [...mappableByIp.values()].filter((h) => (h.depth ?? 0) === 0);
+    function nearestHub(n) {
+      let best = null, bestD = Infinity;
+      for (const h of hubs) {
+        if (h.ip === n.ip) continue;
+        const d = (h.lat - n.lat) ** 2 + (h.lon - n.lon) ** 2;
+        if (d < bestD) { bestD = d; best = h; }
+      }
+      return best;
+    }
+
+    for (const n of filtered) {
       if (typeof n.lat !== "number" || typeof n.lon !== "number") continue;
+      const net = networkOf(n);
+      const color = (NETWORK_META[net] || NETWORK_META.ipv4).color;
       const icon = L.divIcon({
         className: "",
-        html: '<div class="node-marker"><span class="ring"></span><span class="core"></span></div>',
+        html: `<div class="node-marker" style="--node-color:${color}"><span class="ring"></span><span class="core"></span></div>`,
         iconSize: [1, 1],
       });
       const marker = L.marker([n.lat, n.lon], { icon });
-      const flag = countryFlag(n.countryCode);
+      const flag = flagImgHtml(n.countryCode);
+      const netLabel = (NETWORK_META[net] || NETWORK_META.ipv4).label;
       const extra = [];
       if (n.subver) extra.push(escapeHtml(n.subver));
       if (typeof n.startHeight === "number") extra.push(`height ${n.startHeight}`);
@@ -415,8 +573,8 @@
 
       marker.bindTooltip(
         '<div class="popup-body">' +
-        `<div class="p-ip">${escapeHtml(n.ip)}</div>` +
-        `<span class="p-flag">${flag}</span> ${escapeHtml(n.country || "Unknown")}<br>` +
+        `<div class="p-ip">${escapeHtml(n.ip || n.address || "")}</div>` +
+        `<span class="p-net" style="color:${color}">${netLabel}</span> &middot; ${flag} ${escapeHtml(n.country || "Unknown")}<br>` +
         (extra.length ? extra.join(" &middot; ") + "<br>" : "") +
         `first seen: ${formatSeen(n.firstSeen)}<br>` +
         `last seen: ${formatSeen(n.lastSeen)}` +
@@ -424,24 +582,65 @@
         { className: "node-tooltip", direction: "top", offset: [0, -8], sticky: true }
       );
       marker.addTo(markerLayer);
+
+      // Connection line: prefer the real discoverer (`parent`) when it's
+      // known and currently shown on the map; otherwise fall back to the
+      // nearest hub node, so every non-hub node always gets a line.
+      let parent = n.parent ? mappableByIp.get(n.parent) : null;
+      if (!parent && (n.depth ?? 0) !== 0) parent = nearestHub(n);
+      if (parent && parent.ip !== n.ip) {
+        const line = L.polyline(arcLatLngs([parent.lat, parent.lon], [n.lat, n.lon], 0.12, 24), {
+          color, weight: 1.5, opacity: 0.7, className: "edge-line",
+        });
+        line.addTo(edgeLayer);
+        const el = line.getElement ? line.getElement() : line._path;
+        if (el) el.style.filter = `drop-shadow(0 0 4px ${color})`;
+      }
     }
 
-    animateCount(els.nodeCount, data.onlineCount ?? nodes.length);
-    els.knownSub.textContent = `of ${data.totalKnown ?? "—"} known`;
+    animateCount(els.nodeCount, filtered.length);
+    els.knownSub.textContent = `of ${lastData.totalKnown ?? "—"} known`;
 
-    renderCountries(Array.isArray(data.countries) ? data.countries : []);
+    const countryCounts = {};
+    for (const n of filtered) {
+      if (!n.countryCode) continue;
+      if (!countryCounts[n.countryCode]) countryCounts[n.countryCode] = { code: n.countryCode, name: n.country, count: 0 };
+      countryCounts[n.countryCode].count++;
+    }
+    renderCountries(Object.values(countryCounts).sort((a, b) => b.count - a.count));
+
+    const networkCounts = lastData.networkCounts || nodes.reduce((acc, n) => {
+      const net = networkOf(n);
+      acc[net] = (acc[net] || 0) + 1;
+      return acc;
+    }, {});
+    renderNetToggles(networkCounts);
+  }
+
+  function renderNetToggles(counts) {
+    // Always render all known categories, regardless of their current count
+    // or on/off state -- a toggled-off (or momentarily zero-count) chip must
+    // stay clickable so it can be turned back on, never disappear.
+    els.netToggles.innerHTML = NETWORK_ORDER.map((net) => {
+      const meta = NETWORK_META[net];
+      const n = counts[net] ?? 0;
+      const on = enabledNetworks.has(net);
+      const title = meta.mappable ? "Shown on the map" : "Not mappable — count/filter only";
+      return `<button type="button" class="nettoggle ${on ? "on" : "off"}" data-net="${net}" style="--node-color:${meta.color}" title="${escapeHtml(title)}">` +
+        `<span class="dot"></span>${meta.label} <span class="n">${n}</span></button>`;
+    }).join("");
   }
 
   function renderCountries(countries) {
     if (!countries.length) {
-      els.countryList.innerHTML = '<div class="empty-note">No geolocated nodes yet.</div>';
+      els.countryList.innerHTML = '<div class="empty-note">No matching nodes to show.</div>';
       return;
     }
     const max = Math.max(...countries.map((c) => c.count));
     els.countryList.innerHTML = countries.map((c) => {
       const pct = Math.max(6, Math.round((c.count / max) * 100));
       return `<div class="crow">
-        <span class="flag">${countryFlag(c.code)}</span>
+        ${flagImgHtml(c.code)}
         <span class="name">${escapeHtml(c.name || c.code)}</span>
         <span class="count">${c.count}</span>
         <span class="bar" style="width:${pct}%"></span>
@@ -485,16 +684,21 @@
   els.connectBtn.addEventListener("click", start);
   els.refreshBtn.addEventListener("click", refresh);
   els.apiBase.addEventListener("keydown", (e) => { if (e.key === "Enter") start(); });
+  els.netToggles.addEventListener("click", (e) => {
+    const btn = e.target.closest(".nettoggle");
+    if (!btn) return;
+    const net = btn.dataset.net;
+    if (enabledNetworks.has(net)) enabledNetworks.delete(net); else enabledNetworks.add(net);
+    localStorage.setItem(NET_STORAGE_KEY, JSON.stringify([...enabledNetworks]));
+    applyFilterAndRender();
+  });
 
   initMap();
 
-  // Only ever pre-fill with a previously saved, real URL -- never a made-up
-  // example, so this field can't be mistaken for a working default.
+  const DEFAULT_API_BASE = "https://nodemap.kutlusoy.workers.dev";
   const saved = localStorage.getItem("elektron_seeder_stats_base");
-  if (saved) {
-    els.apiBase.value = saved;
-    start();
-  }
+  els.apiBase.value = saved || DEFAULT_API_BASE;
+  start();
 })();
 </script>
 </body>
