@@ -292,7 +292,29 @@ A block body can be discarded once its rules were checked at connect time. The *
 **Stated claim:** At checkpoint intervals, nodes write UTXO snapshot files (`.dat` + `.hash`); new or lagged nodes can bootstrap the *present* coin set without downloading pruned bodies.
 
 **Argumentation:**  
-Headers give lineage; attestation gives continuous state binding; **snapshots** give a practical *bootstrap artifact* for the UTXO set at checkpoint heights so a node need not replay 137 days of bodies that peers no longer serve. Content hash checks reduce “blind file” trust; **subsequent blocks’ attestations** are the live cross-check — a wrong UTXO view fails on the next honest block (`bad-utxo-attestation`). Availability of snapshot servers is operational; correctness under honest consensus is cryptographic/consensus-path.
+Headers give lineage; attestation gives continuous state binding; **snapshots** give a practical *bootstrap artifact* for the UTXO set at checkpoint heights so a node need not replay 137 days of bodies that peers no longer serve. Content hash checks reduce “blind file” trust; **subsequent blocks’ attestations** are the live cross-check.
+
+#### Wrong snapshot → self-isolation (not chain capture)
+
+**Project argument (verify in code, do not treat as a closed audit verdict):**
+
+1. A node that activates a **false but self-consistent** UTXO snapshot (file matches its own `.hash`) does **not** rewrite the honest network tip.  
+2. On the next **honest** block from the real chain, local UTXO attestation recomputation diverges from the coinbase commitment → block rejected (`bad-utxo-attestation` / related paths).  
+3. That node **fails to follow the network** and **isolates itself** (stalls on the poisoned view or only extends a private invalid fork). Honest peers are not pulled onto the bad state: they already share the work-weighted header chain and matching coin sets.  
+4. Under the working assumption that **remaining snapshot-serving nodes are clean** (honest software, correct checkpoint snapshots), the misaligned joiner is the outlier — the same outcome as any peer that violates consensus and is left behind.  
+5. **PoW energy is bound into the snapshot’s place in history.** A checkpoint snapshot is not free-floating: it is keyed to a **checkpoint block hash** that must sit on the **header chain**. That chain is the cumulative product of network PoW (miners) and ongoing validation (nodes). The full “weight” of past work is not discarded when bodies are pruned; it remains in the permanent header bloodline and in every later block built on those headers. A fabricated UTXO set does **not** fabricate alternate accumulated work.
+
+**Net effect claimed:**  
+Snapshot bootstrap is a **trust surface for joiners**, not a lever to stop or capture the running chain. Bad UTXO state under an honest tip **self-excludes** the misaligned node; clean nodes with good snapshots continue.
+
+**Residual review point (documented in-tree):**  
+Current code may still take the **first** `UTXOSNAPSHOT` peer’s advertised hash when starting a download (`dl.utxo_hash = utxo_hash`). That is a **bootstrap first-response race** for new nodes — see `doc-elektron/fix-report-snapshot-bootstrap-trust.md`. Separate clearly:
+
+| Question | Project-facing answer to stress-test |
+|----------|--------------------------------------|
+| Can a bad snapshot stop or rewrite the honest tip? | No — tip follows PoW + attestation among honest nodes |
+| Can one racing peer mis-lead a *fresh* joiner’s initial UTXO file? | Possible until multi-peer hash agreement (or equivalent) is implemented |
+| What happens to that joiner under an honest tip? | Self-isolation via `bad-utxo-attestation` |
 
 | Topic | Locations |
 |-------|-----------|
@@ -301,6 +323,8 @@ Headers give lineage; attestation gives continuous state binding; **snapshots** 
 | Content check | `PopulateAndValidateSnapshot` / `ActivateSnapshot` (`expected_utxo_hash`) |
 | Service bit | `NODE_SNAPSHOT` in `src/protocol.h` |
 | Request logic | `MaybeRequestSnapshot` in `src/net_processing.cpp` |
+| First-peer hash init | `UTXOSNAPSHOT` handler in `src/net_processing.cpp` |
+| Self-isolation path | `ValidateUTXOCheckpoint` → `bad-utxo-attestation` on later honest blocks |
 
 **P2P message type strings** (wire limit `MESSAGE_TYPE_SIZE == 12` in `src/protocol.h`):
 
@@ -316,11 +340,11 @@ Project docs describe a past bug where longer names overflowed the 12-byte type 
 **Trust questions for reviewers (open):**
 
 - What is verified at activation (sidecar presence, content hash, metadata base hash)?  
-- What is *not* compared (e.g. direct equality with checkpoint coinbase attestation, if docs say so)?  
-- What happens on the next block if the local UTXO view diverges (`bad-utxo-attestation` path)?  
-- How is snapshot *availability* guaranteed operationally vs cryptographically?
+- Confirm self-isolation: diverging UTXO vs honest tip → `bad-utxo-attestation` (joiner left behind, tip unaffected).  
+- How is snapshot *availability* among honest peers guaranteed operationally?  
+- Is multi-peer hash agreement implemented yet, or still only proposed in `fix-report-snapshot-bootstrap-trust.md`?
 
-See `doc-elektron/AUDIT_PRUNING_SNAPSHOT.md` for the project’s own scenario analysis.
+See `doc-elektron/AUDIT_PRUNING_SNAPSHOT.md` and `doc-elektron/fix-report-snapshot-bootstrap-trust.md`.
 
 ### Wallet recovery on pruned nodes
 
