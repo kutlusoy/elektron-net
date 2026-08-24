@@ -316,11 +316,38 @@ ChainstateLoadResult LoadChainstate(ChainstateManager& chainman, const CacheSize
         const bool any_chainstate_has_tip = std::any_of(
             chainman.m_chainstates.begin(), chainman.m_chainstates.end(),
             [](const auto& cs) { return cs->m_chain.Tip() != nullptr; });
+        // Elektron Net: one-shot guard, so this can never fire "willkürlich" (repeatedly
+        // / on its own initiative beyond a single automatic attempt). A marker file,
+        // separate per network subdirectory, records that an automatic restart already
+        // happened here; if a second occurrence is detected before the marker is
+        // cleared, this is no longer treated as the same, already-verified-recoverable
+        // situation -- something is unexpectedly still wrong even after a fresh reindex,
+        // so fail loudly and ask for manual investigation instead of restart-looping.
+        const fs::path auto_reindex_marker = chainman.m_options.datadir / ".elektron_auto_reindex_attempted";
         if (!any_chainstate_has_tip &&
             chainman.m_best_header->nHeight >= static_cast<int>(chainman.GetConsensus().MandatoryPruneDepth)) {
+            if (fs::exists(auto_reindex_marker)) {
+                return {ChainstateLoadStatus::FAILURE_FATAL, Untranslated(strprintf(
+                    "No chainstate has a usable local tip, and an automatic -reindex restart "
+                    "was already attempted once before (see %s) without resolving it. Not "
+                    "restarting again automatically -- this needs manual investigation. "
+                    "Delete that file to allow another automatic attempt, or restart manually "
+                    "with -reindex.",
+                    fs::PathToString(auto_reindex_marker)))};
+            }
+            FILE* marker{fsbridge::fopen(auto_reindex_marker, "w")};
+            if (marker) {
+                fputs(FormatISO8601DateTime(GetTime()).c_str(), marker);
+                fclose(marker);
+            }
             RestartWithReindex();
             // Only returns on failure (unsupported platform or exec error); fall
             // through to the existing failure path below in that case.
+        } else if (any_chainstate_has_tip && fs::exists(auto_reindex_marker)) {
+            // A real tip exists now (this restart recovered fine, whether via the
+            // automatic reindex above or otherwise) -- clear the marker so a genuinely
+            // new future occurrence gets its own one-shot attempt again.
+            fs::remove(auto_reindex_marker);
         }
     }
 
