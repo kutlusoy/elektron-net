@@ -398,6 +398,21 @@ Conclusion: no regression against the 2026-07-01/07-02 verification above. The m
 
 ---
 
+## 2026-08-24 (follow-up: offline/reconnect testing for already-synced nodes, two new bugs found)
+
+Extension of the same-day re-verification above, at the user's request: instead of only testing a brand-new node bootstrapping once, alternately take already-synced nodes offline for several checkpoint heights and reconnect them, to check that recovery also works for nodes that have synced before (not just fresh ones). Documentation only in this round -- neither bug below was fixed, by explicit decision.
+
+Setup: same three-node regtest, rebuilt with real pruning active this time (`-fastprune -prune=550` on the source node, so old blocks are genuinely deleted from disk rather than merely eligible for deletion -- without this, a node that fell behind just re-syncs the "pruned" blocks normally from a peer that in practice still has them, which does not exercise the automatic-snapshot recovery path at all).
+
+Three rounds: (1) Node B offline while the source mines past one more checkpoint, reconnect -- succeeded, including correctly rejecting its own stale local snapshot before fetching the current one from a peer. (2) Node C offline while the source mines past two more checkpoints, reconnect -- succeeded. (3) Both B and C offline simultaneously while the source mines past two more checkpoints, reconnected alternately (C first, then B) -- C recovered via a full `-reindex` workaround after hitting Bug 1 below; B hit Bug 2 below and never recovered without a manual kill and fresh resync.
+
+Two new, previously undocumented bugs found and written up separately (not fixed, per instruction):
+
+- `doc-elektron/fix-report-verifydb-pruned-undo-false-positive.md`: a node whose tip sits at (or within the last-6-blocks check window of) its own snapshot-bootstrap checkpoint height fails the standard startup sanity check with a false "Corrupted block database detected" and demands `-reindex` for what is actually a normal restart -- root cause pinned to `CVerifyDB::VerifyDB()` (`src/validation.cpp`) checking only `BLOCK_HAVE_DATA`, not `BLOCK_HAVE_UNDO`, before attempting a disconnect that needs undo data the snapshot-base block never had.
+- `doc-elektron/fix-report-snapshot-restart-deadlock.md`: a node that is itself running on a snapshot chainstate and falls behind by two or more checkpoints (not just one) while offline can hang permanently at `Pruning blockstore…` on every subsequent restart after its live snapshot-chainstate replacement is interrupted -- confirmed via gdb that the main thread is stuck waiting on `kernel_notifications.m_tip_block_cv` in `AppInitMain` (`src/init.cpp`) with no corresponding notification ever arriving. Root cause not yet pinned to a specific line; see the report for the two most likely call sites and recommended next steps.
+
+---
+
 ## Deferred (not part of this pass)
 
 - **Phase 4 (P2P protocol-version gate):** no `PROTOCOL_VERSION` bump or peer-disconnect-on-old-version behavior was added. The consensus cutover is height-only (mirrors the existing `MANDATORY_PRUNE_DEPTH` / `MinDifficultyActivationHeight` precedent), which the fix report already identifies as sufficient for correctness; the P2P gate is a pure UX nicety for a scenario (stale peers lingering post-activation) that the now-mature automatic-recovery machinery (stuck-chain recovery, fell-behind-prune-horizon recovery, wallet UTXO-scan retry) already covers more directly, on a small, directly-reachable operator base. Revisit only if that assumption changes.
