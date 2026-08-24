@@ -376,6 +376,28 @@ Rebuilt a wallet-enabled, test-enabled binary (`-DENABLE_WALLET=ON -DBUILD_TESTS
 
 ---
 
+## 2026-08-24 (v4.0.5 regression re-verification: three-node, multi-checkpoint bootstrap)
+
+Re-verification only, no code changes. Triggered by a request to confirm the automatic UTXO-snapshot bootstrap mechanism documented above still works, unmodified, on the current v4.0.5 build (`CMakeLists.txt` CLIENT_VERSION_BUILD=5, commit `cf60579`, "emergency activation release" -- unrelated to snapshot code), and to additionally cover two scenarios the 2026-07-01/07-02 rounds above did not: (a) a peer that stays connected and caught up while several checkpoints pass on the source node, and (b) a fresh node joining only after multiple checkpoints (not just the first) have already occurred, so only the latest snapshot is available.
+
+Setup: built `elektrond`/`elektron-cli` from current `main` (regtest, wallet on, IPC off with `-DENABLE_IPC=OFF` since Cap'n Proto is not installed in this environment; this only affects multiprocess mode, not the daemon binary under test). Three regtest nodes, default per-network activation heights unchanged (Muhash@50, IntraBlockAttestationFix@110, MandatoryPruneDepth@100):
+- Node A: mining node, `generatetoaddress` from genesis to height 505, crossing five checkpoints (100/200/300/400/500) plus both activation heights.
+- Node B: connected to A at height 20 and left running for the whole test; stayed in ordinary IBD/relay sync throughout (never itself far enough behind to trigger `MaybeRequestSnapshot()`), reaching height 505 in lockstep with A.
+- Node C: started only after A reached height 500 (so checkpoints 100 through 400 had already been superseded), connected to both A and B, no other configuration.
+
+Result: as designed, `WriteAutomaticSnapshot()` deletes superseded checkpoint files, keeping only the newest one on disk (confirmed: after A reached height 500, only `500-<hash>.dat` remained in `regtest/snapshots/`, the four earlier ones were logged as "Removed obsolete snapshot file"). Node C's `MaybeRequestSnapshot()` fired automatically on schedule (`header_height=500`, `tip_height=0`, gap 500 >= checkpoint_interval 100), sent `GETUTXOSNAPSHOT` for the height-500 checkpoint to both peers, downloaded and activated it (`[snapshot] successfully activated snapshot ... at height 500`) about 30 seconds after the request, with no manual RPC intervention. Post-activation, mining 5 more blocks on A propagated to B and C normally. Final state, all three nodes: `bestblockhash` and `gettxoutsetinfo muhash` identical bit-for-bit at height 505; no crash, no deadlock, and Node C did not get stuck reporting `blocks: 0` (the exact regression class that Bug 6, 2026-07-01 above, previously caused).
+
+Muhash attestation (active from height 50) and the IntraBlockAttestationFix (active from height 110) were both exercised incidentally by mining past them and produced no attestation errors or asserts on any of the three nodes.
+
+**Scope and limits of this re-verification (unchanged from the original rounds above):**
+- Regtest only, single machine, three local processes. Not run against the live public testnet or mainnet.
+- Mainnet still has not reached its first mandatory checkpoint (height 197280, ~137 days of blocks at the 60s target spacing; see `fix-report-snapshot-bootstrap-trust.md` for the same caveat) -- so this feature has still never executed the P2P bootstrap path on mainnet, and this test does not change that. Behavior identical to regtest is expected there given the code path is not network-specific beyond the per-network constants, but that expectation itself remains untested on mainnet.
+- The known trust gap from `fix-report-snapshot-bootstrap-trust.md` (a bootstrapping node accepts the first peer's advertised UTXO hash without cross-checking further peers or the on-chain coinbase attestation) is unaffected by this test and remains open; this round deliberately verified only that the existing mechanism still functions, not that gap.
+
+Conclusion: no regression against the 2026-07-01/07-02 verification above. The mechanism, unchanged in this pass, behaves identically under v4.0.5 with multiple sequential checkpoints already passed and a late-joining fresh node.
+
+---
+
 ## Deferred (not part of this pass)
 
 - **Phase 4 (P2P protocol-version gate):** no `PROTOCOL_VERSION` bump or peer-disconnect-on-old-version behavior was added. The consensus cutover is height-only (mirrors the existing `MANDATORY_PRUNE_DEPTH` / `MinDifficultyActivationHeight` precedent), which the fix report already identifies as sufficient for correctness; the P2P gate is a pure UX nicety for a scenario (stale peers lingering post-activation) that the now-mature automatic-recovery machinery (stuck-chain recovery, fell-behind-prune-horizon recovery, wallet UTXO-scan retry) already covers more directly, on a small, directly-reachable operator base. Revisit only if that assumption changes.
