@@ -34,25 +34,55 @@ using kernel::CacheSizes;
 
 namespace node {
 namespace {
+// Elektron Net: shared wording for the manual "delete and restart plainly" recovery
+// option, used across several messages below (both in RestartWithReindex() and the
+// one-shot-guard failure message in CompleteChainstateInitialization()). Building the
+// exact three directory paths here -- rather than a vague relative hint -- so the
+// message is directly actionable without the operator having to guess the datadir
+// layout. All three must be deleted together: leaving blocks/index/ in place means
+// chainman.m_best_header stays populated from it, so the node would just re-enter this
+// same automatic-restart logic instead of bootstrapping fresh like a brand-new node.
+std::string ManualDeleteHint(const fs::path& datadir)
+{
+    return strprintf(
+        "delete these three directories together: %s, %s, and %s (do not delete the "
+        "wallets/ directory or the configuration file), and then restart normally with "
+        "no special flags -- this makes the node bootstrap exactly like a brand-new node",
+        fs::PathToString(datadir / "blocks"),
+        fs::PathToString(datadir / "chainstate"),
+        fs::PathToString(datadir / "chainstate_snapshot"));
+}
+
 // Elektron Net: see doc-elektron/fix-report-snapshot-restart-deadlock.md. Restarts the
 // current process with -reindex appended, reusing the already-verified-reliable full
 // reindex recovery path (confirmed live in that report) instead of trying to patch
 // through a local chainstate state that mandatory pruning guarantees can never be
 // locally replayable again. Reads the original command line from /proc/self/cmdline
 // (Linux-specific); on any other platform, or if anything here fails, this simply
-// returns and leaves the existing (slower, requires manual -reindex) failure path to
-// run instead -- this is a best-effort convenience, never required for correctness.
-void RestartWithReindex()
+// returns and leaves the existing (slower, requires manual intervention) failure path
+// to run instead -- this is a best-effort convenience, never required for correctness.
+//
+// Deliberately Linux/macOS-only, not a gap left to close later: a native Windows
+// self-restart (GetCommandLineW/CommandLineToArgvW) was evaluated and rejected, since
+// it could only ever be verified by code review (no Windows toolchain in this
+// project's usual test environment), and an unverified process-replacing restart is
+// too risky to run unsupervised. Windows operators get a clear, actionable log message
+// with both manual recovery options instead -- see the WIN32 branch below.
+void RestartWithReindex(const fs::path& datadir)
 {
 #ifdef WIN32
-    LogWarning("[snapshot] Automatic -reindex restart is not supported on this platform; "
-               "please restart manually with -reindex.\n");
+    LogWarning("[snapshot] No chainstate has a usable local tip, and this network's "
+               "mandatory pruning means local replay cannot recover it. Automatic "
+               "-reindex restart is not supported on this platform -- please either "
+               "restart manually with -reindex, or stop the node and %s.\n",
+               ManualDeleteHint(datadir));
     return;
 #else
     std::ifstream cmdline_file("/proc/self/cmdline", std::ios::binary);
     if (!cmdline_file) {
         LogWarning("[snapshot] Could not read /proc/self/cmdline for automatic -reindex "
-                   "restart; please restart manually with -reindex.\n");
+                   "restart. Please either restart manually with -reindex, or stop the "
+                   "node and %s.\n", ManualDeleteHint(datadir));
         return;
     }
     std::vector<std::string> args;
@@ -69,7 +99,8 @@ void RestartWithReindex()
     if (!arg.empty()) args.push_back(arg);
     if (args.empty()) {
         LogWarning("[snapshot] Empty /proc/self/cmdline; cannot automatically restart "
-                   "with -reindex.\n");
+                   "with -reindex. Please either restart manually with -reindex, or "
+                   "stop the node and %s.\n", ManualDeleteHint(datadir));
         return;
     }
 
@@ -77,7 +108,11 @@ void RestartWithReindex()
         if (a == "-reindex" || a.rfind("-reindex=", 0) == 0) {
             // Already restarting with -reindex and still ended up here somehow --
             // don't loop forever, fall through to the normal failure path instead.
-            LogWarning("[snapshot] Already running with -reindex; not restarting again.\n");
+            // -reindex clearly didn't resolve it this time, so only offer the other
+            // recovery option here, not -reindex again.
+            LogWarning("[snapshot] Already running with -reindex; not restarting again. "
+                       "As an alternative, you can stop the node and %s.\n",
+                       ManualDeleteHint(datadir));
             return;
         }
     }
@@ -94,8 +129,9 @@ void RestartWithReindex()
 
     util::ExecVp("/proc/self/exe", const_cast<char* const*>(exec_args.data()));
     // Only reaches here if exec failed.
-    LogWarning("[snapshot] Failed to restart with -reindex (errno=%d); please restart "
-               "manually with -reindex.\n", errno);
+    LogWarning("[snapshot] Failed to restart with -reindex (errno=%d). Please either "
+               "restart manually with -reindex, or stop the node and %s.\n",
+               errno, ManualDeleteHint(datadir));
 #endif
 }
 } // namespace
@@ -331,16 +367,16 @@ ChainstateLoadResult LoadChainstate(ChainstateManager& chainman, const CacheSize
                     "No chainstate has a usable local tip, and an automatic -reindex restart "
                     "was already attempted once before (see %s) without resolving it. Not "
                     "restarting again automatically -- this needs manual investigation. "
-                    "Delete that file to allow another automatic attempt, or restart manually "
-                    "with -reindex.",
-                    fs::PathToString(auto_reindex_marker)))};
+                    "Delete that marker file to allow another automatic attempt, restart "
+                    "manually with -reindex, or stop the node and %s.",
+                    fs::PathToString(auto_reindex_marker), ManualDeleteHint(chainman.m_options.datadir)))};
             }
             FILE* marker{fsbridge::fopen(auto_reindex_marker, "w")};
             if (marker) {
                 fputs(FormatISO8601DateTime(GetTime()).c_str(), marker);
                 fclose(marker);
             }
-            RestartWithReindex();
+            RestartWithReindex(chainman.m_options.datadir);
             // Only returns on failure (unsupported platform or exec error); fall
             // through to the existing failure path below in that case.
         } else if (any_chainstate_has_tip && fs::exists(auto_reindex_marker)) {
