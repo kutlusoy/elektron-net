@@ -1,6 +1,6 @@
 # Fix Report: Node Hangs Permanently at Startup After a Live Snapshot-Chainstate Replacement Is Interrupted
 
-- **Version:** 0.2 (fix implemented and verified)
+- **Version:** 0.3 (fix implemented, verified, one-shot guard added, wallet/config preservation confirmed, retested at a different height across the full scenario matrix)
 - **Date:** August 24, 2026
 - **Audience:** Elektron Net core developers
 - **Reference implementation:** [`elektron-net`](https://github.com/kutlusoy/elektron-net) -- `src/init.cpp` (`MaybeActivateAutomaticSnapshot`, `AppInitMain`), `src/node/chainstate.cpp` (`LoadChainstate`, `RestartWithReindex`), `src/validation.cpp` (`Chainstate::LoadChainTip`, `Chainstate::LoadGenesisBlock`)
@@ -154,16 +154,47 @@ if (!options.wipe_chainstate_db && chainman.m_blockman.m_blockfiles_indexed && c
     const bool any_chainstate_has_tip = std::any_of(
         chainman.m_chainstates.begin(), chainman.m_chainstates.end(),
         [](const auto& cs) { return cs->m_chain.Tip() != nullptr; });
+    // Elektron Net: one-shot guard, so this can never fire "willkuerlich" (repeatedly
+    // / on its own initiative beyond a single automatic attempt). A marker file,
+    // separate per network subdirectory, records that an automatic restart already
+    // happened here; if a second occurrence is detected before the marker is
+    // cleared, this is no longer treated as the same, already-verified-recoverable
+    // situation -- something is unexpectedly still wrong even after a fresh reindex,
+    // so fail loudly and ask for manual investigation instead of restart-looping.
+    const fs::path auto_reindex_marker = chainman.m_options.datadir / ".elektron_auto_reindex_attempted";
     if (!any_chainstate_has_tip &&
         chainman.m_best_header->nHeight >= static_cast<int>(chainman.GetConsensus().MandatoryPruneDepth)) {
+        if (fs::exists(auto_reindex_marker)) {
+            return {ChainstateLoadStatus::FAILURE_FATAL, Untranslated(strprintf(
+                "No chainstate has a usable local tip, and an automatic -reindex restart "
+                "was already attempted once before (see %s) without resolving it. Not "
+                "restarting again automatically -- this needs manual investigation. "
+                "Delete that file to allow another automatic attempt, or restart manually "
+                "with -reindex.",
+                fs::PathToString(auto_reindex_marker)))};
+        }
+        FILE* marker{fsbridge::fopen(auto_reindex_marker, "w")};
+        if (marker) {
+            fputs(FormatISO8601DateTime(GetTime()).c_str(), marker);
+            fclose(marker);
+        }
         RestartWithReindex();
         // Only returns on failure (unsupported platform or exec error); falls
         // through to the pre-existing failure path below in that case.
+    } else if (any_chainstate_has_tip && fs::exists(auto_reindex_marker)) {
+        // A real tip exists now (this restart recovered fine, whether via the
+        // automatic reindex above or otherwise) -- clear the marker so a genuinely
+        // new future occurrence gets its own one-shot attempt again.
+        fs::remove(auto_reindex_marker);
     }
 }
 ```
 
 `chainman.m_best_header` reflects the best header this node has ever seen, persisted in the block index (never pruned, unlike bodies/coins) -- so this comparison works even though no chainstate has a usable tip to compare against directly. `!options.wipe_chainstate_db` guards against looping if a `-reindex` restart somehow still ends up here (it shouldn't, per the code comment in `src/init.cpp` naming reindex as one of the cases `LoadChainTip()` is expected to be skipped for safely).
+
+**One-shot guard, added after the initial verification below.** The user raised a valid concern: could this mechanism fire repeatedly, on its own, without bound? Without a guard, if the restart-with-reindex somehow didn't actually resolve the underlying problem (a scenario not observed in testing, but not provably impossible either), the node would loop forever, re-execing itself every time it hit this check again -- indistinguishable from a crash loop to any process supervisor. The marker file above makes this strictly one-shot per broken occurrence: first hit writes the marker and restarts; if the *same* broken state is still present on the very next boot (marker already exists), the node fails loudly with `FAILURE_FATAL` and a clear message instead of restarting again, and does not touch anything further. Once a chainstate has a real tip again (recovery succeeded, by this path or otherwise), the marker is cleared on the next healthy boot, so a genuinely new future occurrence still gets its own single automatic attempt -- this is not a permanent "give up" switch, just a guard against looping on the *same* unresolved occurrence.
+
+**`-reindex` never touches wallets or the config file.** Confirmed both by reading `-reindex`'s own `AddArg` help text in `src/init.cpp` ("chain state and block index... rebuild them from blk*.dat files on disk... If an assumeutxo snapshot was loaded, its chainstate will be wiped as well" -- no mention of wallets or config) and empirically: `wallets/` directory mtime and `bitcoin.conf` content were unchanged across the automatic-restart test in §7 below. This is expected -- reindex is pure block-index/chainstate rebuilding, the same operation an operator could trigger manually today, and this fix does not change what `-reindex` itself does or touches, only that it now gets triggered automatically in one specific, narrow, one-shot circumstance.
 
 **`RestartWithReindex()`** (new, anonymous-namespace helper, same file): reads the process's own original command line from `/proc/self/cmdline` (Linux-specific), appends `-reindex` if not already present, and calls `util::ExecVp("/proc/self/exe", argv)` -- the same cross-platform `execvp` wrapper (`src/util/exec.h`/`.cpp`) already used by the `bitcoin` wrapper binary (`src/bitcoin.cpp`) elsewhere in this codebase, not new platform-specific code. `execve`-family calls replace the process image in place (same PID), so from a process supervisor's perspective this looks like the daemon continuing to run, not restarting -- no supervisor-level restart-loop or backoff logic needs to know about this. On any other platform, or if reading `/proc/self/cmdline` or the exec call itself fails, it logs a warning and returns, falling through to the pre-existing (manual-`-reindex`-required) failure path -- this is a best-effort convenience layered on top of an already-safe fallback, never a correctness requirement.
 
@@ -182,3 +213,29 @@ Rebuilt `elektrond`/`elektron-cli` on branch `4.0.6` with the §5.3 fix and repr
 3. The re-exec'd process synchronized headers, requested and downloaded a fresh snapshot, and activated it automatically, with no manual intervention.
 4. **Bit-for-bit verified**: `bestblockhash` and `gettxoutsetinfo muhash` identical to the source node at the resulting tip.
 5. A subsequent plain restart (no `-reindex`, no special flags) came up cleanly in ~2 seconds, confirming the repaired state is stable, not just transiently working.
+
+### 7.1 Retest at a different height, plus the one-shot guard and scenario matrix
+
+After the one-shot guard (marker file, see §5.3) was added, the fix was rebuilt and re-verified end to end at a **different height region** than the original §2.1 reproduction (which used checkpoints ~900-1200) -- this time checkpoints ~2000-2400, to confirm the `MandatoryPruneDepth`-based detection generalizes and is not an artifact of the specific height first tested. Two nodes, `SRC` (`-fastprune -prune=550`, real pruning active) and `D` (plain `elektrond`), `MandatoryPruneDepth=100`:
+
+1. `D` bootstrapped fresh via snapshot at checkpoint 2000 (`SRC` already at height 2000 when `D` first connected).
+2. `D` stayed online and live-validated past checkpoint 2100, writing its own local automatic-snapshot file there (`SnapshotBase()` still pointing at 2000).
+3. `D` stopped at height 2150. `SRC` mined alone to height 2450 (300 blocks, well past the ~150-200 needed for `-fastprune` to actually remove the relevant block files, and past checkpoint 2400).
+4. `D` reconnected. Log, in order: `Old snapshot at 2000 will be replaced by newer snapshot at 2100` (rejected, `Population failed: Work does not exceed active chainstate`) immediately followed by `Existing snapshot at 2000 is behind latest checkpoint 2400. Requesting newer snapshot from peers.` and `Old snapshot at 2000 will be replaced by newer snapshot at 2400.` -- the live process then crashed (confirmed via `pgrep`), same as originally documented in §2.1 step 7: this live-population crash is a separate, already-understood issue, not what this fix addresses (see the §5.3 intro on scope).
+5. Confirmed on disk: `chainstate`/`chainstate_snapshot` directories both gone entirely -- exactly the "no chainstate has a usable local tip" state this fix targets.
+6. Restarted `D` (same datadir). Log: `No chainstate has a usable local tip, and this network's mandatory pruning means local replay cannot recover it -- restarting with -reindex to bootstrap fresh...` -- marker file `.elektron_auto_reindex_attempted` written, process re-exec'd with `-reindex` (confirmed same PID via process list). First activation attempt failed transiently (`must appear in the headers chain` -- headers were still syncing at that instant), succeeded on the next automatic retry ~90 seconds later once headers had caught up.
+7. **Bit-for-bit verified**: `bestblockhash` and `gettxoutsetinfo muhash` identical between `D` and `SRC` at height 2450.
+8. **Wallets and config confirmed preserved**: `stat` on `bitcoin.conf` and the `wallets/` directory showed both untouched (same mtime as before the crash) across the entire crash-and-recover cycle.
+9. A subsequent plain restart of `D` (no special flags) came up in ~1.1 seconds, and the marker file was gone afterward -- confirming the guard clears itself once a chainstate has a real tip again, exactly as designed.
+10. **One-shot guard specifically exercised**: manually reproduced "the broken state recurs after an automatic attempt already happened" by deleting both chainstate directories again and pre-placing the marker file before starting `D`. Result: `[error] No chainstate has a usable local tip, and an automatic -reindex restart was already attempted once before (...) without resolving it. Not restarting again automatically...` -- the node shut down cleanly (`Shutdown done`, well under a second) instead of attempting a second automatic restart. No restart loop, no hang -- confirms the guard actually prevents repeated/unbounded ("willkuerlich") automatic triggering, as requested.
+
+**Scenario matrix** (regtest, same run, `MandatoryPruneDepth=100`), to confirm the fix's narrow trigger condition doesn't misfire on or break any adjacent, ordinary case:
+
+| # | Scenario | Result |
+|---|---|---|
+| 1 | Brand-new node (empty datadir) joins while the network is already multiple checkpoints ahead | Bootstraps cleanly via snapshot download, no issue (control case) |
+| 2 | Previously-synced node goes offline and reconnects *before* a new checkpoint is crossed (gap < `MandatoryPruneDepth`) | Ordinary block-by-block catch-up, no snapshot request at all (control case) |
+| 3 | Brand-new node joins after the network has already advanced through several snapshot generations | Bootstraps directly at the latest checkpoint, no issue (control case, same mechanism as #1) |
+| 4 | Already snapshot-based node falls behind by more than `MandatoryPruneDepth`, triggering its own-stale-snapshot-rejected-then-real-replacement sequence | **The actual bug trigger** -- reproduced and confirmed fixed, see steps 1-10 above |
+
+All four were run in the same session against the rebuilt `4.0.6` binary; #1-3 confirm the fix changes nothing about the already-reliable ordinary paths, and #4 confirms the actual fix at a height distinct from the original reproduction.

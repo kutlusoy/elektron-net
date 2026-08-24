@@ -39,12 +39,30 @@ from "still starting" to any operator or monitoring system.
   restarts itself with `-reindex` automatically (`execv`, same PID),
   reusing the already-verified-reliable full-reindex recovery path
   instead of inventing a new one.
-- **Live-tested and bit-for-bit verified**: reproduced the crash,
-  confirmed the automatic restart-with-`-reindex` message, watched the
-  re-exec'd process re-bootstrap via a fresh snapshot with no manual
-  intervention, and confirmed `bestblockhash`/`gettxoutsetinfo muhash`
-  matched the source node exactly afterward. A subsequent plain restart
-  (no special flags) came up cleanly in ~2 seconds.
+- **One-shot guard**: a marker file records that an automatic restart
+  was already attempted; if the broken state somehow recurs before the
+  marker is cleared, the node fails loudly instead of restart-looping.
+  The marker clears itself on the next boot that finds a healthy tip, so
+  a genuinely new future occurrence still gets its own single automatic
+  attempt. Confirmed the guard does not fire on any of the ordinary
+  paths (fresh node, short offline gap, multi-checkpoint fresh bootstrap)
+  and does correctly block a second automatic attempt when the same
+  broken state is forced to recur.
+- **Wallets and the config file are untouched**: confirmed both by
+  reading `-reindex`'s own documented behavior and empirically (`stat`
+  showed unchanged mtimes across the crash-and-recover cycle) -- this is
+  block-index/chainstate rebuilding only, same as a manual `-reindex`.
+- **Live-tested and bit-for-bit verified, at two different height
+  regions** (the original ~900-1200 checkpoints, and a retest at
+  ~2000-2400): reproduced the crash, confirmed the automatic
+  restart-with-`-reindex` message, watched the re-exec'd process
+  re-bootstrap via a fresh snapshot with no manual intervention, and
+  confirmed `bestblockhash`/`gettxoutsetinfo muhash` matched the source
+  node exactly afterward. A subsequent plain restart (no special flags)
+  came up cleanly in ~1-2 seconds. Also ran the full scenario matrix
+  (fresh node; short-offline-gap reconnect; fresh node after several
+  snapshot generations; the actual bug trigger) to confirm the fix
+  changes nothing about the already-reliable ordinary paths.
 
 See `fix-report-snapshot-restart-deadlock.md` for the full investigation,
 including the two reverted attempts and why each didn't work.
