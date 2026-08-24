@@ -319,9 +319,20 @@ Legend: **●** = functional change · **○** = branding/docs only · **＋** =
 - `PopulateAndValidateSnapshot` called with `expected_utxo_hash` from `.hash` sidecar.
 - `NODE_SNAPSHOT` set only when serving snapshots with `.hash`.
 
+#### `src/common/args.cpp` / `src/common/args.h` ●
+
+- Default config filename renamed from `bitcoin.conf` to `elektron.conf` for fresh
+  installs (v4.0.6+). `BITCOIN_CONF_FILENAME_LEGACY` + `GetDefaultConfFilename()`
+  implement a migration path so an existing installation's `bitcoin.conf` keeps being
+  read (and never gets a conflicting `elektron.conf` written next to it) -- same
+  existence-check pattern `GetDefaultDataDir()` already uses for the datadir root
+  itself (old Bitcoin-branded macOS/Windows paths vs. the new Elektron ones).
+
 #### `src/common/init.cpp` ●
 
-- Default `bitcoin.conf` template: Elektron branding, mandatory pruning notice, no `-txindex`.
+- Default config template (see `src/common/args.cpp` above for the filename): Elektron
+  branding, mandatory pruning notice, no `-txindex`. `server=1` (RPC server) is
+  commented out by default -- an operator must explicitly uncomment it to enable RPC.
 
 #### `src/rpc/mining.cpp` ●
 

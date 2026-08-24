@@ -107,6 +107,45 @@ cosmetic), not previously fixed since being reported August 5, 2026.
 See `fix-report-powlimit-retarget-overflow.md` for the full analysis,
 including the safety-invariant math and deployment reasoning.
 
+## Config: default filename renamed, RPC server off by default
+
+- **Default config filename renamed** from `bitcoin.conf` to `elektron.conf` for
+  fresh installations. Existing installations are unaffected: a pre-existing
+  `bitcoin.conf` in the datadir keeps being read exactly as before, and no
+  conflicting `elektron.conf` gets written next to it -- `GetDefaultConfFilename()`
+  (`src/common/args.cpp`) checks for the legacy file first, the same
+  existence-check migration pattern already used for the datadir root itself
+  (`GetDefaultDataDir()`, old Bitcoin-branded macOS/Windows paths vs. the new
+  Elektron ones).
+- **`server=1` (RPC server) is now commented out by default** in the
+  auto-generated config template (`src/common/init.cpp`) -- an operator must
+  explicitly uncomment it (or pass `-server=1`) before `elektron-cli`/RPC
+  clients can connect. Requested change; previously RPC was on by default for
+  every fresh install.
+- **Verified** on regtest: a fresh datadir gets `elektron.conf` with `# server=1`
+  commented out; a datadir with a pre-existing `bitcoin.conf` (custom
+  `rpcuser`/`rpcpassword` set) keeps using it unchanged, with no `elektron.conf`
+  written and RPC auth against the old credentials still working; a datadir
+  with both files present still prefers the legacy `bitcoin.conf`, no error.
+
+## Node: better manual-recovery log messages, Windows stays manual-only
+
+Follow-up to the snapshot-restart self-heal fix above. The automatic
+`-reindex` restart stays Linux/macOS-only by deliberate decision -- a native
+Windows self-restart was evaluated and rejected, since it could only ever be
+verified by code review (no Windows toolchain in this project's usual test
+environment) and an unverified process-replacing restart was judged too
+risky to ship unsupervised. Instead, every message an operator can reach in
+this scenario (the Windows-unsupported warning, the one-shot-guard
+`FAILURE_FATAL` message, and the POSIX early-return warnings) now names two
+concrete manual recovery options with exact absolute paths for that node:
+restart with `-reindex`, or stop the node and delete `blocks/`, `chainstate/`,
+and `chainstate_snapshot/` together (never `wallets/` or the config file) for
+a plain restart with no flags. The delete-and-restart-plainly option was
+verified on regtest to actually bootstrap the node exactly like a brand-new
+one, landing on the same `bestblockhash`/`muhash` as the source node. See
+`fix-report-snapshot-restart-deadlock.md` §5.4 for the full reasoning.
+
 ## Version
 
 `CLIENT_VERSION_BUILD` bumped from 5 to 6 in `CMakeLists.txt`

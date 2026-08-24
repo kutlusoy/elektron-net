@@ -25,7 +25,18 @@
 class ArgsManager;
 
 extern const char * const BITCOIN_CONF_FILENAME;
+extern const char * const BITCOIN_CONF_FILENAME_LEGACY;
 extern const char * const BITCOIN_SETTINGS_FILENAME;
+
+// Elektron Net: resolves the config filename to actually use for a given datadir --
+// prefers a pre-existing BITCOIN_CONF_FILENAME_LEGACY ("bitcoin.conf", the name used
+// before this rename) over the new default BITCOIN_CONF_FILENAME ("elektron.conf"), so
+// upgrading an existing installation never silently stops reading its config file or
+// writes a second, conflicting default config file next to it. Only a datadir with
+// neither file yet (a genuinely fresh install) gets the new name. Same migration
+// pattern GetDefaultDataDir() (common/args.cpp) already uses for the datadir root
+// itself.
+fs::path GetDefaultConfFilename(const fs::path& base_path);
 
 // Return true if -datadir option points to a valid directory or is not specified.
 bool CheckDataDirOption(const ArgsManager& args);
