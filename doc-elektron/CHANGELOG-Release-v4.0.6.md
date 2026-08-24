@@ -128,6 +128,37 @@ including the safety-invariant math and deployment reasoning.
   written and RPC auth against the old credentials still working; a datadir
   with both files present still prefers the legacy `bitcoin.conf`, no error.
 
+## Installation note: pick a separate data directory if Bitcoin Core is also installed
+
+Not a code change in this release, but worth calling out explicitly given
+the config/datadir work above: **on a machine that already runs real Bitcoin
+Core, Elektron Net's default data directory can, on macOS specifically,
+resolve to the exact same folder Bitcoin Core itself uses by default --
+`~/Library/Application Support/Bitcoin`.**
+
+This comes from `GetDefaultDataDir()`'s "legacy path" fallback
+(`src/common/args.cpp`): it exists to keep pre-existing, unbranded Elektron
+Net installs working after later Elektron branding was introduced, but the
+code has no way to tell that case apart from a genuinely separate, real
+Bitcoin Core installation -- both look identical on disk (same folder name,
+same general shape). Elektron Net is a fork with a different, incompatible
+chain; sharing a datadir with a real Bitcoin Core installation this way
+would mean two unrelated chains fighting over the same block index,
+chainstate, and wallet files -- at minimum guaranteed corruption/refusal to
+start, at worst a real risk to an existing Bitcoin wallet.
+
+- **Windows and Linux are not affected by this specific collision**:
+  Windows always defaults to an `Elektron`-branded folder
+  (`%APPDATA%\Elektron` / `%LOCALAPPDATA%\Elektron`), never `Bitcoin`, and
+  Linux always uses `~/.elektron`, never `~/.bitcoin` -- neither matches
+  Bitcoin Core's own default path, so no legacy-path collision is possible
+  there.
+- **Recommendation, especially on macOS**: if Bitcoin Core is already
+  installed (or will also be installed) on the same machine, either remove
+  the existing Bitcoin Core installation first if only Elektron Net is
+  meant to run there, or explicitly pass a separate `-datadir=<path>` for
+  Elektron Net rather than relying on the default location.
+
 ## Node: better manual-recovery log messages, Windows stays manual-only
 
 Follow-up to the snapshot-restart self-heal fix above. The automatic
