@@ -1,16 +1,16 @@
 # Fix Report: Node Hangs Permanently at Startup After a Live Snapshot-Chainstate Replacement Is Interrupted
 
-- **Version:** 0.1 (draft)
+- **Version:** 0.2 (fix implemented and verified)
 - **Date:** August 24, 2026
-- **Audience:** Elektron Net core developers, whoever picks up the follow-up fix
-- **Reference implementation:** [`elektron-net`](https://github.com/kutlusoy/elektron-net) -- `src/init.cpp` (`MaybeActivateAutomaticSnapshot`, `AppInitMain`), `src/node/chainstate.cpp` (`LoadChainstate`), `src/validation.cpp` (`Chainstate::LoadChainTip`)
-- **See also:** `doc-elektron/CHANGELOG-muhash-attestation.md` (2026-08-24 entry, where this was found), `doc-elektron/fix-report-verifydb-pruned-undo-false-positive.md` (found in the same test session, unrelated root cause)
+- **Audience:** Elektron Net core developers
+- **Reference implementation:** [`elektron-net`](https://github.com/kutlusoy/elektron-net) -- `src/init.cpp` (`MaybeActivateAutomaticSnapshot`, `AppInitMain`), `src/node/chainstate.cpp` (`LoadChainstate`, `RestartWithReindex`), `src/validation.cpp` (`Chainstate::LoadChainTip`, `Chainstate::LoadGenesisBlock`)
+- **See also:** `doc-elektron/CHANGELOG-muhash-attestation.md` (2026-08-24 entry, where this was found), `doc-elektron/fix-report-verifydb-pruned-undo-false-positive.md` (found in the same test session, unrelated root cause), `doc-elektron/CHANGELOG-Release-v4.0.6.md`
 
 ---
 
 ## 1. Summary
 
-Not implemented in this pass -- documentation only, per explicit instruction. Found and then precisely isolated across two rounds of the same re-verification session: an initial three-node test that first hit it, and a follow-up, deliberately minimal two-node reproduction done purely with `-fastprune` (no manual `pruneblockchain` calls) once the initial finding raised the question of exactly what triggers it.
+**Fixed on branch `4.0.6`, verified end to end on regtest (§7).** Found and then precisely isolated across two rounds of the same re-verification session: an initial three-node test that first hit it, and a follow-up, deliberately minimal two-node reproduction done purely with `-fastprune` (no manual `pruneblockchain` calls) once the initial finding raised the question of exactly what triggers it. Two intermediate fix attempts (§5.1, §5.2) turned out to be dead ends and were reverted before landing on the actual fix (§5.3) -- kept here so nobody re-treads the same ground.
 
 **Corrected understanding (see §2.1): this is not caused by falling behind multiple checkpoints.** A first hypothesis (falling behind by 2+ checkpoints at once) was directly tested and refuted: both a one-checkpoint replacement and, separately, a six-checkpoint replacement completed cleanly with no issue. The actual trigger is a specific *sequence*, reproducible regardless of how many checkpoints are involved: a node that is itself running on a snapshot chainstate, and that has -- purely as a side effect of continuing to validate blocks normally while still online -- already written its *own* local automatic-snapshot file at a later checkpoint than the one it's actually running on, then goes offline, and reconnects after the network has moved past that local file too. On reconnect, the node first finds and tries to activate its own now-stale local file (correctly rejected: `Population failed: Work does not exceed active chainstate`), and *immediately after* (the very next scheduled activation attempt, 30s later) downloads and begins activating the real, current snapshot from the network. That second, real replacement is where the process fails -- confirmed twice now, once as a silent process death mid-replacement (no crash message, no shutdown log) and once, on every subsequent restart against the resulting on-disk state, as a permanent hang at `init message: Pruning blockstore…` with RPC never coming up.
 
@@ -123,15 +123,62 @@ That said, this is a manual workaround, not a substitute for the fix:
 
 So: yes, discard-and-refetch is the correct escape hatch, and it works. The actual bug is that the node doesn't reach for it on its own, and gives no indication that it's stuck rather than merely slow.
 
-## 5. Proposed Fix (not implemented)
+## 5. Fix
 
-No concrete patch proposed here -- root cause is not yet pinned to a specific line (see Diagnosis above). Recommended next steps for whoever picks this up:
+Scope was deliberately kept to *startup* behavior only ("Richtung 2" in the user's framing): never touch `ActivateSnapshot()`'s live in-process replacement logic itself (that would be a much larger, higher-risk change to consensus-adjacent code -- "Richtung 1", not attempted here). Two attempts within that scope failed for instructive reasons before the third succeeded.
 
-1. Reproduce live with the process already under gdb (or with `-debug=all` and generous logging added around every `LoadChainTip()` call and around `ActivateSnapshot()`'s chainstate-directory-replacement sequence in `MaybeActivateAutomaticSnapshot()`), to catch the interruption in the act rather than only inspecting the aftermath.
-2. Once pinned, the fix almost certainly needs `MaybeActivateAutomaticSnapshot()`'s chainstate-replacement sequence to be either atomic (so a kill/crash mid-replacement can never leave a state that startup can't load) or for startup's chainstate-loading path to detect that specific half-replaced state explicitly and either repair it or fail loudly (log an actual error, not a silent hang) rather than resync via a `-reindex`-only recovery.
-3. Check whether the existing `ValidatedSnapshotCleanup()` (`src/validation.cpp`) machinery, already built for a related "swap out an old chainstate" case, is reusable here instead of `MaybeActivateAutomaticSnapshot()` rolling its own replacement sequence.
+### 5.1 Attempt 1 (reverted): discard a torn `assumeutxo_cs` at startup
 
-## 6. Testing Recommendations
+In `node::CompleteChainstateInitialization()`, if the on-disk snapshot chainstate registers (via `LoadAssumeutxoChainstate()`) but ends up with an empty coins view, delete it and let the normal snapshot-request machinery ask for a fresh one. This handles the narrow case where a live replacement is interrupted *mid-populate*, leaving `base_blockhash` stale but the directory otherwise present.
 
-- Once a fix lands: repeat this exact reproduction (node falls behind by 2+ checkpoints while offline, holding its own prior snapshot chainstate) and confirm both a clean live replacement and, separately, a kill -9 mid-replacement followed by a restart that either repairs or fails loudly rather than hanging silently.
-- Add an explicit timeout/liveness check to whatever process supervision Elektron Net operators are expected to run, since this failure mode currently looks identical to "still starting" from the outside.
+**Kept in the final fix** (§5.3) as harmless defense-in-depth, but testing showed it alone did not fix the reproduction in §2.1: the actual interruption there happens *earlier*, during the wipe-and-reject of the node's own stale local file, which (see §5.2 below) deletes the `chainstate_snapshot/` directory *entirely* -- `LoadAssumeutxoChainstate()` then finds no directory at all, so this check never even triggers, and the node falls through to its permanently-empty historical chainstate instead, hanging by a different, unguarded path.
+
+### 5.2 Attempt 2 (reverted): rewrite genesis's block body in `LoadGenesisBlock()`
+
+Root-caused the actual, more common trigger by tracing `ChainstateManager::ActivateSnapshot()`'s `cleanup_bad_snapshot()` lambda (`src/validation.cpp`): when a candidate snapshot fails validation -- including the entirely ordinary, *expected* "Population failed: Work does not exceed active chainstate" rejection of a node's own now-stale local file -- the cleanup calls `DeleteCoinsDBFromDisk(..., /*is_snapshot=*/true)` on `FindAssumeutxoChainstateDir()`, the *one fixed path* every snapshot chainstate shares. Combined with the wipe-before-validate ordering in §3.1, this means: by the time a candidate is rejected, the *previously-active* chainstate's on-disk data is already gone (wiped at candidate-build time), and cleanup then also removes `base_blockhash` and destroys the LevelDB directory outright. Net effect: **any rejected candidate -- not just a failed populate -- permanently destroys the currently-valid snapshot chainstate**, live, regardless of whether the candidate itself succeeds or fails.
+
+After that, `LoadAssumeutxoChainstate()` finds nothing (§5.1 doesn't trigger), and the fallback historical/IBD chainstate is *also* unusable: automatic-snapshot nodes delete their historical chainstate permanently once they first become snapshot-based (see the large comment in `node::LoadChainstate()` about `ValidatedChainstate()`), so it is never rebuilt. The attempted fix: `Chainstate::LoadGenesisBlock()`'s "already initialized" check only tested for a genesis *index* entry (headers are never pruned, so this is always true), not `BLOCK_HAVE_DATA` -- so on a node whose genesis body was pruned or (for any snapshot-bootstrapped node) never downloaded in the first place, it wrongly reported genesis as already available. Rewriting genesis's body unconditionally (its content is fully deterministic from `params.GenesisBlock()`, so this is always safe in isolation) let the `initload` thread's `ActivateBestChains()` actually connect it.
+
+**Reverted.** Live-tested and got further (past the original hang point) but surfaced a new, deeper failure: `Chainstate::LoadChainTip(): Assertion 'cs->setBlockIndexCandidates.empty()' failed`, most likely because writing genesis for the first time on such a node causes `ReceivedBlockTransactions()` to add it to a chainstate's block-index candidate set earlier than `CompleteChainstateInitialization()`'s "populate candidates only after every `LoadChainTip()` call" ordering assumes. Investigating that fully would mean reaching further into chainstate-loading invariants than this fix's scope warranted -- three failure modes deep into the same consensus-adjacent code was treated as a signal to change approach rather than keep patching forward.
+
+### 5.3 Attempt 3 (implemented): restart with `-reindex` instead of trying to locally recover
+
+The insight that unstuck this: a genuinely fresh node, and a node manually restarted with `-reindex`, **both already bootstrap reliably** via the automatic-snapshot mechanism -- verified repeatedly across this session (fresh single-, six-, and multi-checkpoint bootstraps; and `-reindex` directly confirmed to recover a node stuck in this exact hang, §4 above). Rather than trying to make the broken in-between state loadable (§5.1, §5.2), detect it and **fall back to the same, already-proven "start fresh" path** instead of patching forward through chainstate-loading internals that clearly encode more assumptions than they document.
+
+Also incorporates the mandatory-pruning-specific insight from this session's discussion: local replay of *anything* -- not just the snapshot, but even genesis -- is architecturally guaranteed impossible once the chain has advanced `MandatoryPruneDepth` blocks past a node's last usable local state, because mandatory pruning (by design) does not keep data beyond that window anywhere on the network, and a snapshot-bootstrapped node never had pre-checkpoint history to fall back on in the first place. So the check does not try to distinguish "torn" from "fully deleted" from any other broken shape -- it just asks whether *any* registered chainstate ended up with a usable tip, and whether the gap is large enough that no local fix could possibly exist.
+
+**`node::LoadChainstate()` (`src/node/chainstate.cpp`)**, immediately after §5.1's cleanup, before the pre-existing "discard abandoned historical chainstate" logic:
+
+```cpp
+if (!options.wipe_chainstate_db && chainman.m_blockman.m_blockfiles_indexed && chainman.m_best_header) {
+    const bool any_chainstate_has_tip = std::any_of(
+        chainman.m_chainstates.begin(), chainman.m_chainstates.end(),
+        [](const auto& cs) { return cs->m_chain.Tip() != nullptr; });
+    if (!any_chainstate_has_tip &&
+        chainman.m_best_header->nHeight >= static_cast<int>(chainman.GetConsensus().MandatoryPruneDepth)) {
+        RestartWithReindex();
+        // Only returns on failure (unsupported platform or exec error); falls
+        // through to the pre-existing failure path below in that case.
+    }
+}
+```
+
+`chainman.m_best_header` reflects the best header this node has ever seen, persisted in the block index (never pruned, unlike bodies/coins) -- so this comparison works even though no chainstate has a usable tip to compare against directly. `!options.wipe_chainstate_db` guards against looping if a `-reindex` restart somehow still ends up here (it shouldn't, per the code comment in `src/init.cpp` naming reindex as one of the cases `LoadChainTip()` is expected to be skipped for safely).
+
+**`RestartWithReindex()`** (new, anonymous-namespace helper, same file): reads the process's own original command line from `/proc/self/cmdline` (Linux-specific), appends `-reindex` if not already present, and calls `util::ExecVp("/proc/self/exe", argv)` -- the same cross-platform `execvp` wrapper (`src/util/exec.h`/`.cpp`) already used by the `bitcoin` wrapper binary (`src/bitcoin.cpp`) elsewhere in this codebase, not new platform-specific code. `execve`-family calls replace the process image in place (same PID), so from a process supervisor's perspective this looks like the daemon continuing to run, not restarting -- no supervisor-level restart-loop or backoff logic needs to know about this. On any other platform, or if reading `/proc/self/cmdline` or the exec call itself fails, it logs a warning and returns, falling through to the pre-existing (manual-`-reindex`-required) failure path -- this is a best-effort convenience layered on top of an already-safe fallback, never a correctness requirement.
+
+## 6. Testing Recommendations (completed, see §7)
+
+- Repeat the exact §2.1 reproduction and confirm the node now restarts itself with `-reindex` and recovers, instead of dying/hanging. Done.
+- Confirm a plain restart afterward (no special flags) works normally, proving the reindex fully repaired the on-disk state. Done.
+- Add an explicit timeout/liveness check to whatever process supervision Elektron Net operators run, for the (now much narrower) window before this fix's restart completes. Still a reasonable operational recommendation, independent of this code fix.
+
+## 7. Verification
+
+Rebuilt `elektrond`/`elektron-cli` on branch `4.0.6` with the §5.3 fix and reproduced §2.1 end to end on a fresh regtest setup:
+
+1. Reproduced the exact crash sequence again (own stale local file rejected, immediately followed by a real replacement) -- the live crash during `ActivateSnapshot()` itself still happens, unchanged and expected (out of scope, §5.3 intro).
+2. Restarted the crashed node. Log: `[snapshot] No chainstate has a usable local tip, and this network's mandatory pruning means local replay cannot recover it -- restarting with -reindex to bootstrap fresh, the same recovery path a brand-new node takes.` -- the process list confirmed `-reindex` was actually appended and the process re-exec'd (same PID).
+3. The re-exec'd process synchronized headers, requested and downloaded a fresh snapshot, and activated it automatically, with no manual intervention.
+4. **Bit-for-bit verified**: `bestblockhash` and `gettxoutsetinfo muhash` identical to the source node at the resulting tip.
+5. A subsequent plain restart (no `-reindex`, no special flags) came up cleanly in ~2 seconds, confirming the repaired state is stable, not just transiently working.

@@ -425,6 +425,16 @@ Practical implication: this significantly changes the earlier "how long would a 
 
 ---
 
+## 2026-08-24 (follow-up: the snapshot-restart deadlock, fixed on branch `4.0.6`)
+
+Third follow-up, same day: at the user's request, moved from documenting the deadlock in `fix-report-snapshot-restart-deadlock.md` to actually fixing it, alongside the also-previously-unfixed `fix-report-powlimit-retarget-overflow.md`, on a new `4.0.6` branch.
+
+Two fix attempts for the deadlock were tried and reverted before landing on the one that worked (all three are detailed in the fix report's §5, kept there so the dead ends are not re-walked later): discarding a torn snapshot chainstate at startup (real, but only covers the narrower of two ways this can happen); rewriting genesis's block body when its data is missing (got further, but surfaced a new `setBlockIndexCandidates` assertion failure -- reverted). The fix that stuck: detect "no chainstate has a usable local tip, and the network is `MandatoryPruneDepth` blocks past it" and restart the process with `-reindex` automatically (`execv`, same PID), reusing the already-verified `-reindex` recovery path instead of patching chainstate-loading internals further. Live-verified end to end on regtest: crash reproduced, automatic restart observed in the log and process list, re-exec'd node re-bootstrapped via a fresh snapshot with no manual intervention, `bestblockhash`/`gettxoutsetinfo muhash` bit-for-bit identical to the source node afterward, and a subsequent plain restart came up cleanly.
+
+The powLimit overflow fix (height-gated `powLimitPostFix`, mainnet activation height 500000, testnet/testnet4/regtest immediately active) landed the same session -- no existing mainnet activation height touched, `ChainParams_MAIN_sanity`/`_TESTNET_sanity`/`_TESTNET4_sanity` now pass. Full detail in `fix-report-powlimit-retarget-overflow.md` and the new `CHANGELOG-Release-v4.0.6.md`.
+
+---
+
 ## Deferred (not part of this pass)
 
 - **Phase 4 (P2P protocol-version gate):** no `PROTOCOL_VERSION` bump or peer-disconnect-on-old-version behavior was added. The consensus cutover is height-only (mirrors the existing `MANDATORY_PRUNE_DEPTH` / `MinDifficultyActivationHeight` precedent), which the fix report already identifies as sufficient for correctness; the P2P gate is a pure UX nicety for a scenario (stale peers lingering post-activation) that the now-mature automatic-recovery machinery (stuck-chain recovery, fell-behind-prune-horizon recovery, wallet UTXO-scan retry) already covers more directly, on a small, directly-reachable operator base. Revisit only if that assumption changes.
