@@ -413,6 +413,18 @@ Two new, previously undocumented bugs found and written up separately (not fixed
 
 ---
 
+## 2026-08-24 (follow-up: isolating the actual trigger of the snapshot-replacement crash/deadlock)
+
+Second follow-up, same day, at the user's request: the previous entry's hypothesis ("falling behind by 2+ checkpoints while offline") was tested directly and refuted -- a clean two-node, `-fastprune`-only reproduction (no manual `pruneblockchain` calls) showed both a one-checkpoint and a six-checkpoint live snapshot replacement completing without issue.
+
+Isolated the actual trigger instead: a node that (a) is snapshot-based, (b) stays online afterward long enough to cross a further checkpoint through ordinary live block validation -- which automatically writes its own local snapshot file at that checkpoint, unrelated to what its chainstate bookkeeping still considers its snapshot base -- then (c) goes offline and reconnects after the network has moved past that local file too. On reconnect the node first finds and correctly rejects its own now-stale local file (`Population failed: Work does not exceed active chainstate`), and the very next scheduled attempt (30s later) begins a real replacement with the current network snapshot -- and that second, real replacement is where the process dies. Reproduced on the first attempt with this exact sequence, entirely through `-fastprune`'s own natural block-file pruning, no manual intervention.
+
+Practical implication: this significantly changes the earlier "how long would a mainnet outage need to be" risk framing. The precondition isn't a specific outage length -- it's any node that has recovered via snapshot once and then simply stayed running for a while afterward (ordinary, unremarkable operation). Under mandatory pruning, that describes most long-lived nodes, not an edge case, once mainnet has been running for a while past its first couple of checkpoints.
+
+`doc-elektron/fix-report-snapshot-restart-deadlock.md` rewritten with the corrected reproduction (§2.1), the refuted checkpoint-distance hypothesis kept as a documented negative result, and the original three-node finding retained for record (§2.2). Still documentation only, not fixed, per instruction.
+
+---
+
 ## Deferred (not part of this pass)
 
 - **Phase 4 (P2P protocol-version gate):** no `PROTOCOL_VERSION` bump or peer-disconnect-on-old-version behavior was added. The consensus cutover is height-only (mirrors the existing `MANDATORY_PRUNE_DEPTH` / `MinDifficultyActivationHeight` precedent), which the fix report already identifies as sufficient for correctness; the P2P gate is a pure UX nicety for a scenario (stale peers lingering post-activation) that the now-mature automatic-recovery machinery (stuck-chain recovery, fell-behind-prune-horizon recovery, wallet UTXO-scan retry) already covers more directly, on a small, directly-reachable operator base. Revisit only if that assumption changes.
