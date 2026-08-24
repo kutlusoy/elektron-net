@@ -15,6 +15,7 @@
 #include <txdb.h>
 #include <uint256.h>
 #include <util/byte_units.h>
+#include <util/exec.h>
 #include <util/fs.h>
 #include <util/log.h>
 #include <util/signalinterrupt.h>
@@ -24,9 +25,81 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cerrno>
+#include <fstream>
+#include <string>
 #include <vector>
 
 using kernel::CacheSizes;
+
+namespace node {
+namespace {
+// Elektron Net: see doc-elektron/fix-report-snapshot-restart-deadlock.md. Restarts the
+// current process with -reindex appended, reusing the already-verified-reliable full
+// reindex recovery path (confirmed live in that report) instead of trying to patch
+// through a local chainstate state that mandatory pruning guarantees can never be
+// locally replayable again. Reads the original command line from /proc/self/cmdline
+// (Linux-specific); on any other platform, or if anything here fails, this simply
+// returns and leaves the existing (slower, requires manual -reindex) failure path to
+// run instead -- this is a best-effort convenience, never required for correctness.
+void RestartWithReindex()
+{
+#ifdef WIN32
+    LogWarning("[snapshot] Automatic -reindex restart is not supported on this platform; "
+               "please restart manually with -reindex.\n");
+    return;
+#else
+    std::ifstream cmdline_file("/proc/self/cmdline", std::ios::binary);
+    if (!cmdline_file) {
+        LogWarning("[snapshot] Could not read /proc/self/cmdline for automatic -reindex "
+                   "restart; please restart manually with -reindex.\n");
+        return;
+    }
+    std::vector<std::string> args;
+    std::string arg;
+    char ch;
+    while (cmdline_file.get(ch)) {
+        if (ch == '\0') {
+            args.push_back(arg);
+            arg.clear();
+        } else {
+            arg += ch;
+        }
+    }
+    if (!arg.empty()) args.push_back(arg);
+    if (args.empty()) {
+        LogWarning("[snapshot] Empty /proc/self/cmdline; cannot automatically restart "
+                   "with -reindex.\n");
+        return;
+    }
+
+    for (const auto& a : args) {
+        if (a == "-reindex" || a.rfind("-reindex=", 0) == 0) {
+            // Already restarting with -reindex and still ended up here somehow --
+            // don't loop forever, fall through to the normal failure path instead.
+            LogWarning("[snapshot] Already running with -reindex; not restarting again.\n");
+            return;
+        }
+    }
+    args.push_back("-reindex");
+
+    LogInfo("[snapshot] No chainstate has a usable local tip, and this network's "
+            "mandatory pruning means local replay cannot recover it -- restarting with "
+            "-reindex to bootstrap fresh, the same recovery path a brand-new node takes.\n");
+
+    std::vector<const char*> exec_args;
+    exec_args.reserve(args.size() + 1);
+    for (const auto& a : args) exec_args.push_back(a.c_str());
+    exec_args.push_back(nullptr);
+
+    util::ExecVp("/proc/self/exe", const_cast<char* const*>(exec_args.data()));
+    // Only reaches here if exec failed.
+    LogWarning("[snapshot] Failed to restart with -reindex (errno=%d); please restart "
+               "manually with -reindex.\n", errno);
+#endif
+}
+} // namespace
+} // namespace node
 
 namespace node {
 // Complete initialization of chainstates after the initial call has been made
@@ -220,6 +293,35 @@ ChainstateLoadResult LoadChainstate(ChainstateManager& chainman, const CacheSize
             return {ChainstateLoadStatus::FAILURE_FATAL, Untranslated("Couldn't remove incomplete snapshot chainstate.")};
         }
         assumeutxo_cs = nullptr;
+    }
+
+    // Elektron Net: broader self-heal for the same underlying problem. The specific
+    // "torn assumeutxo_cs" case above is not the only way a node can end up with no
+    // usable local chain data -- a *rejected* snapshot-replacement candidate (e.g. a
+    // node's own stale local snapshot file, correctly rejected as not exceeding the
+    // active chainstate's work) also destroys the currently-active snapshot chainstate
+    // as a side effect, because ActivateSnapshot() wipes the old data before validating
+    // the new candidate, not after. When that happens, LoadAssumeutxoChainstate() above
+    // finds no snapshot chainstate directory at all, and the "historical" chainstate is
+    // permanently empty by design for an automatic-snapshot node (its pre-snapshot data
+    // was deliberately discarded once it first became snapshot-based) -- so *no*
+    // chainstate here has a usable tip, and none ever can via local replay once the
+    // chain has passed MandatoryPruneDepth blocks, by construction of mandatory pruning
+    // (even genesis itself may no longer be present locally). Trying to patch this
+    // forward (e.g. re-writing just the genesis block) reaches into chainstate-loading
+    // invariants this codebase does not expect touched this early and is not worth the
+    // risk. Restarting the process with -reindex reuses the already-verified-reliable
+    // recovery path instead -- see doc-elektron/fix-report-snapshot-restart-deadlock.md.
+    if (!options.wipe_chainstate_db && chainman.m_blockman.m_blockfiles_indexed && chainman.m_best_header) {
+        const bool any_chainstate_has_tip = std::any_of(
+            chainman.m_chainstates.begin(), chainman.m_chainstates.end(),
+            [](const auto& cs) { return cs->m_chain.Tip() != nullptr; });
+        if (!any_chainstate_has_tip &&
+            chainman.m_best_header->nHeight >= static_cast<int>(chainman.GetConsensus().MandatoryPruneDepth)) {
+            RestartWithReindex();
+            // Only returns on failure (unsupported platform or exec error); fall
+            // through to the existing failure path below in that case.
+        }
     }
 
     // Elektron Net: automatic snapshots have no hardcoded assumeutxo data in
