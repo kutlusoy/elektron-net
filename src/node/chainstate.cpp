@@ -193,6 +193,35 @@ ChainstateLoadResult LoadChainstate(ChainstateManager& chainman, const CacheSize
         return {init_status, init_error};
     }
 
+    // Elektron Net: a snapshot chainstate directory can be left in a torn state if a
+    // live snapshot-chainstate replacement (ActivateSnapshot(), validation.cpp) is
+    // interrupted between wiping the old coins DB and finishing repopulating the new
+    // one -- the wipe-and-reopen (InitCoinsDB) happens first, PopulateAndValidateSnapshot()
+    // second, and base_blockhash (the file LoadAssumeutxoChainstate() uses to decide
+    // whether a snapshot chainstate is present at all) is only rewritten last, on
+    // success. An interruption in between leaves base_blockhash still pointing at the
+    // *previous* checkpoint while the coins DB behind it is empty. LoadAssumeutxoChainstate()
+    // has no way to tell this apart from a real, complete snapshot chainstate -- it only
+    // checks that base_blockhash exists -- so it registers a chainstate for this broken
+    // directory, and CompleteChainstateInitialization() above correctly leaves it tip-less
+    // (is_coinsview_empty() is true) but does not remove it either. Left as-is, this
+    // chainstate can become CurrentChainstate() with m_chain.Tip() == nullptr, which hangs
+    // AppInitMain() forever waiting on a tip block that will never be reported -- see
+    // doc-elektron/fix-report-snapshot-restart-deadlock.md for the live reproduction.
+    // Detect it here and discard it exactly like "no snapshot chainstate exists at all"
+    // (the same, already-reliable path a node with no prior snapshot takes), rather than
+    // trying to load or repair it.
+    if (assumeutxo_cs && assumeutxo_cs->m_chain.Tip() == nullptr) {
+        LogInfo("[snapshot] Discarded an incomplete snapshot chainstate (found on disk but never "
+                "fully populated, likely from an interrupted replacement) -- will re-request a "
+                "fresh snapshot from peers.\n");
+        assumeutxo_cs->ResetCoinsViews();
+        if (!chainman.DeleteChainstate(*assumeutxo_cs)) {
+            return {ChainstateLoadStatus::FAILURE_FATAL, Untranslated("Couldn't remove incomplete snapshot chainstate.")};
+        }
+        assumeutxo_cs = nullptr;
+    }
+
     // Elektron Net: automatic snapshots have no hardcoded assumeutxo data in
     // chainparams. Background validation would stall forever because historical
     // blocks older than the snapshot are pruned and unavailable on all peers, so the

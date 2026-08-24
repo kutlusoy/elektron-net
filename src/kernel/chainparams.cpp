@@ -91,6 +91,15 @@ public:
         consensus.SegwitHeight = 1;
         consensus.MinBIP9WarningHeight = 0;
         consensus.powLimit = uint256{"007fffff00000000000000000000000000000000000000000000000000000000"};
+        // Elektron Net: fixes the powLimit/retarget overflow (see
+        // doc-elektron/fix-report-powlimit-retarget-overflow.md) -- powLimit above,
+        // right-shifted by 12 bits (divided by 4096), restores the safety invariant
+        // powLimit * 4 * nPowTargetTimespan < 2^256 with a real ~4.3x margin, without
+        // touching nPowTargetSpacing/nPowTargetTimespan. Activation height chosen with
+        // real lead time ahead of the current mainnet tip (~190000 at the time this was
+        // set); adjust before release if more or less lead time is needed.
+        consensus.powLimitPostFix = uint256{"000007fffff00000000000000000000000000000000000000000000000000000"};
+        consensus.PowLimitFixActivationHeight = 500000;
         consensus.nPowTargetTimespan = 2016 * 60; // 1.4 days
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = false;
@@ -262,6 +271,10 @@ public:
         consensus.SegwitHeight = 1;
         consensus.MinBIP9WarningHeight = 0;
         consensus.powLimit = uint256{"007fffff00000000000000000000000000000000000000000000000000000000"};
+        // Elektron Net: powLimit overflow fix (doc-elektron/fix-report-powlimit-retarget-overflow.md).
+        // Active immediately on testnet -- no operator-coordination need here, unlike mainnet.
+        consensus.powLimitPostFix = uint256{"000007fffff00000000000000000000000000000000000000000000000000000"};
+        consensus.PowLimitFixActivationHeight = 1;
         consensus.nPowTargetTimespan = 2016 * 60; // 1.4 days
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = true;
@@ -352,6 +365,10 @@ public:
         consensus.SegwitHeight = 1;
         consensus.MinBIP9WarningHeight = 0;
         consensus.powLimit = uint256{"007fffff00000000000000000000000000000000000000000000000000000000"};
+        // Elektron Net: powLimit overflow fix (doc-elektron/fix-report-powlimit-retarget-overflow.md).
+        // Active immediately on testnet4 -- no operator-coordination need here, unlike mainnet.
+        consensus.powLimitPostFix = uint256{"000007fffff00000000000000000000000000000000000000000000000000000"};
+        consensus.PowLimitFixActivationHeight = 1;
         consensus.nPowTargetTimespan = 2016 * 60; // 1.4 days
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = true;
@@ -549,6 +566,16 @@ public:
         consensus.SegwitHeight = 0; // Always active unless overridden
         consensus.MinBIP9WarningHeight = 0;
         consensus.powLimit = uint256{"7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
+        // Elektron Net: powLimit overflow fix (doc-elektron/fix-report-powlimit-retarget-overflow.md).
+        // Set here for structural consistency with the other networks only -- regtest's
+        // powLimit is already near the top of the 256-bit range (right-shifting it by 12
+        // bits still doesn't satisfy the safety invariant on its own), but this is a
+        // no-op at runtime either way: fPowNoRetargeting below means
+        // CalculateNextWorkRequired() is never actually called on regtest, and
+        // sanity_check_chainparams() (pow_tests.cpp) already skips the overflow check
+        // entirely whenever fPowNoRetargeting is set.
+        consensus.powLimitPostFix = uint256{"0007ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
+        consensus.PowLimitFixActivationHeight = 1;
         consensus.nPowTargetTimespan = 2016 * 60; // 1.4 days
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = true;

@@ -180,7 +180,21 @@ void sanity_check_chainparams(const ArgsManager& args, ChainType chain_type)
     if (!consensus.fPowNoRetargeting) {
         arith_uint256 targ_max{UintToArith256(uint256{"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"})};
         targ_max /= consensus.nPowTargetTimespan*4;
-        BOOST_CHECK(UintToArith256(consensus.powLimit) < targ_max);
+        // Elektron Net: powLimit overflow fix (doc-elektron/fix-report-powlimit-retarget-overflow.md).
+        // The original consensus.powLimit is known to violate this invariant and, by
+        // design, must stay byte-for-byte unchanged forever so blocks mined before
+        // PowLimitFixActivationHeight keep validating exactly as before -- a direct edit
+        // of powLimit itself would retroactively change already-mined chain history and
+        // cause an unplanned hard fork (see the fix report's Deployment strategy
+        // section). What actually needs to satisfy this invariant going forward is
+        // whichever value CalculateNextWorkRequired() uses at and after the activation
+        // height: consensus.powLimitPostFix when a fix is scheduled, or the original
+        // powLimit when none is (matching today's behavior for any network, e.g.
+        // Signet, that was never affected in the first place).
+        const uint256& active_pow_limit = consensus.PowLimitFixActivationHeight >= 0
+            ? consensus.powLimitPostFix
+            : consensus.powLimit;
+        BOOST_CHECK(UintToArith256(active_pow_limit) < targ_max);
     }
 }
 

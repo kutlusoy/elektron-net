@@ -113,6 +113,26 @@ struct Params {
     std::array<BIP9Deployment,MAX_VERSION_BITS_DEPLOYMENTS> vDeployments;
     /** Proof of work parameters */
     uint256 powLimit;
+    /** Elektron Net: post-fix, safe value for `powLimit`, used at and after
+     * PowLimitFixActivationHeight instead of the original `powLimit` above.
+     * The original value violates the safety invariant
+     * `powLimit * 4 * nPowTargetTimespan < 2^256` that CalculateNextWorkRequired()
+     * (pow.cpp) relies on to avoid silent arith_uint256 overflow during
+     * retargeting -- see doc-elektron/fix-report-powlimit-retarget-overflow.md.
+     * Chosen as the original powLimit right-shifted by 12 bits (divided by
+     * 4096): same leading-digit shape, smallest change that restores a real
+     * (~4.3x) safety margin over the ~945x-violated invariant, keeping
+     * nPowTargetSpacing/nPowTargetTimespan untouched. */
+    uint256 powLimitPostFix;
+    /** Block height at which the powLimit overflow fix (see powLimitPostFix
+     * above) takes effect: CalculateNextWorkRequired() switches from
+     * `powLimit` to `powLimitPostFix`. Height-gated, not a wall-clock flag
+     * day, so all upgraded nodes switch at the exact same block regardless
+     * of when each one updates. -1 = never active (default). Blocks below
+     * this height retarget byte-for-byte identically to before this field
+     * existed; only blocks at or above it use the corrected value. See
+     * doc-elektron/fix-report-powlimit-retarget-overflow.md. */
+    int PowLimitFixActivationHeight = -1;
     bool fPowAllowMinDifficultyBlocks;
     /**
       * Enforce BIP94 timewarp attack mitigation. On testnet4 this also enforces
