@@ -341,6 +341,11 @@ BOOST_AUTO_TEST_CASE(stoic_awakening_no_end_height_by_default)
     consensus.fPowAllowMinDifficultyBlocks = false;
     consensus.MinDifficultyActivationHeight = 1000;
     consensus.StoicAwakeningEndHeight = -1;
+    // Elektron Net: this test is about the Stoic Awakening escape, not the unrelated
+    // powLimit overflow fix (doc-elektron/fix-report-powlimit-retarget-overflow.md) --
+    // disable it explicitly so a future change to PowLimitFixActivationHeight can't
+    // make pindexLast.nHeight below collide with it again.
+    consensus.PowLimitFixActivationHeight = -1;
 
     unsigned int nProofOfWorkLimit = UintToArith256(consensus.powLimit).GetCompact();
 

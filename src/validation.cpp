@@ -5416,8 +5416,25 @@ bool Chainstate::LoadGenesisBlock()
     // m_blockman.m_block_index. Note that we can't use m_chain here, since it is
     // set based on the coins db, not the block index db, which is the only
     // thing loaded at this point.
-    if (m_blockman.m_block_index.contains(params.GenesisBlock().GetHash()))
+    //
+    // Elektron Net: also require BLOCK_HAVE_DATA, not just an index entry. A node
+    // whose genesis block body was pruned (or, for one that originally bootstrapped
+    // via an automatic UTXO snapshot, never downloaded in the first place -- a
+    // snapshot bootstrap starts directly from the checkpoint height and never fetches
+    // anything below it) still has a genesis header in the block index forever
+    // (headers are never pruned), so the check above alone would wrongly report
+    // "already have it" while ActivateBestChains() later has no body to actually
+    // connect. Genesis's content is fully deterministic (built from consensus params
+    // by params.GenesisBlock(), not read back from disk), so re-writing it here is
+    // always safe and cheap -- this guarantees a locally connectable genesis always
+    // exists, which is what lets a node with no other usable local chain data still
+    // start up (instead of hanging forever waiting for a tip that can never be
+    // produced) and hand off to the runtime automatic-snapshot request machinery. See
+    // doc-elektron/fix-report-snapshot-restart-deadlock.md.
+    if (const CBlockIndex* pindex = m_blockman.LookupBlockIndex(params.GenesisBlock().GetHash());
+        pindex && (pindex->nStatus & BLOCK_HAVE_DATA)) {
         return true;
+    }
 
     try {
         const CBlock& block = params.GenesisBlock();
