@@ -1561,6 +1561,22 @@ static void MaybeActivateAutomaticSnapshot(NodeContext& node)
         return;
     }
 
+    // Elektron Net: the filename hash is the checkpoint hash this file was
+    // advertised under (net_processing) or written with (WriteAutomaticSnapshot
+    // uses the base block hash in the name). Cross-check it against the base
+    // block hash inside the file's own metadata so a mismatched or tampered
+    // file cannot be activated under a base it was never selected for.
+    if (metadata.m_base_blockhash != snapshot_hash) {
+        LogWarning("[snapshot] Snapshot metadata base block hash (%s) does not match the hash in the filename (%s) — refusing activation.\n",
+                   metadata.m_base_blockhash.ToString(), snapshot_hash.ToString());
+        try {
+            fs::rename(*snapshot_path, *snapshot_path + ".failed");
+        } catch (const fs::filesystem_error& e) {
+            LogWarning("[snapshot] Failed to rename mismatched snapshot: %s\n", e.what());
+        }
+        return;
+    }
+
     // Elektron Net: if a snapshot chainstate already exists, we normally bail
     // out because ActivateSnapshot() rejects duplicates.  However, automatic
     // snapshots (verify_assumeutxo_hash=false) are allowed to replace an old
