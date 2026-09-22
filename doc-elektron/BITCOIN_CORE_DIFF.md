@@ -121,15 +121,15 @@ Because automatic snapshot bootstrap (request/download/activation) runs asynchro
 | `COIN` | `src/consensus/amount.h` | 10⁸ leptons per ELEK |
 | `Consensus::Params::MuhashAttestationActivationHeight` | `src/consensus/params.h` | `137000` (mainnet); per-network heights in `src/kernel/chainparams.cpp` (see §2.2); `-1` sentinel still means disabled |
 | `Consensus::Params::MandatoryPruneDepth` | `src/consensus/params.h` | Defaults to `197280` (mainnet); `300` testnet/testnet4, `100` regtest (see §2.1/§2.3) |
-| `DB_UTXO_MUHASH` | `src/txdb.cpp` | Coins-DB key (`'U'`) for the persisted MuHash accumulator |
+| `DB_UTXO_MUHASH` | `src/txdb.cpp` | Coins-DB key (`'V'`) for the persisted MuHash accumulator |
 
 ### 3.2 New P2P message types
 
 | Message | Payload (summary) |
 |---------|-------------------|
-| `getutxosnapshot` | `uint256` checkpoint block hash |
+| `getutxosnap` | `uint256` checkpoint block hash |
 | `utxosnapshot` | height, block hash, UTXO hash, file size |
-| `getsnapshotdata` | block hash, offset, length |
+| `getsnapdata` | block hash, offset, length |
 | `snapshotdata` | block hash, offset, data chunk |
 
 Defined in `src/protocol.h`; handlers in `src/net_processing.cpp`.
@@ -499,9 +499,9 @@ Pools do not speak P2P directly, but **full nodes** bootstrap via:
 
 | Message | Direction | Purpose |
 |---------|-----------|---------|
-| `getutxosnapshot` | request | Ask for checkpoint snapshot metadata |
+| `getutxosnap` | request | Ask for checkpoint snapshot metadata |
 | `utxosnapshot` | response | Height, hash, UTXO content hash, file size |
-| `getsnapshotdata` | request | Request byte range of `.dat` file |
+| `getsnapdata` | request | Request byte range of `.dat` file |
 | `snapshotdata` | response | Chunk payload |
 
 Service bit **`NODE_SNAPSHOT` (1<<12)** indicates a peer can serve a verified checkpoint snapshot.

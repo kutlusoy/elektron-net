@@ -67,7 +67,7 @@ other two numbers, 60 seconds becomes the foundation of something bigger.
 
 ## 137 Days — The Memory
 
-Constant: `MANDATORY_PRUNE_DEPTH = 197280` in `src/validation.h:79`.
+Constant: `MANDATORY_PRUNE_DEPTH = 197280` in `src/validation.h:84`.
 At 60-second blocks, that's almost exactly 137 days.
 
 ### Why a hard limit, and not "optional pruning"
@@ -183,8 +183,8 @@ architecture.
   snapshot does not have to trust the snapshot's author — it can verify
   the snapshot against the on-chain commitment, which is secured by all
   the proof-of-work backing the chain. (Code: `ValidateUTXOCheckpoint`,
-  `src/validation.cpp:2920`; `WriteAutomaticSnapshot`,
-  `src/validation.cpp:2439`.)
+  `src/validation.cpp:2509`; `WriteAutomaticSnapshot`,
+  `src/validation.cpp:2555`.)
 
 Pull on any one of these threads and the others come along.
 
