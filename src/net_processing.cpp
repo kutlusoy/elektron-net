@@ -1009,6 +1009,10 @@ private:
         std::map<NodeId, std::chrono::steady_clock::time_point> last_request_time;
         /** Elektron Net: time of the last received data chunk (for stall detection). */
         std::chrono::steady_clock::time_point last_progress_time;
+        /** Elektron Net: time the download state was created (bounds total download
+         *  duration; the per-chunk progress reset below can otherwise keep a
+         *  download alive indefinitely). */
+        std::chrono::steady_clock::time_point start_time;
         /** Elektron Net: expected UTXO hash from the advertising peer. */
         uint256 utxo_hash;
 
@@ -2186,6 +2190,17 @@ void PeerManagerImpl::MaybeRequestSnapshot()
         auto now_steady = std::chrono::steady_clock::now();
         for (auto it = m_snapshot_downloads.begin(); it != m_snapshot_downloads.end(); ) {
             if (it->second.completed) { ++it; continue; }
+            // Elektron Net: bound the total download duration. Progress resets
+            // on every received chunk, so a peer trickling single chunks at
+            // <30 min intervals keeps the (block-download-suppressing) entry
+            // alive forever. 6 h is far above any realistic download time.
+            if (now_steady - it->second.start_time > std::chrono::hours{6}) {
+                LogWarning("[snapshot] Download for %s exceeded 6 h total, discarding.\n",
+                           it->first.ToString());
+                try { fs::remove(it->second.temp_path); } catch (const fs::filesystem_error&) {}
+                it = m_snapshot_downloads.erase(it);
+                continue;
+            }
             if (now_steady - it->second.last_progress_time > std::chrono::minutes{30}) {
                 LogWarning("[snapshot] Download for %s stalled (>30 min no progress), discarding and retrying.\n",
                            it->first.ToString());
@@ -5417,8 +5432,30 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
         {
             LOCK(m_snapshot_download_mutex);
             m_snapshot_peers[checkpoint_hash].insert(pfrom.GetId());
-            // If we are bootstrapping and need this snapshot, initialize download state
-            if (!m_snapshot_downloads.count(checkpoint_hash)) {
+            // Elektron Net: only initialize download state for the checkpoint this
+            // node itself requested. MaybeRequestSnapshot() sets
+            // m_snapshot_bootstrap_target and only sends GETUTXOSNAPSHOT while the
+            // node actually needs a snapshot (IBD / stuck on invalid chain / behind
+            // the prune horizon). Without this gate a single unsolicited peer
+            // message would create download state, which in turn suppresses
+            // historical block download (see snapshot_download_active), and any
+            // peer could keep the victim in that state indefinitely by trickling
+            // chunks. The peer stays in m_snapshot_peers either way, so the chunk
+            // request loop can still use it for a genuine download.
+            const bool accept = WITH_LOCK(::cs_main, return checkpoint_hash == m_snapshot_bootstrap_target
+                && (m_chainman.IsInitialBlockDownload()
+                    || m_chainman.HasSustainedInvalidChainWithMoreWork()
+                    || m_chainman.HasFallenBehindPruneHorizon()););
+            if (accept && !m_snapshot_downloads.count(checkpoint_hash)) {
+                // Elektron Net: sanity-cap the peer-supplied size. This is a
+                // generous ceiling far above any realistic snapshot for this
+                // chain; it bounds disk exhaustion from bogus advertised sizes.
+                static constexpr uint64_t MAX_SNAPSHOT_FILE_SIZE = uint64_t{64} << 30; // 64 GiB
+                if (file_size > MAX_SNAPSHOT_FILE_SIZE) {
+                    LogDebug(BCLog::NET, "Ignoring utxosnapshot from peer=%d: advertised size %llu exceeds cap\n",
+                             pfrom.GetId(), file_size);
+                    return;
+                }
                 const fs::path snapshot_dir = m_chainman.m_options.datadir / "snapshots";
                 const fs::path final_path = snapshot_dir / fs::u8path(strprintf("%d-%s.dat", checkpoint_height, checkpoint_hash.ToString()));
                 if (!fs::exists(final_path)) {
@@ -5430,6 +5467,7 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
                     dl.final_path = final_path;
                     dl.temp_path = final_path + ".download";
                     dl.last_progress_time = std::chrono::steady_clock::now();
+                    dl.start_time = dl.last_progress_time;
                     dl.utxo_hash = utxo_hash;
                     // Persist the advertised UTXO hash so it survives restarts
                     // and can be validated against the on-chain checkpoint later.
