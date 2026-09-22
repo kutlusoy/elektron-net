@@ -35,6 +35,7 @@
 #include <script/descriptor.h>
 #include <script/script.h>
 #include <script/signingprovider.h>
+#include <sync.h>
 #include <txmempool.h>
 #include <univalue.h>
 #include <util/signalinterrupt.h>
@@ -885,41 +886,54 @@ static RPCMethod getblocktemplate()
     }
 
     // Update block
+    // Elektron Net: the template cache below is shared across concurrent RPC
+    // worker threads, so it must be synchronized. A shared_ptr copy is taken
+    // under the lock and used after releasing it, so building the response on
+    // one thread does not hold the lock while another thread may replace the
+    // cache. g_gbt_cache_mutex is only ever acquired from this call site and
+    // is acquired before cs_main (taken inside LookupBlockIndex/createNewBlock),
+    // so there is no lock-order cycle.
+    static Mutex g_gbt_cache_mutex;
     static CBlockIndex* pindexPrev;
     static int64_t time_start;
     static CScript cached_coinbase_output_script;
-    static std::unique_ptr<BlockTemplate> block_template;
-    if (!pindexPrev || pindexPrev->GetBlockHash() != tip ||
-        coinbase_output_script != cached_coinbase_output_script ||
-        (mempool.GetTransactionsUpdated() != nTransactionsUpdatedLast && GetTime() - time_start > 5))
+    static std::shared_ptr<BlockTemplate> block_template;
+    std::shared_ptr<BlockTemplate> tmpl;
     {
-        // Clear pindexPrev so future calls make a new block, despite any failures from here on
-        pindexPrev = nullptr;
+        LOCK(g_gbt_cache_mutex);
+        if (!pindexPrev || pindexPrev->GetBlockHash() != tip ||
+            coinbase_output_script != cached_coinbase_output_script ||
+            (mempool.GetTransactionsUpdated() != nTransactionsUpdatedLast && GetTime() - time_start > 5))
+        {
+            // Clear pindexPrev so future calls make a new block, despite any failures from here on
+            pindexPrev = nullptr;
 
-        // Store the pindexBest used before createNewBlock, to avoid races
-        nTransactionsUpdatedLast = mempool.GetTransactionsUpdated();
-        CBlockIndex* pindexPrevNew = chainman.m_blockman.LookupBlockIndex(tip);
-        time_start = GetTime();
+            // Store the pindexBest used before createNewBlock, to avoid races
+            nTransactionsUpdatedLast = mempool.GetTransactionsUpdated();
+            CBlockIndex* pindexPrevNew = chainman.m_blockman.LookupBlockIndex(tip);
+            time_start = GetTime();
 
-        // Create new block. Opt-out of cooldown mechanism, because it would add
-        // a delay to each getblocktemplate call. This differs from typical
-        // long-lived IPC usage, where the overhead is paid only when creating
-        // the initial template.
-        block_template = miner.createNewBlock({
-            .coinbase_output_script = coinbase_output_script,
-            .include_dummy_extranonce = true,
-        }, /*cooldown=*/false);
-        if (!block_template) {
-            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to create new block (UTXO attestation error)");
+            // Create new block. Opt-out of cooldown mechanism, because it would add
+            // a delay to each getblocktemplate call. This differs from typical
+            // long-lived IPC usage, where the overhead is paid only when creating
+            // the initial template.
+            block_template = miner.createNewBlock({
+                .coinbase_output_script = coinbase_output_script,
+                .include_dummy_extranonce = true,
+            }, /*cooldown=*/false);
+            if (!block_template) {
+                throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to create new block (UTXO attestation error)");
+            }
+
+
+            // Need to update only after we know createNewBlock succeeded
+            pindexPrev = pindexPrevNew;
+            cached_coinbase_output_script = coinbase_output_script;
         }
-
-
-        // Need to update only after we know createNewBlock succeeded
-        pindexPrev = pindexPrevNew;
-        cached_coinbase_output_script = coinbase_output_script;
+        CHECK_NONFATAL(pindexPrev);
+        tmpl = block_template;
     }
-    CHECK_NONFATAL(pindexPrev);
-    CBlock block{block_template->getBlock()};
+    CBlock block{tmpl->getBlock()};
 
     // Update nTime
     UpdateTime(&block, consensusParams, pindexPrev);
@@ -932,8 +946,8 @@ static RPCMethod getblocktemplate()
 
     UniValue transactions(UniValue::VARR);
     std::map<Txid, int64_t> setTxIndex;
-    std::vector<CAmount> tx_fees{block_template->getTxFees()};
-    std::vector<CAmount> tx_sigops{block_template->getTxSigops()};
+    std::vector<CAmount> tx_fees{tmpl->getTxFees()};
+    std::vector<CAmount> tx_sigops{tmpl->getTxSigops()};
 
     int i = 0;
     for (const auto& it : block.vtx) {
@@ -1061,7 +1075,7 @@ static RPCMethod getblocktemplate()
         result.pushKV("signet_challenge", HexStr(consensusParams.signet_challenge));
     }
 
-    if (auto coinbase{block_template->getCoinbaseTx()}; coinbase.required_outputs.size() > 0) {
+    if (auto coinbase{tmpl->getCoinbaseTx()}; coinbase.required_outputs.size() > 0) {
         UniValue required_outputs(UniValue::VARR);
         for (const CTxOut& out : coinbase.required_outputs) {
             UniValue entry(UniValue::VOBJ);
