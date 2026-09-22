@@ -213,6 +213,124 @@ BOOST_FIXTURE_TEST_CASE(scan_for_wallet_transactions, TestChain100Setup)
     }
 }
 
+// Elektron Net: a recorded TxStateConfirmed may point at a block that has left
+// the active chain without BlockDisconnected ever firing (automatic snapshot
+// activation swaps the active chainstate without DisconnectTip; see
+// MaybeActivateAutomaticSnapshot in init.cpp). Depth, trust, balance and
+// AvailableCoins must fail closed for such stale states, while the same tx
+// confirmed in an active block keeps working (no false negatives).
+BOOST_FIXTURE_TEST_CASE(stale_confirmed_state_orphaned_block, TestChain100Setup)
+{
+    CWallet wallet(m_node.chain.get(), "", CreateMockableWalletDatabase());
+    uint256 tip_hash;
+    int tip_height;
+    {
+        LOCK(wallet.cs_wallet);
+        LOCK(Assert(m_node.chainman)->GetMutex());
+        wallet.SetWalletFlag(WALLET_FLAG_DESCRIPTORS);
+        tip_height = m_node.chainman->ActiveChain().Height();
+        tip_hash = m_node.chainman->ActiveChain().Tip()->GetBlockHash();
+        wallet.SetLastBlockProcessed(tip_height, tip_hash);
+    }
+    AddKey(wallet, coinbaseKey);
+
+    // Mine a block and orphan it back out of the active chain. It stays in the
+    // block index (like the live node's orphaned blocks, visible via
+    // getblockheader confirmations=-1) but is no longer part of the active chain.
+    CBlock orphan_block = CreateAndProcessBlock({}, GetScriptForRawPubKey(coinbaseKey.GetPubKey()));
+    const uint256 orphan_hash = orphan_block.GetHash();
+    const int orphan_height = tip_height + 1;
+    {
+        LOCK(cs_main);
+        BlockValidationState state;
+        CBlockIndex* tip = Assert(m_node.chainman)->ActiveChain().Tip();
+        BOOST_CHECK_EQUAL(tip->GetBlockHash(), orphan_hash);
+        BOOST_CHECK(m_node.chainman->ActiveChainstate().InvalidateBlock(state, tip));
+    }
+
+    // Non-coinbase tx paying to the wallet key, with an input unknown to the
+    // wallet (so trust must come from the confirmed state alone).
+    CMutableTransaction mtx;
+    mtx.vin.push_back({CTxIn{m_coinbase_txns[0]->GetHash(), 0}});
+    mtx.vout.emplace_back(10 * COIN, GetScriptForRawPubKey(coinbaseKey.GetPubKey()));
+    CTransactionRef tx = MakeTransactionRef(mtx);
+
+    // Load as inactive: LoadToWallet sanitizes states at load time via
+    // updateState (the production stale state arises while the node is running).
+    {
+        LOCK(wallet.cs_wallet);
+        BOOST_CHECK(wallet.LoadToWallet(tx->GetHash(), [&](CWalletTx& wtx, bool /*new_tx*/) {
+            // CWalletTx::operator= is private in this fork; fill members directly
+            // (the constructed state is already TxStateInactive).
+            wtx.tx = tx;
+            return true;
+        }));
+    }
+
+    // Simulate the production stale state: confirmed in the orphaned block.
+    {
+        LOCK(wallet.cs_wallet);
+        CWalletTx& wtx = wallet.mapWallet.at(tx->GetHash());
+        wtx.m_state = TxStateConfirmed{orphan_hash, orphan_height, /*position_in_block=*/0};
+
+        // Depth fails closed: orphaned block treated like an unconfirmed tx
+        BOOST_CHECK_EQUAL(wallet.GetTxDepthInMainChain(wtx), 0);
+        // Not trusted
+        BOOST_CHECK(!CachedTxIsTrusted(wallet, wtx));
+        // Counted nowhere: not trusted, not in the mempool, not a coinbase
+        const Balance bal = GetBalance(wallet);
+        BOOST_CHECK_EQUAL(bal.m_mine_trusted, 0);
+        BOOST_CHECK_EQUAL(bal.m_mine_untrusted_pending, 0);
+        BOOST_CHECK_EQUAL(bal.m_mine_immature, 0);
+        // Not listed as an available coin
+        const CoinsResult coins = AvailableCoins(wallet);
+        BOOST_CHECK_EQUAL(coins.All().size(), 0);
+    }
+
+    // Phantom coinbase recorded confirmed in the orphaned block: must land in
+    // the immature bucket only, and must not trip the blocks-to-maturity assert
+    // (depth 0, not -1).
+    CMutableTransaction cb_mtx;
+    // A coinbase per CTransaction::IsCoinBase(): exactly one input with a null prevout
+    cb_mtx.vin.emplace_back(COutPoint());
+    cb_mtx.vout.emplace_back(5 * COIN, GetScriptForRawPubKey(coinbaseKey.GetPubKey()));
+    CTransactionRef cb_tx = MakeTransactionRef(cb_mtx);
+    {
+        LOCK(wallet.cs_wallet);
+        BOOST_CHECK(wallet.LoadToWallet(cb_tx->GetHash(), [&](CWalletTx& wtx, bool /*new_tx*/) {
+            wtx.tx = cb_tx;
+            return true;
+        }));
+    }
+    {
+        LOCK(wallet.cs_wallet);
+        CWalletTx& cb_wtx = wallet.mapWallet.at(cb_tx->GetHash());
+        cb_wtx.m_state = TxStateConfirmed{orphan_hash, orphan_height, /*position_in_block=*/-1};
+
+        BOOST_CHECK_EQUAL(wallet.GetTxDepthInMainChain(cb_wtx), 0);
+        BOOST_CHECK(cb_wtx.IsCoinBase());
+        BOOST_CHECK(wallet.IsTxImmatureCoinBase(cb_wtx));
+        const Balance bal = GetBalance(wallet);
+        BOOST_CHECK_EQUAL(bal.m_mine_immature, 5 * COIN);
+        BOOST_CHECK_EQUAL(bal.m_mine_trusted, 0);
+    }
+
+    // Counter-probe: the same tx confirmed in the ACTIVE tip must be counted.
+    {
+        LOCK(wallet.cs_wallet);
+        CWalletTx& wtx = wallet.mapWallet.at(tx->GetHash());
+        wtx.m_state = TxStateConfirmed{tip_hash, tip_height, /*position_in_block=*/0};
+
+        BOOST_CHECK_EQUAL(wallet.GetTxDepthInMainChain(wtx), 1);
+        BOOST_CHECK(CachedTxIsTrusted(wallet, wtx));
+        BOOST_CHECK_EQUAL(GetBalance(wallet).m_mine_trusted, 10 * COIN);
+        const CoinsResult coins = AvailableCoins(wallet);
+        BOOST_CHECK_EQUAL(coins.All().size(), 1);
+        BOOST_CHECK_EQUAL(coins.All().at(0).depth, 1);
+        BOOST_CHECK(coins.All().at(0).safe);
+    }
+}
+
 // This test verifies that wallet settings can be added and removed
 // concurrently, ensuring no race conditions occur during either process.
 BOOST_FIXTURE_TEST_CASE(write_wallet_settings_concurrently, TestingSetup)

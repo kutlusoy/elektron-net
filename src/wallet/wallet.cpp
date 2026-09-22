@@ -3449,7 +3449,22 @@ int CWallet::GetTxDepthInMainChain(const CWalletTx& wtx) const
     AssertLockHeld(cs_wallet);
     if (auto* conf = wtx.state<TxStateConfirmed>()) {
         assert(conf->confirmed_block_height >= 0);
-        return GetLastBlockHeight() - conf->confirmed_block_height + 1;
+        // Elektron Net: recorded state can be stale — a block can leave the active
+        // chain without BlockDisconnected ever firing (automatic-snapshot activation
+        // swaps the active chainstate without DisconnectTip; see
+        // MaybeActivateAutomaticSnapshot in init.cpp). Verify membership before
+        // trusting the recorded height; treat an orphaned block exactly like an
+        // unconfirmed tx (depth 0), per the documented contract in wallet.h.
+        // Block-index-only lookup: no block data is read, safe on pruned nodes.
+        int active_height{-1};
+        bool in_active_chain{false};
+        if (!chain().findBlock(conf->confirmed_block_hash,
+                    FoundBlock().inActiveChain(in_active_chain).height(active_height))
+                || !in_active_chain) {
+            return 0; // fail closed; findBlock==false covers hashes absent from any index
+        }
+        assert(active_height >= 0);
+        return GetLastBlockHeight() - active_height + 1;
     } else if (auto* conf = wtx.state<TxStateBlockConflicted>()) {
         assert(conf->conflicting_block_height >= 0);
         return -1 * (GetLastBlockHeight() - conf->conflicting_block_height + 1);
