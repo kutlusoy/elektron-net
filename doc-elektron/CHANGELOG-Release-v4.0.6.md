@@ -1,6 +1,6 @@
 # Changelog: Release v4.0.6
 
-**Status:** Built from branch `4.0.6`. Not yet tagged/shipped as of this writing.
+**Status:** Released as `v4.0.6`.
 **Related:** `fix-report-snapshot-restart-deadlock.md` (snapshot self-heal detail),
 `fix-report-powlimit-retarget-overflow.md` (powLimit overflow fix detail),
 `fix-report-wallet-utxo-recovery-real-outpoints.md` (wallet UTXO recovery fix),
