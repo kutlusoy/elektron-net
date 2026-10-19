@@ -176,11 +176,11 @@ TxSize CalculateMaximumSignedTxSize(const CTransaction &tx, const CWallet *walle
     std::vector<CTxOut> txouts;
     // Look up the inputs. The inputs are either in the wallet, or in coin_control.
     for (const CTxIn& input : tx.vin) {
-        const auto mi = wallet->mapWallet.find(input.prevout.hash);
+        const CWalletTx* known = wallet->GetWalletTxByOutpoint(input.prevout);
         // Can not estimate size without knowing the input details
-        if (mi != wallet->mapWallet.end()) {
-            assert(input.prevout.n < mi->second.tx->vout.size());
-            txouts.emplace_back(mi->second.tx->vout.at(input.prevout.n));
+        if (known) {
+            assert(input.prevout.n < known->tx->vout.size());
+            txouts.emplace_back(known->tx->vout.at(input.prevout.n));
         } else if (coin_control) {
             const auto& txout{coin_control->GetExternalOutput(input.prevout)};
             if (!txout) return TxSize{-1, -1};
@@ -529,7 +529,7 @@ CoinsResult AvailableCoins(const CWallet& wallet,
 const CTxOut& FindNonChangeParentOutput(const CWallet& wallet, const COutPoint& outpoint)
 {
     AssertLockHeld(wallet.cs_wallet);
-    const CWalletTx* wtx{Assert(wallet.GetWalletTx(outpoint.hash))};
+    const CWalletTx* wtx{Assert(wallet.GetWalletTxByOutpoint(outpoint))};
 
     const CTransaction* ptx = wtx->tx.get();
     int n = outpoint.n;

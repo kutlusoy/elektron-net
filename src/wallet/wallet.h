@@ -437,6 +437,10 @@ private:
     //! Set of both spent and unspent transaction outputs owned by this wallet
     std::unordered_map<COutPoint, WalletTXO, SaltedOutpointHasher> m_txos GUARDED_BY(cs_wallet);
 
+    //! Elektron Net: outputs recovered from the UTXO set (their funding transactions are pruned), keyed by the
+    //! real outpoint. The value is the txid of the partial wallet transaction that holds the output.
+    std::unordered_map<COutPoint, Txid, SaltedOutpointHasher> m_recovered GUARDED_BY(cs_wallet);
+
     /**
      * Catch wallet up to current chain, scanning new blocks, updating the best
      * block locator and m_last_block_processed, and registering for
@@ -520,6 +524,15 @@ public:
     interfaces::Chain& chain() const { assert(m_chain); return *m_chain; }
 
     const CWalletTx* GetWalletTx(const Txid& hash) const EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+
+    //! Elektron Net: marker version of the partial transactions that carry outputs recovered from the UTXO set
+    static constexpr uint32_t RECOVERED_TX_VERSION{0x52435631};
+    //! True for the partial transaction created by CreditUTXOFromChain(): one input naming the real outpoint, one output.
+    static bool IsRecoveredPartial(const CTransaction& tx);
+    //! Finds the wallet transaction that holds the given output. For an output recovered from the UTXO set this is the
+    //! partial transaction, whose own txid differs from the outpoint's txid, so a lookup by txid alone cannot find it.
+    const CWalletTx* GetWalletTxByOutpoint(const COutPoint& outpoint) const EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+    CWalletTx* GetMutableWalletTxByOutpoint(const COutPoint& outpoint) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
 
     std::set<Txid> GetTxConflicts(const CWalletTx& wtx) const EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
 

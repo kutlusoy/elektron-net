@@ -562,6 +562,25 @@ const CWalletTx* CWallet::GetWalletTx(const Txid& hash) const
     return &(it->second);
 }
 
+bool CWallet::IsRecoveredPartial(const CTransaction& tx)
+{
+    return tx.version == RECOVERED_TX_VERSION && tx.vin.size() == 1 && tx.vin[0].scriptSig.empty() &&
+           !tx.vin[0].prevout.IsNull() && tx.vin[0].prevout.n < tx.vout.size();
+}
+
+const CWalletTx* CWallet::GetWalletTxByOutpoint(const COutPoint& outpoint) const
+{
+    AssertLockHeld(cs_wallet);
+    if (const CWalletTx* wtx = GetWalletTx(outpoint.hash)) return wtx;
+    if (const auto it = m_recovered.find(outpoint); it != m_recovered.end()) return GetWalletTx(it->second);
+    return nullptr;
+}
+
+CWalletTx* CWallet::GetMutableWalletTxByOutpoint(const COutPoint& outpoint)
+{
+    return const_cast<CWalletTx*>(std::as_const(*this).GetWalletTxByOutpoint(outpoint));
+}
+
 void CWallet::UpgradeDescriptorCache()
 {
     if (!IsWalletFlagSet(WALLET_FLAG_DESCRIPTORS) || IsLocked() || IsWalletFlagSet(WALLET_FLAG_LAST_HARDENED_XPUB_CACHED)) {
@@ -833,6 +852,8 @@ void CWallet::AddToSpends(const CWalletTx& wtx)
 {
     if (wtx.IsCoinBase()) // Coinbases don't spend anything!
         return;
+    // Elektron Net: the input of a recovered partial transaction only names the output it holds
+    if (IsRecoveredPartial(*wtx.tx)) return;
 
     for (const CTxIn& txin : wtx.tx->vin)
         AddToSpends(txin.prevout, wtx.GetHash());
@@ -1026,8 +1047,8 @@ bool CWallet::MarkReplaced(const Txid& originalHash, const Txid& newHash)
 void CWallet::SetSpentKeyState(WalletBatch& batch, const Txid& hash, unsigned int n, bool used, std::set<CTxDestination>& tx_destinations)
 {
     AssertLockHeld(cs_wallet);
-    const CWalletTx* srctx = GetWalletTx(hash);
-    if (!srctx) return;
+    const CWalletTx* srctx = GetWalletTxByOutpoint(COutPoint(hash, n));
+    if (!srctx || n >= srctx->tx->vout.size()) return;
 
     CTxDestination dst;
     if (ExtractDestination(srctx->tx->vout[n].scriptPubKey, dst)) {
@@ -1062,6 +1083,19 @@ CWalletTx* CWallet::AddToWallet(CTransactionRef tx, const TxState& state, const 
     WalletBatch batch(GetDatabase());
 
     Txid hash = tx->GetHash();
+
+    // Elektron Net: a real transaction that holds outputs recovered from the UTXO set replaces the partial ones
+    if (!m_recovered.empty() && !IsRecoveredPartial(*tx)) {
+        std::vector<Txid> partials;
+        for (uint32_t i = 0; i < tx->vout.size(); ++i) {
+            if (const auto it = m_recovered.find(COutPoint(hash, i)); it != m_recovered.end()) partials.push_back(it->second);
+        }
+        if (!partials.empty()) {
+            if (auto res = RemoveTxs(partials); !res) {
+                WalletLogPrintf("Could not drop recovered partial transactions: %s\n", util::ErrorString(res).original);
+            }
+        }
+    }
 
     if (IsWalletFlagSet(WALLET_FLAG_AVOID_REUSE)) {
         // Mark used destinations
@@ -1705,7 +1739,7 @@ bool CWallet::IsMine(const CTransaction& tx) const
 bool CWallet::IsMine(const COutPoint& outpoint) const
 {
     AssertLockHeld(cs_wallet);
-    auto wtx = GetWalletTx(outpoint.hash);
+    auto wtx = GetWalletTxByOutpoint(outpoint);
     if (!wtx) {
         return false;
     }
@@ -1901,22 +1935,38 @@ bool CWallet::CreditUTXOFromChain(const COutPoint& outpoint, const Coin& coin)
         CWalletTx& wtx = it->second;
         CMutableTransaction mtx{*wtx.tx};
         if (mtx.vout.size() <= outpoint.n) {
-            mtx.vout.resize(outpoint.n + 1);
+            mtx.vout.resize(outpoint.n + 1, CTxOut{0, CScript{}});
         }
         mtx.vout[outpoint.n] = coin.out;
         wtx.SetTx(MakeTransactionRef(std::move(mtx)));
         const uint256 block_hash = chain().getBlockHash(static_cast<int>(coin.nHeight));
-        wtx.m_state = TxStateConfirmed{block_hash, static_cast<int>(coin.nHeight), -1};
+        wtx.m_state = TxStateConfirmed{block_hash, static_cast<int>(coin.nHeight), 0};
         wtx.MarkDirty();
         RefreshTXOsFromTx(wtx);
         return true;
     }
 
-    CMutableTransaction mtx;
-    mtx.vout.resize(outpoint.n + 1);
-    mtx.vout[outpoint.n] = coin.out;
     const uint256 block_hash = chain().getBlockHash(static_cast<int>(coin.nHeight));
-    return AddToWallet(MakeTransactionRef(std::move(mtx)), TxStateConfirmed{block_hash, static_cast<int>(coin.nHeight), -1}) != nullptr;
+    const TxStateConfirmed state{block_hash, static_cast<int>(coin.nHeight), 0};
+
+    // Elektron Net: the funding transaction is pruned, so only the output is known. It is kept in a partial
+    // transaction that names the real outpoint in its single input, which keeps equal-looking outputs distinct
+    // and lets the wallet list, select and sign the coin under its real outpoint (see RefreshTXOsFromTx()).
+    if (m_recovered.contains(outpoint)) {
+        if (CWalletTx* known = GetMutableWalletTxByOutpoint(outpoint)) {
+            known->m_state = state;
+            known->MarkDirty();
+            WalletBatch batch(GetDatabase());
+            batch.WriteTx(*known);
+            return true;
+        }
+    }
+    CMutableTransaction mtx;
+    mtx.version = RECOVERED_TX_VERSION;
+    mtx.vin.emplace_back(outpoint);
+    mtx.vout.assign(outpoint.n + 1, CTxOut{0, CScript{}});
+    mtx.vout[outpoint.n] = coin.out;
+    return AddToWallet(MakeTransactionRef(std::move(mtx)), state) != nullptr;
 }
 
 bool CWallet::ScanUTXOSet(bilingual_str& error)
@@ -2261,11 +2311,11 @@ bool CWallet::SignTransaction(CMutableTransaction& tx) const
     // Build coins map
     std::map<COutPoint, Coin> coins;
     for (auto& input : tx.vin) {
-        const auto mi = mapWallet.find(input.prevout.hash);
-        if(mi == mapWallet.end() || input.prevout.n >= mi->second.tx->vout.size()) {
+        const CWalletTx* found = GetWalletTxByOutpoint(input.prevout);
+        if (!found || input.prevout.n >= found->tx->vout.size()) {
             return false;
         }
-        const CWalletTx& wtx = mi->second;
+        const CWalletTx& wtx = *found;
         int prev_height = wtx.state<TxStateConfirmed>() ? wtx.state<TxStateConfirmed>()->confirmed_block_height : 0;
         coins[input.prevout] = Coin(wtx.tx->vout[input.prevout.n], prev_height, wtx.IsCoinBase());
     }
@@ -2312,6 +2362,9 @@ std::optional<PSBTError> CWallet::FillPSBT(PartiallySignedTransaction& psbtx, co
                 // We only need the non_witness_utxo, which is a superset of the witness_utxo.
                 //   The signing code will switch to the smaller witness_utxo if this is ok.
                 input.non_witness_utxo = wtx.tx;
+            } else if (const CWalletTx* recovered = GetWalletTxByOutpoint(txin.prevout); recovered && txin.prevout.n < recovered->tx->vout.size()) {
+                // Elektron Net: the funding transaction of a recovered output is pruned, only the output is known
+                input.witness_utxo = recovered->tx->vout[txin.prevout.n];
             }
         }
     }
@@ -2438,9 +2491,10 @@ void CWallet::CommitTransaction(CTransactionRef tx, mapValue_t mapValue, std::ve
 
     // Notify that old coins are spent
     for (const CTxIn& txin : tx->vin) {
-        CWalletTx &coin = mapWallet.at(txin.prevout.hash);
-        coin.MarkDirty();
-        NotifyTransactionChanged(coin.GetHash(), CT_UPDATED);
+        CWalletTx* coin = GetMutableWalletTxByOutpoint(txin.prevout);
+        if (!coin) continue;
+        coin->MarkDirty();
+        NotifyTransactionChanged(coin->GetHash(), CT_UPDATED);
     }
 
     if (!fBroadcastTransactions) {
@@ -2559,6 +2613,13 @@ util::Result<void> CWallet::RemoveTxs(WalletBatch& batch, std::vector<Txid>& txs
             }
             for (unsigned int i = 0; i < it->second.tx->vout.size(); ++i) {
                 m_txos.erase(COutPoint(hash, i));
+            }
+            if (IsRecoveredPartial(*it->second.tx)) {
+                const COutPoint& real = it->second.tx->vin[0].prevout;
+                if (const auto rit = m_recovered.find(real); rit != m_recovered.end() && rit->second == hash) {
+                    m_txos.erase(real);
+                    m_recovered.erase(rit);
+                }
             }
             mapWallet.erase(it);
             NotifyTransactionChanged(hash, CT_DELETED);
@@ -4687,6 +4748,11 @@ void CWallet::RefreshTXOsFromTx(const CWalletTx& wtx)
         const CTxOut& txout = wtx.tx->vout.at(i);
         if (!IsMine(txout)) continue;
         COutPoint outpoint(wtx.GetHash(), i);
+        if (IsRecoveredPartial(*wtx.tx)) {
+            // Elektron Net: list the recovered output under its real outpoint
+            outpoint = wtx.tx->vin[0].prevout;
+            m_recovered[outpoint] = wtx.GetHash();
+        }
         // Elektron Net: always (re-)point the cached entry at the wtx's *current*
         // tx/vout. WalletTXO stores plain references into wtx and wtx.tx->vout[i] (and
         // is therefore not assignable), so an existing entry must be erased before

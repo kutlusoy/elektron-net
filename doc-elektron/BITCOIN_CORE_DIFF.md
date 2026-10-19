@@ -98,7 +98,7 @@ When a wallet's last-synced height is older than available pruned blocks, Elektr
 
 1. **`interfaces::Chain::forEachCoin()`** — iterates the live chain UTXO set (`src/node/interfaces.cpp`).
 2. **`CWallet::ScanUTXOSet()`** — credits outputs matching wallet keys (`src/wallet/wallet.cpp`).
-3. **`CWallet::CreditUTXOFromChain()`** — builds partial `CWalletTx` entries keyed by real txid.
+3. **`CWallet::CreditUTXOFromChain()`**: stores each recovered output in a partial `CWalletTx` (marker version, one input naming the real outpoint). `CWallet::RefreshTXOsFromTx()` registers it under the real outpoint, so balance, coin selection, PSBT creation and signing use the real `txid:vout` and the payment is accepted by the mempool. The `rescanutxoset` RPC runs the scan on demand. See `fix-report-wallet-utxo-recovery-real-outpoints.md`.
 
 Triggered automatically in `CWallet::AttachChain()` when `chain.havePruned()` and block rescan is impossible. User sees a warning: *"Wallet balances recovered from the current UTXO set. Pruned transaction history is unavailable."*
 

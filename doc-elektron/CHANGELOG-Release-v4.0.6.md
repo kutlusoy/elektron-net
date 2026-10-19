@@ -3,6 +3,7 @@
 **Status:** Built from branch `4.0.6`. Not yet tagged/shipped as of this writing.
 **Related:** `fix-report-snapshot-restart-deadlock.md` (snapshot self-heal detail),
 `fix-report-powlimit-retarget-overflow.md` (powLimit overflow fix detail),
+`fix-report-wallet-utxo-recovery-real-outpoints.md` (wallet UTXO recovery fix),
 `WHITEPAPER.md`, `BITCOIN_CORE_DIFF.md`.
 
 This file is a release-level summary of everything shipped in v4.0.6, in
@@ -176,6 +177,19 @@ a plain restart with no flags. The delete-and-restart-plainly option was
 verified on regtest to actually bootstrap the node exactly like a brand-new
 one, landing on the same `bestblockhash`/`muhash` as the source node. See
 `fix-report-snapshot-restart-deadlock.md` §5.4 for the full reasoning.
+
+## Wallet: UTXO recovery on pruned nodes keeps the real outpoint
+
+Outputs that `CWallet::ScanUTXOSet()` recovers from the UTXO set (their funding
+transactions are pruned) were stored in a fabricated partial transaction with a
+synthetic txid. Two equal-looking outputs could trip an assertion in
+`AddToWallet()`, and the balance was right while a payment from such a coin
+never reached the mempool because it spent an outpoint that does not exist.
+The partial transaction now carries the real outpoint, so listing, balance,
+coin selection, PSBT creation and signing use the real `txid:vout`, the result
+survives a wallet reload and a repeated scan is idempotent. `rescanutxoset` is
+available as RPC. No consensus or protocol change. See
+`fix-report-wallet-utxo-recovery-real-outpoints.md`.
 
 ## Version
 
