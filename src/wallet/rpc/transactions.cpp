@@ -309,6 +309,8 @@ static void ListTransactions(const CWallet& wallet, const CWalletTx& wtx, int nM
                              bool include_change = false)
     EXCLUSIVE_LOCKS_REQUIRED(wallet.cs_wallet)
 {
+    if (CWallet::IsRecoveredSpend(*wtx.tx)) return;
+
     CAmount nFee;
     std::list<COutputEntry> listReceived;
     std::list<COutputEntry> listSent;

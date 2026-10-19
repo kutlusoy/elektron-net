@@ -188,7 +188,9 @@ never reached the mempool because it spent an outpoint that does not exist.
 The partial transaction now carries the real outpoint, so listing, balance,
 coin selection, PSBT creation and signing use the real `txid:vout`, the result
 survives a wallet reload and a repeated scan is idempotent. `rescanutxoset` is
-available as RPC. No consensus or protocol change. See
+available as RPC. A wallet that was offline while one of its coins was spent
+elsewhere no longer keeps that coin: after a UTXO scan outside initial block
+download, outputs missing from the UTXO set are marked spent. No consensus or protocol change. See
 `fix-report-wallet-utxo-recovery-real-outpoints.md`.
 
 ## Version

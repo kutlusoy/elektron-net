@@ -440,6 +440,9 @@ private:
     //! Elektron Net: outputs recovered from the UTXO set (their funding transactions are pruned), keyed by the
     //! real outpoint. The value is the txid of the partial wallet transaction that holds the output.
     std::unordered_map<COutPoint, Txid, SaltedOutpointHasher> m_recovered GUARDED_BY(cs_wallet);
+    //! Elektron Net: outputs the wallet knew as unspent but that are no longer in the UTXO set, their spending
+    //! transaction is pruned. The value is the txid of the placeholder spend that marks the output as spent.
+    std::unordered_map<COutPoint, Txid, SaltedOutpointHasher> m_recovered_spends GUARDED_BY(cs_wallet);
 
     /**
      * Catch wallet up to current chain, scanning new blocks, updating the best
@@ -529,6 +532,9 @@ public:
     static constexpr uint32_t RECOVERED_TX_VERSION{0x52435631};
     //! True for the partial transaction created by CreditUTXOFromChain(): one input naming the real outpoint, one output.
     static bool IsRecoveredPartial(const CTransaction& tx);
+    //! Marker version of the placeholder transaction that spends one output whose real spending transaction is pruned.
+    static constexpr uint32_t RECOVERED_SPEND_VERSION{0x52435632};
+    static bool IsRecoveredSpend(const CTransaction& tx);
     //! Finds the wallet transaction that holds the given output. For an output recovered from the UTXO set this is the
     //! partial transaction, whose own txid differs from the outpoint's txid, so a lookup by txid alone cannot find it.
     const CWalletTx* GetWalletTxByOutpoint(const COutPoint& outpoint) const EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
@@ -669,6 +675,7 @@ public:
     ScanResult ScanForWalletTransactions(const uint256& start_block, int start_height, std::optional<int> max_height, const WalletRescanReserver& reserver, bool fUpdate, bool save_progress);
     /** Elektron Net: recover wallet balances from the current UTXO set when pruned history is unavailable. */
     bool ScanUTXOSet(bilingual_str& error) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+    void MarkSpentOutputsFromChain(const std::set<COutPoint>& in_utxo_set) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
     bool CreditUTXOFromChain(const COutPoint& outpoint, const Coin& coin) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
     /** Elektron Net: true if AttachChain()'s ScanUTXOSet() fallback ran while the node
      *  was still in initial block download -- i.e. it only ever saw whatever partial

@@ -568,6 +568,12 @@ bool CWallet::IsRecoveredPartial(const CTransaction& tx)
            !tx.vin[0].prevout.IsNull() && tx.vin[0].prevout.n < tx.vout.size();
 }
 
+bool CWallet::IsRecoveredSpend(const CTransaction& tx)
+{
+    return tx.version == RECOVERED_SPEND_VERSION && tx.vin.size() == 1 && tx.vin[0].scriptSig.empty() &&
+           !tx.vin[0].prevout.IsNull() && tx.vout.empty();
+}
+
 const CWalletTx* CWallet::GetWalletTxByOutpoint(const COutPoint& outpoint) const
 {
     AssertLockHeld(cs_wallet);
@@ -854,6 +860,7 @@ void CWallet::AddToSpends(const CWalletTx& wtx)
         return;
     // Elektron Net: the input of a recovered partial transaction only names the output it holds
     if (IsRecoveredPartial(*wtx.tx)) return;
+    if (IsRecoveredSpend(*wtx.tx)) m_recovered_spends[wtx.tx->vin[0].prevout] = wtx.GetHash();
 
     for (const CTxIn& txin : wtx.tx->vin)
         AddToSpends(txin.prevout, wtx.GetHash());
@@ -1085,6 +1092,17 @@ CWalletTx* CWallet::AddToWallet(CTransactionRef tx, const TxState& state, const 
     Txid hash = tx->GetHash();
 
     // Elektron Net: a real transaction that holds outputs recovered from the UTXO set replaces the partial ones
+    if (!m_recovered_spends.empty() && !IsRecoveredSpend(*tx)) {
+        std::vector<Txid> placeholders;
+        for (const CTxIn& txin : tx->vin) {
+            if (const auto it = m_recovered_spends.find(txin.prevout); it != m_recovered_spends.end()) placeholders.push_back(it->second);
+        }
+        if (!placeholders.empty()) {
+            if (auto res = RemoveTxs(placeholders); !res) {
+                WalletLogPrintf("Could not drop placeholder spends: %s\n", util::ErrorString(res).original);
+            }
+        }
+    }
     if (!m_recovered.empty() && !IsRecoveredPartial(*tx)) {
         std::vector<Txid> partials;
         for (uint32_t i = 0; i < tx->vout.size(); ++i) {
@@ -1930,6 +1948,14 @@ bool CWallet::CreditUTXOFromChain(const COutPoint& outpoint, const Coin& coin)
     AssertLockHeld(cs_wallet);
     if (!IsMine(coin.out)) return false;
 
+    // The output is in the UTXO set, so a placeholder spend recorded earlier was wrong (for example a scan during a reorg)
+    if (const auto sit = m_recovered_spends.find(outpoint); sit != m_recovered_spends.end()) {
+        std::vector<Txid> wrong{sit->second};
+        if (auto res = RemoveTxs(wrong); !res) {
+            WalletLogPrintf("Could not drop placeholder spend: %s\n", util::ErrorString(res).original);
+        }
+    }
+
     const Txid& hash = outpoint.hash;
     if (auto it = mapWallet.find(hash); it != mapWallet.end()) {
         CWalletTx& wtx = it->second;
@@ -1979,16 +2005,38 @@ bool CWallet::ScanUTXOSet(bilingual_str& error)
 
     WalletLogPrintf("Scanning UTXO set for wallet keys...\n");
     size_t credited{0};
+    std::set<COutPoint> in_utxo_set;
     chain().forEachCoin([&](const COutPoint& outpoint, const Coin& coin) {
         if (CreditUTXOFromChain(outpoint, coin)) {
             ++credited;
+            in_utxo_set.insert(outpoint);
         }
         return !chain().shutdownRequested();
     });
 
     WalletLogPrintf("UTXO scan credited %zu outputs\n", credited);
+    if (!chain().shutdownRequested() && !chain().isInitialBlockDownload()) MarkSpentOutputsFromChain(in_utxo_set);
     RefreshAllTXOs();
     return true;
+}
+
+void CWallet::MarkSpentOutputsFromChain(const std::set<COutPoint>& in_utxo_set)
+{
+    AssertLockHeld(cs_wallet);
+    std::vector<std::pair<COutPoint, TxStateConfirmed>> stale;
+    for (const auto& [outpoint, txo] : m_txos) {
+        if (in_utxo_set.contains(outpoint)) continue;
+        const auto* confirmed = txo.GetWalletTx().state<TxStateConfirmed>();
+        if (!confirmed || HowSpent(outpoint) != SpendType::UNSPENT) continue;
+        stale.emplace_back(outpoint, *confirmed);
+    }
+    for (const auto& [outpoint, state] : stale) {
+        CMutableTransaction mtx;
+        mtx.version = RECOVERED_SPEND_VERSION;
+        mtx.vin.emplace_back(outpoint);
+        AddToWallet(MakeTransactionRef(std::move(mtx)), state);
+    }
+    if (!stale.empty()) WalletLogPrintf("UTXO scan marked %zu outputs as spent (spending transaction is pruned)\n", stale.size());
 }
 
 void CWallet::MaybeRescanUTXOSetAfterSnapshot()
@@ -2613,6 +2661,9 @@ util::Result<void> CWallet::RemoveTxs(WalletBatch& batch, std::vector<Txid>& txs
             }
             for (unsigned int i = 0; i < it->second.tx->vout.size(); ++i) {
                 m_txos.erase(COutPoint(hash, i));
+            }
+            if (IsRecoveredSpend(*it->second.tx)) {
+                m_recovered_spends.erase(it->second.tx->vin[0].prevout);
             }
             if (IsRecoveredPartial(*it->second.tx)) {
                 const COutPoint& real = it->second.tx->vin[0].prevout;

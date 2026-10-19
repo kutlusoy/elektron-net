@@ -324,6 +324,7 @@ public:
         LOCK(m_wallet->cs_wallet);
         std::set<WalletTx> result;
         for (const auto& entry : m_wallet->mapWallet) {
+            if (CWallet::IsRecoveredSpend(*entry.second.tx)) continue;
             result.emplace(MakeWalletTx(*m_wallet, entry.second));
         }
         return result;
