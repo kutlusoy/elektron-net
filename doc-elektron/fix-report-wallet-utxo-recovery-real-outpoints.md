@@ -58,7 +58,11 @@ Regtest, mandatory pruning, 511 blocks, funding block below `pruneheight`:
 
 A wallet file that already holds entries from the old behavior is not rewritten automatically. Restoring the wallet from its seed on the fixed build, followed by `rescanutxoset`, produces the correct entries.
 
-## 5. Headless nodes
+## 5. Qt wallet and headless nodes
+
+`elektron-qt` does not talk to `elektrond`. It runs the node and the wallet in one process and links the same wallet library, so it behaves like `elektrond` with the same fix. The GUI paths that look up coins by outpoint (`getCoins()` for coin control, `lockunspent`) use `GetWalletTxByOutpoint()` as well, so a recovered coin can be selected and locked. The Qt build itself was not run in this test setup, only the shared wallet code through `elektrond`.
+
+### Headless nodes
 
 The fix lives in the wallet code that `elektrond`, `elektron-cli` and the Qt wallet share, so a headless Linux node behaves the same. The scan runs only on a pruned node (`chain.havePruned()`):
 
