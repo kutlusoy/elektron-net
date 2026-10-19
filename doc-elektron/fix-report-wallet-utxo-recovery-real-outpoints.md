@@ -38,6 +38,7 @@ After the scan, `MarkSpentOutputsFromChain()` looks at every wallet output that 
 - If a later scan finds the output in the UTXO set again, for example after a reorg, the placeholder is removed.
 - If a real transaction spending the output is added later, for example by a rescan of retained blocks, the placeholder is removed.
 - Placeholders are hidden from `listtransactions` and the transaction list of the GUI.
+- The partial transactions that carry recovered outputs are hidden there too. They would otherwise appear as a `send` of 0 ELEK. The coins stay visible in `listunspent` and the balance, the pruned history is not available by design.
 
 Consensus rules, the mainnet activation height 500000 of the powLimit fix and the P2P protocol are untouched.
 
@@ -57,7 +58,15 @@ Regtest, mandatory pruning, 511 blocks, funding block below `pruneheight`:
 
 A wallet file that already holds entries from the old behavior is not rewritten automatically. Restoring the wallet from its seed on the fixed build, followed by `rescanutxoset`, produces the correct entries.
 
-## 5. Checklist
+## 5. Headless nodes
+
+The fix lives in the wallet code that `elektrond`, `elektron-cli` and the Qt wallet share, so a headless Linux node behaves the same. The scan runs only on a pruned node (`chain.havePruned()`):
+
+- It runs automatically when a wallet is loaded whose last synced block is older than the retained blocks, and again after a snapshot activates if the wallet was loaded during initial block download.
+- It does not run after `importdescriptors` or `createwallet` on a node that is already running. Run `elektron-cli -rpcwallet=<name> rescanutxoset` once the node is synchronized.
+- A node without pruning rescans the blocks and does not need the scan.
+
+## 6. Checklist
 
 - [x] D1, D2 and D3 fixed in `src/wallet`
 - [x] Regtest scenario of section 3 passes
