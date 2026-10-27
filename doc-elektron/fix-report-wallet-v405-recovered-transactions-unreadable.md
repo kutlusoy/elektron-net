@@ -21,6 +21,8 @@ v4.0.6 already writes the recovered outputs into a partial transaction with one 
 - `CWallet::AttachChain()` credits the outputs again from the UTXO set when records were dropped (`ScanUTXOSet()`). During initial block download the existing deferred scan after the snapshot activation covers it.
 - The wallet file is changed in place once: the unreadable records are gone and the outputs come back as readable partial transactions. Later loads read the file as any other. A backup file is not changed, a restore from it repairs the restored copy.
 
+- `CreditUTXOFromChain()` stores the state it gives to a transaction the wallet already holds, when that state changes. Before, a wallet that had been closed before it saw the block of one of its payments listed that coin as unconfirmed again after the next load (the state was only kept in memory), because no scan runs on a load that follows a scan.
+
 Only the outputs are restored. The pruned transaction history cannot be restored by any node.
 
 ## 3. Tests
@@ -31,5 +33,6 @@ Only the outputs are restored. The pruned transaction history cannot be restored
 - [x] a backup taken right after the recovery, restored with `restorewallet`;
 - [x] a stale backup (taken before a new coin arrived and an old coin was spent), restored with `restorewallet`;
 - [x] balance and outpoints equal those of the original wallet in all cases, the healed wallet signs and sends, and it loads again afterwards;
+- [x] edge cases (`OldWalletHealingEdgeCasesIntegrationTest`): an encrypted wallet (stays locked, signs after the passphrase), a wallet that holds a real and several unreadable transactions, a payment still unconfirmed when the wallet was closed, many coins with equal amounts and addresses, `rescanblockchain` and `rescanutxoset` after the healing, a backup restored twice, a reorg of a block with a new payment, and a restart of the node (nothing is dropped a second time);
 - [x] a record with a non-zero input count (real corruption) is still refused with `Wallet corrupted`, and a record in the placeholder shape is dropped (checked by editing a wallet file).
 - [ ] The wallet unit tests and the functional tests of the node were not run for this change (the unit tests are not built, and the upstream functional tests assume a 50 coin block subsidy).

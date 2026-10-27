@@ -1976,6 +1976,10 @@ bool CWallet::CreditUTXOFromChain(const COutPoint& outpoint, const Coin& coin)
         const auto* confirmed = wtx.state<TxStateConfirmed>();
         if (!confirmed || confirmed->confirmed_block_hash != block_hash) {
             wtx.m_state = TxStateConfirmed{block_hash, static_cast<int>(coin.nHeight), 0};
+            // The state is stored as well. A wallet that was closed before it saw the block of its transaction would
+            // otherwise list the coin as unconfirmed again after the next load, since no scan runs then.
+            WalletBatch batch(GetDatabase());
+            batch.WriteTx(wtx);
         }
         wtx.MarkDirty();
         RefreshTXOsFromTx(wtx);
