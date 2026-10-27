@@ -975,7 +975,7 @@ static DBErrors LoadAddressBookRecords(CWallet* pwallet, DatabaseBatch& batch) E
     return result;
 }
 
-static DBErrors LoadTxRecords(CWallet* pwallet, DatabaseBatch& batch, bool& any_unordered) EXCLUSIVE_LOCKS_REQUIRED(pwallet->cs_wallet)
+static DBErrors LoadTxRecords(CWallet* pwallet, DatabaseBatch& batch, bool& any_unordered, std::vector<Txid>& unreadable) EXCLUSIVE_LOCKS_REQUIRED(pwallet->cs_wallet)
 {
     AssertLockHeld(pwallet->cs_wallet);
     DBErrors result = DBErrors::LOAD_OK;
@@ -983,7 +983,7 @@ static DBErrors LoadTxRecords(CWallet* pwallet, DatabaseBatch& batch, bool& any_
     // Load tx record
     any_unordered = false;
     LoadResult tx_res = LoadRecords(pwallet, batch, DBKeys::TX,
-        [&any_unordered] (CWallet* pwallet, DataStream& key, DataStream& value, std::string& err) EXCLUSIVE_LOCKS_REQUIRED(pwallet->cs_wallet) {
+        [&any_unordered, &unreadable] (CWallet* pwallet, DataStream& key, DataStream& value, std::string& err) EXCLUSIVE_LOCKS_REQUIRED(pwallet->cs_wallet) {
         DBErrors result = DBErrors::LOAD_OK;
         Txid hash;
         key >> hash;
@@ -1005,9 +1005,23 @@ static DBErrors LoadTxRecords(CWallet* pwallet, DatabaseBatch& batch, bool& any_
 
             return true;
         };
-        if (!pwallet->LoadToWallet(hash, fill_wtx)) {
-            // Use std::max as fill_wtx may have already set result to CORRUPT
-            result = std::max(result, DBErrors::NEED_RESCAN);
+        // Elektron Net: v4.0.5 stored a transaction without inputs for every output it recovered from the UTXO set. A
+        // transaction without inputs cannot be read back (the missing input count reads as the marker of the witness
+        // format), so such a record made the whole wallet fail to load. The record starts with the version (4 bytes)
+        // followed by the input count 0. It is dropped here, the output is credited again from the UTXO set when the
+        // wallet is attached to the chain. Any other unreadable record still fails the load as before.
+        const bool without_inputs = value.size() > 5 && value[4] == std::byte{0};
+        try {
+            if (!pwallet->LoadToWallet(hash, fill_wtx)) {
+                // Use std::max as fill_wtx may have already set result to CORRUPT
+                result = std::max(result, DBErrors::NEED_RESCAN);
+            }
+        } catch (const std::exception& e) {
+            if (!without_inputs) throw;
+            pwallet->mapWallet.erase(hash);
+            unreadable.push_back(hash);
+            pwallet->WalletLogPrintf("Dropped unreadable recovered transaction %s: %s\n", hash.ToString(), e.what());
+            return DBErrors::LOAD_OK;
         }
         return result;
     });
@@ -1098,6 +1112,7 @@ DBErrors WalletBatch::LoadWallet(CWallet* pwallet)
 {
     DBErrors result = DBErrors::LOAD_OK;
     bool any_unordered = false;
+    std::vector<Txid> unreadable_txs;
 
     LOCK(pwallet->cs_wallet);
 
@@ -1138,7 +1153,7 @@ DBErrors WalletBatch::LoadWallet(CWallet* pwallet)
         result = std::max(LoadDecryptionKeys(pwallet, *m_batch), result);
 
         // Load tx records
-        result = std::max(LoadTxRecords(pwallet, *m_batch, any_unordered), result);
+        result = std::max(LoadTxRecords(pwallet, *m_batch, any_unordered, unreadable_txs), result);
     } catch (std::runtime_error& e) {
         // Exceptions that can be ignored or treated as non-critical are handled by the individual loading functions.
         // Any uncaught exceptions will be caught here and treated as critical.
@@ -1158,6 +1173,15 @@ DBErrors WalletBatch::LoadWallet(CWallet* pwallet)
 
     if (!has_last_client || last_client != CLIENT_VERSION) // Update
         this->WriteVersion(CLIENT_VERSION);
+
+    // Elektron Net: remove the dropped records for good, so the next load does not meet them again
+    for (const Txid& hash : unreadable_txs) {
+        if (!EraseTx(hash)) pwallet->WalletLogPrintf("Could not erase unreadable recovered transaction %s\n", hash.ToString());
+    }
+    if (!unreadable_txs.empty()) {
+        pwallet->m_dropped_unreadable_txs += unreadable_txs.size();
+        pwallet->WalletLogPrintf("Dropped %zu unreadable recovered transactions, the outputs are credited again from the UTXO set\n", unreadable_txs.size());
+    }
 
     if (any_unordered)
         result = pwallet->ReorderTransactions();

@@ -193,6 +193,14 @@ elsewhere no longer keeps that coin: after a UTXO scan outside initial block
 download, outputs missing from the UTXO set are marked spent. No consensus or protocol change. See
 `fix-report-wallet-utxo-recovery-real-outpoints.md`.
 
+## Wallet: block rescan no longer crashes after a UTXO scan
+
+- A UTXO scan stored a placeholder position in the block for a transaction the wallet already held as confirmed. The next `rescanblockchain` found the real position and stopped the node on an assertion in `AddToWallet()`, whenever the transaction was not the first of its block (found by a tester recovering old coins). The scan now keeps the real position, and `AddToWallet()` replaces a placeholder with the position from the block. Details: `fix-report-wallet-rescan-placeholder-index.md`.
+
+## Wallet: wallets recovered by v4.0.5 can be loaded again
+
+- A wallet that v4.0.5 had recovered from the UTXO set, and every backup of it, failed to load with "Wallet corrupted" in v4.0.5 and v4.0.6 alike. v4.0.6 now drops the unreadable records, erases them from the file, and credits the outputs again from the UTXO set. A backup `wallet.dat` without a seed phrase can be restored this way. Details: `fix-report-wallet-v405-recovered-transactions-unreadable.md`.
+
 ## Version
 
 `CLIENT_VERSION_BUILD` bumped from 5 to 6 in `CMakeLists.txt`

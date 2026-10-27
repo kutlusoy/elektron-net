@@ -1149,8 +1149,14 @@ CWalletTx* CWallet::AddToWallet(CTransactionRef tx, const TxState& state, const 
             wtx.m_state = state;
             fUpdated = true;
         } else {
-            assert(TxStateSerializedIndex(wtx.m_state) == TxStateSerializedIndex(state));
             assert(TxStateSerializedBlockHash(wtx.m_state) == TxStateSerializedBlockHash(state));
+            if (TxStateSerializedIndex(wtx.m_state) != TxStateSerializedIndex(state)) {
+                // Elektron Net: a UTXO scan stores a placeholder position for a coin it credits (the position in the
+                // block is not part of the UTXO set). The block itself is the authority, so its position replaces the
+                // placeholder instead of tripping an assertion that would stop the node during a rescan.
+                wtx.m_state = state;
+                fUpdated = true;
+            }
         }
         // If we have a witness-stripped version of this transaction, and we
         // see a new version with a witness, then we must be upgrading a pre-segwit
@@ -1966,7 +1972,11 @@ bool CWallet::CreditUTXOFromChain(const COutPoint& outpoint, const Coin& coin)
         mtx.vout[outpoint.n] = coin.out;
         wtx.SetTx(MakeTransactionRef(std::move(mtx)));
         const uint256 block_hash = chain().getBlockHash(static_cast<int>(coin.nHeight));
-        wtx.m_state = TxStateConfirmed{block_hash, static_cast<int>(coin.nHeight), 0};
+        // A transaction the wallet already holds as confirmed in this block keeps its real position in the block
+        const auto* confirmed = wtx.state<TxStateConfirmed>();
+        if (!confirmed || confirmed->confirmed_block_hash != block_hash) {
+            wtx.m_state = TxStateConfirmed{block_hash, static_cast<int>(coin.nHeight), 0};
+        }
         wtx.MarkDirty();
         RefreshTXOsFromTx(wtx);
         return true;
@@ -3430,6 +3440,19 @@ bool CWallet::AttachChain(const std::shared_ptr<CWallet>& walletInstance, interf
     // rescan is ongoing will not be processed in the rescan but with the block connected notifications,
     // so the wallet will only be completeley synced after the notifications delivery.
     walletInstance->m_chain_notifications_handler = walletInstance->chain().handleNotifications(walletInstance);
+
+    // Elektron Net: a wallet written by v4.0.5 lost the placeholders of its recovered outputs while loading (see
+    // LoadTxRecords()), so the outputs are credited again from the UTXO set. During initial block download the flag
+    // above defers the scan until a snapshot has been activated.
+    if (walletInstance->m_dropped_unreadable_txs > 0) {
+        if (!chain.isInitialBlockDownload()) {
+            bilingual_str scan_error;
+            if (!walletInstance->ScanUTXOSet(scan_error)) {
+                walletInstance->WalletLogPrintf("UTXO scan after dropping unreadable transactions failed: %s\n", scan_error.original);
+            }
+        }
+        walletInstance->m_dropped_unreadable_txs = 0;
+    }
 
     // If rescan_required = true, rescan_height remains equal to 0
     int rescan_height = 0;

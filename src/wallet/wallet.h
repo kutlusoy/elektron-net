@@ -684,6 +684,10 @@ public:
      *  must be redone once a snapshot actually activates, since nothing else ever
      *  re-triggers it (AttachChain() only runs once, at wallet-load time). */
     bool m_utxo_scan_needs_retry_after_snapshot GUARDED_BY(cs_wallet) = false;
+    /** Elektron Net: number of unreadable placeholder transactions (written by v4.0.5 for outputs recovered from the
+     *  UTXO set, see LoadTxRecords()) that were dropped while loading the wallet. AttachChain() credits the outputs
+     *  again from the UTXO set when this is not zero. */
+    size_t m_dropped_unreadable_txs GUARDED_BY(cs_wallet) = 0;
     /** Elektron Net: re-run ScanUTXOSet() if the previous run happened before the node
      *  had a fully-synced view of the UTXO set. No-ops if no retry is pending. Safe to
      *  call unconditionally; intended to be called after every automatic snapshot
