@@ -201,6 +201,12 @@ download, outputs missing from the UTXO set are marked spent. No consensus or pr
 
 - A wallet that v4.0.5 had recovered from the UTXO set, and every backup of it, failed to load with "Wallet corrupted" in v4.0.5 and v4.0.6 alike. v4.0.6 now drops the unreadable records, erases them from the file, and credits the outputs again from the UTXO set. A backup `wallet.dat` without a seed phrase can be restored this way. Details: `fix-report-wallet-v405-recovered-transactions-unreadable.md`.
 
+## Tests: unit tests of the wallet and of the difficulty adjustment match Elektron Net
+
+- `pow_tests`, `wallet_tests` and `spend_tests` had Bitcoin values in them (50 coin block subsidy, Bitcoin retarget vectors with 600 second blocks) and failed. They now use the Elektron values: a 5 coin subsidy, a timespan of 2016 blocks of 60 seconds, heights above the Stoic Awakening window, and new cases for the powLimit overflow fix (the old arithmetic before height 500000 is kept, the corrected limit applies from there on). The expected values were calculated independently of `pow.cpp`.
+- The test helper `CreateBlock()` now recomputes the UTXO attestation of the coinbase after it has added transactions to a block, as the `generateblock` RPC does. Before, such blocks were rejected as invalid and tests that build blocks with transactions failed or waited forever.
+- Other unit test suites that fail on this branch for reasons of their own (for example `bip324_tests`, `key_io_tests`, `descriptor_tests`, `validation_*`) are not part of this change, they fail the same way without it.
+
 ## Version
 
 `CLIENT_VERSION_BUILD` bumped from 5 to 6 in `CMakeLists.txt`

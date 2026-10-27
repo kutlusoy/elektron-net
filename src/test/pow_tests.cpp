@@ -14,48 +14,82 @@
 
 BOOST_FIXTURE_TEST_SUITE(pow_tests, BasicTestingSetup)
 
+// Elektron Net: blocks come every 60 seconds and the difficulty is adjusted every 2016 blocks (nPowTargetTimespan is
+// 120960 seconds). The Stoic Awakening window (minimum difficulty, heights 1 to 149999) is left out by using heights
+// above it, and the powLimit overflow fix applies from PowLimitFixActivationHeight (500000). The expected values were
+// calculated independently of pow.cpp (big integer arithmetic and the compact encoding of nBits).
+static constexpr int64_t TIMESPAN{2016 * 60};
+static constexpr int HEIGHT_BEFORE_FIX{151199}; // the next block, 151200, is a multiple of 2016
+static constexpr int HEIGHT_AFTER_FIX{501983};  // the next block, 501984, is a multiple of 2016 above 500000
+static constexpr unsigned int POW_LIMIT_NBITS{0x1f7fffffU};
+static constexpr unsigned int POW_LIMIT_POST_FIX_NBITS{0x1e07ffffU};
+
 /* Test calculation of next difficulty target with no constraints applying */
 BOOST_AUTO_TEST_CASE(get_next_work)
 {
     const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
-    int64_t nLastRetargetTime = 1261130161; // Block #30240
     CBlockIndex pindexLast;
-    pindexLast.nHeight = 32255;
-    pindexLast.nTime = 1262152739;  // Block #32255
+    pindexLast.nHeight = HEIGHT_BEFORE_FIX;
+    pindexLast.nTime = 1800000000;
     pindexLast.nBits = 0x1d00ffff;
+    // The period took three quarters of the target timespan, so the target becomes three quarters of the old one.
+    int64_t nLastRetargetTime = pindexLast.nTime - TIMESPAN * 3 / 4;
 
     // Here (and below): expected_nbits is calculated in
     // CalculateNextWorkRequired(); redoing the calculation here would be just
     // reimplementing the same code that is written in pow.cpp. Rather than
     // copy that code, we just hardcode the expected result.
-    unsigned int expected_nbits = 0x1d00d86aU;
+    unsigned int expected_nbits = 0x1d00bfffU;
     BOOST_CHECK_EQUAL(CalculateNextWorkRequired(&pindexLast, nLastRetargetTime, chainParams->GetConsensus()), expected_nbits);
     BOOST_CHECK(PermittedDifficultyTransition(chainParams->GetConsensus(), pindexLast.nHeight+1, pindexLast.nBits, expected_nbits));
 }
 
-/* Test the constraint on the upper bound for next work */
-BOOST_AUTO_TEST_CASE(get_next_work_pow_limit)
+/* Before PowLimitFixActivationHeight the retarget stays exactly as it was. At the old limit its multiplication
+ * wraps around 256 bits (powLimit * 4 * nPowTargetTimespan is larger than 2^256), which the fix removes. The value
+ * below is that old result, it must not change for heights below the activation. */
+BOOST_AUTO_TEST_CASE(get_next_work_pow_limit_before_fix)
 {
     const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
-    int64_t nLastRetargetTime = 1231006505; // Block #0
     CBlockIndex pindexLast;
-    pindexLast.nHeight = 2015;
-    pindexLast.nTime = 1233061996;  // Block #2015
-    pindexLast.nBits = 0x1d00ffff;
-    unsigned int expected_nbits = 0x1d00ffffU;
-    BOOST_CHECK_EQUAL(CalculateNextWorkRequired(&pindexLast, nLastRetargetTime, chainParams->GetConsensus()), expected_nbits);
-    BOOST_CHECK(PermittedDifficultyTransition(chainParams->GetConsensus(), pindexLast.nHeight+1, pindexLast.nBits, expected_nbits));
+    pindexLast.nHeight = HEIGHT_BEFORE_FIX;
+    pindexLast.nTime = 1800000000;
+    pindexLast.nBits = POW_LIMIT_NBITS;
+    int64_t nLastRetargetTime = pindexLast.nTime - TIMESPAN * 5;
+    BOOST_CHECK_EQUAL(CalculateNextWorkRequired(&pindexLast, nLastRetargetTime, chainParams->GetConsensus()), 0x1f008aafU);
+}
+
+/* From the activation height on the corrected, lower limit applies and the multiplication cannot wrap */
+BOOST_AUTO_TEST_CASE(get_next_work_pow_limit_post_fix)
+{
+    const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
+    const auto& consensus = chainParams->GetConsensus();
+    BOOST_CHECK_EQUAL(UintToArith256(consensus.powLimit).GetCompact(), POW_LIMIT_NBITS);
+    BOOST_CHECK_EQUAL(UintToArith256(consensus.powLimitPostFix).GetCompact(), POW_LIMIT_POST_FIX_NBITS);
+
+    CBlockIndex after;
+    after.nHeight = HEIGHT_AFTER_FIX;
+    after.nTime = 1900000000;
+    after.nBits = POW_LIMIT_POST_FIX_NBITS;
+    // A period far longer than the target timespan is cut at the new limit, a period of half the timespan halves the target.
+    BOOST_CHECK_EQUAL(CalculateNextWorkRequired(&after, after.nTime - TIMESPAN * 5, consensus), POW_LIMIT_POST_FIX_NBITS);
+    BOOST_CHECK_EQUAL(CalculateNextWorkRequired(&after, after.nTime - TIMESPAN, consensus), POW_LIMIT_POST_FIX_NBITS);
+    BOOST_CHECK_EQUAL(CalculateNextWorkRequired(&after, after.nTime - TIMESPAN / 2, consensus), 0x1e03ffffU);
+    BOOST_CHECK(PermittedDifficultyTransition(consensus, after.nHeight + 1, POW_LIMIT_POST_FIX_NBITS, POW_LIMIT_POST_FIX_NBITS));
+    BOOST_CHECK(PermittedDifficultyTransition(consensus, after.nHeight + 1, POW_LIMIT_POST_FIX_NBITS, 0x1e03ffffU));
+    // The old limit is no longer a permitted target after the activation.
+    BOOST_CHECK(!PermittedDifficultyTransition(consensus, after.nHeight + 1, POW_LIMIT_POST_FIX_NBITS, POW_LIMIT_NBITS));
 }
 
 /* Test the constraint on the lower bound for actual time taken */
 BOOST_AUTO_TEST_CASE(get_next_work_lower_limit_actual)
 {
     const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
-    int64_t nLastRetargetTime = 1279008237; // Block #66528
     CBlockIndex pindexLast;
-    pindexLast.nHeight = 68543;
-    pindexLast.nTime = 1279297671;  // Block #68543
+    pindexLast.nHeight = HEIGHT_BEFORE_FIX;
+    pindexLast.nTime = 1800000000;
     pindexLast.nBits = 0x1c05a3f4;
+    // An eighth of the target timespan counts as a quarter.
+    int64_t nLastRetargetTime = pindexLast.nTime - TIMESPAN / 8;
     unsigned int expected_nbits = 0x1c0168fdU;
     BOOST_CHECK_EQUAL(CalculateNextWorkRequired(&pindexLast, nLastRetargetTime, chainParams->GetConsensus()), expected_nbits);
     BOOST_CHECK(PermittedDifficultyTransition(chainParams->GetConsensus(), pindexLast.nHeight+1, pindexLast.nBits, expected_nbits));
@@ -68,17 +102,27 @@ BOOST_AUTO_TEST_CASE(get_next_work_lower_limit_actual)
 BOOST_AUTO_TEST_CASE(get_next_work_upper_limit_actual)
 {
     const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
-    int64_t nLastRetargetTime = 1263163443; // NOTE: Not an actual block time
     CBlockIndex pindexLast;
-    pindexLast.nHeight = 46367;
-    pindexLast.nTime = 1269211443;  // Block #46367
+    pindexLast.nHeight = HEIGHT_BEFORE_FIX;
+    pindexLast.nTime = 1800000000;
     pindexLast.nBits = 0x1c387f6f;
+    // Eight times the target timespan counts as four times.
+    int64_t nLastRetargetTime = pindexLast.nTime - TIMESPAN * 8;
     unsigned int expected_nbits = 0x1d00e1fdU;
     BOOST_CHECK_EQUAL(CalculateNextWorkRequired(&pindexLast, nLastRetargetTime, chainParams->GetConsensus()), expected_nbits);
     BOOST_CHECK(PermittedDifficultyTransition(chainParams->GetConsensus(), pindexLast.nHeight+1, pindexLast.nBits, expected_nbits));
     // Test that increasing nbits further would not be a PermittedDifficultyTransition.
     unsigned int invalid_nbits = expected_nbits+1;
     BOOST_CHECK(!PermittedDifficultyTransition(chainParams->GetConsensus(), pindexLast.nHeight+1, pindexLast.nBits, invalid_nbits));
+}
+
+/* Elektron Net: while the Stoic Awakening window is active every difficulty transition is permitted */
+BOOST_AUTO_TEST_CASE(stoic_awakening_window_permits_any_transition)
+{
+    const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
+    const auto& consensus = chainParams->GetConsensus();
+    BOOST_CHECK(PermittedDifficultyTransition(consensus, 68544, 0x1c05a3f4, 0x1c0168fdU - 1));
+    BOOST_CHECK(!PermittedDifficultyTransition(consensus, consensus.StoicAwakeningEndHeight + 1 - ((consensus.StoicAwakeningEndHeight + 1) % 2016) + 2016, 0x1c05a3f4, 0x1c0168fdU - 1));
 }
 
 BOOST_AUTO_TEST_CASE(CheckProofOfWork_test_negative_target)
