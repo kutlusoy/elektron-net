@@ -196,6 +196,7 @@ download, outputs missing from the UTXO set are marked spent. No consensus or pr
 ## Wallet: block rescan no longer crashes after a UTXO scan
 
 - A UTXO scan stored a placeholder position in the block for a transaction the wallet already held as confirmed. The next `rescanblockchain` found the real position and stopped the node on an assertion in `AddToWallet()`, whenever the transaction was not the first of its block (found by a tester recovering old coins). The scan now keeps the real position, and `AddToWallet()` replaces a placeholder with the position from the block. Details: `fix-report-wallet-rescan-placeholder-index.md`.
+- Coinbase rewards recovered from the UTXO set were counted as available while still immature, so a restored wallet showed too high a balance and could not spend it. They are now stored as coinbase and stay immature until maturity. Details: `fix-report-wallet-v405-recovered-transactions-unreadable.md`.
 
 ## Wallet: wallets recovered by v4.0.5 can be loaded again
 

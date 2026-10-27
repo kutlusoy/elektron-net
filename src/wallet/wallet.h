@@ -530,6 +530,7 @@ public:
 
     //! Elektron Net: marker version of the partial transactions that carry outputs recovered from the UTXO set
     static constexpr uint32_t RECOVERED_TX_VERSION{0x52435631};
+    //! Same for a coinbase output, see CWalletTx::RECOVERED_COINBASE_TX_VERSION.
     //! True for the partial transaction created by CreditUTXOFromChain(): one input naming the real outpoint, one output.
     static bool IsRecoveredPartial(const CTransaction& tx);
     //! Marker version of the placeholder transaction that spends one output whose real spending transaction is pruned.

@@ -22,6 +22,7 @@ v4.0.6 already writes the recovered outputs into a partial transaction with one 
 - The wallet file is changed in place once: the unreadable records are gone and the outputs come back as readable partial transactions. Later loads read the file as any other. A backup file is not changed, a restore from it repairs the restored copy.
 
 - `CreditUTXOFromChain()` stores the state it gives to a transaction the wallet already holds, when that state changes. Before, a wallet that had been closed before it saw the block of one of its payments listed that coin as unconfirmed again after the next load (the state was only kept in memory), because no scan runs on a load that follows a scan.
+- A coinbase output recovered from the UTXO set is stored with its own marker version (`RECOVERED_COINBASE_TX_VERSION`), and `CWalletTx::IsCoinBase()` treats it as a coinbase. Before, rewards that were still immature were counted as available after a restore, and spending them was refused with `bad-txns-premature-spend-of-coinbase`. A partial stored earlier without the marker is replaced when the scan sees the coin again.
 
 Only the outputs are restored. The pruned transaction history cannot be restored by any node.
 
@@ -35,4 +36,6 @@ Only the outputs are restored. The pruned transaction history cannot be restored
 - [x] balance and outpoints equal those of the original wallet in all cases, the healed wallet signs and sends, and it loads again afterwards;
 - [x] edge cases (`OldWalletHealingEdgeCasesIntegrationTest`): an encrypted wallet (stays locked, signs after the passphrase), a wallet that holds a real and several unreadable transactions, a payment still unconfirmed when the wallet was closed, many coins with equal amounts and addresses, `rescanblockchain` and `rescanutxoset` after the healing, a backup restored twice, a reorg of a block with a new payment, and a restart of the node (nothing is dropped a second time);
 - [x] a record with a non-zero input count (real corruption) is still refused with `Wallet corrupted`, and a record in the placeholder shape is dropped (checked by editing a wallet file).
-- [ ] The wallet unit tests and the functional tests of the node were not run for this change (the unit tests are not built, and the upstream functional tests assume a 50 coin block subsidy).
+- [x] Immature coinbase rewards of an old backup restored after pruning show as immature, equal to the live wallet, and a `sendall` of the restored wallet is accepted (regtest, checked by script).
+- [x] The wallet unit tests `wallet_tests`, `spend_tests`, `coinselector_tests` and `walletload_tests` pass.
+- [ ] The upstream functional tests were not run (they assume a 50 coin block subsidy).

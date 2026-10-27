@@ -564,7 +564,7 @@ const CWalletTx* CWallet::GetWalletTx(const Txid& hash) const
 
 bool CWallet::IsRecoveredPartial(const CTransaction& tx)
 {
-    return tx.version == RECOVERED_TX_VERSION && tx.vin.size() == 1 && tx.vin[0].scriptSig.empty() &&
+    return (tx.version == RECOVERED_TX_VERSION || tx.version == CWalletTx::RECOVERED_COINBASE_TX_VERSION) && tx.vin.size() == 1 && tx.vin[0].scriptSig.empty() &&
            !tx.vin[0].prevout.IsNull() && tx.vin[0].prevout.n < tx.vout.size();
 }
 
@@ -1994,15 +1994,24 @@ bool CWallet::CreditUTXOFromChain(const COutPoint& outpoint, const Coin& coin)
     // and lets the wallet list, select and sign the coin under its real outpoint (see RefreshTXOsFromTx()).
     if (m_recovered.contains(outpoint)) {
         if (CWalletTx* known = GetMutableWalletTxByOutpoint(outpoint)) {
-            known->m_state = state;
-            known->MarkDirty();
-            WalletBatch batch(GetDatabase());
-            batch.WriteTx(*known);
-            return true;
+            if (coin.IsCoinBase() && known->tx->version != CWalletTx::RECOVERED_COINBASE_TX_VERSION) {
+                // written before the coinbase marker existed: replace it, so the reward counts as immature until it matures
+                std::vector<Txid> unmarked{known->GetHash()};
+                if (auto res = RemoveTxs(unmarked); !res) {
+                    WalletLogPrintf("Could not replace recovered transaction: %s\n", util::ErrorString(res).original);
+                    return false;
+                }
+            } else {
+                known->m_state = state;
+                known->MarkDirty();
+                WalletBatch batch(GetDatabase());
+                batch.WriteTx(*known);
+                return true;
+            }
         }
     }
     CMutableTransaction mtx;
-    mtx.version = RECOVERED_TX_VERSION;
+    mtx.version = coin.IsCoinBase() ? CWalletTx::RECOVERED_COINBASE_TX_VERSION : RECOVERED_TX_VERSION;
     mtx.vin.emplace_back(outpoint);
     mtx.vout.assign(outpoint.n + 1, CTxOut{0, CScript{}});
     mtx.vout[outpoint.n] = coin.out;
