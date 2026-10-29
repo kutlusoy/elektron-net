@@ -11,7 +11,6 @@ The assumeutxo value generated and used here is committed to in
 """
 
 from dataclasses import dataclass
-import shutil
 from test_framework.blocktools import (
         create_block,
 )
@@ -620,8 +619,6 @@ class AssumeutxoTest(BitcoinTestFramework):
 
         self.log.info("Restarting node 1 drops the chainstate below the snapshot")
         self.stop_node(1)
-        # The node's own automatic snapshots would be taken for newer snapshots to load on startup
-        shutil.rmtree(n1.chain_path / "snapshots")
         # The indexes cannot continue past the missing blocks below the snapshot
         n1.assert_start_raises_init_error(
             extra_args=self.extra_args[1],
