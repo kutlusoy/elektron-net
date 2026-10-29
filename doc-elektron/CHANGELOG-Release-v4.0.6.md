@@ -238,6 +238,10 @@ On startup the chainstate below a snapshot is dropped for every snapshot, as it 
 - `feature_assumeutxo.py` runs again. It no longer starts a node with `-txindex` (pruning is mandatory), uses the Elektron hashes, error messages, coin amounts and network magic, and checks the state that Elektron Net actually has after `loadtxoutset`: every node is pruned, no peer serves the historical blocks, so the chainstate below the snapshot stays where it is until the next start, the snapshot chainstate stays unvalidated and the indexes stay at that height. A node that restarts with a loaded snapshot keeps only the snapshot chainstate. The parts that wait for the background validation and `-reindex-chainstate` (not available on pruned nodes) were removed.
 - `flatfile_pos_above_4gib` is new and covers seek, truncate and serialization of positions above 4 GiB.
 
+## Docs: exact total supply documented
+
+The nominal maximum supply stays 21,000,000 Elek. The documentation (`README.md`, `WHITEPAPER.md`, `TECHNICAL_SETUP.md`, `BITCOIN_CORE_DIFF.md`, `DESIGN_RATIONALE.md`) now states that the schedule emits 21,023,999.73 Elek in total, about 24,000 Elek more. Reason: the halving interval of 2,102,400 blocks (4 x 365 days) is slightly more than 10 x 210,000. No consensus change.
+
 ## Version
 
 `CLIENT_VERSION_BUILD` bumped from 5 to 6 in `CMakeLists.txt`

@@ -87,7 +87,8 @@ This document lists **every deliberate divergence** from upstream Bitcoin Core, 
 
 ### 2.5 Economic parameters (unchanged cap, rescaled schedule)
 
-- `MAX_MONEY = 21_000_000 * COIN` (`src/consensus/amount.h`).
+- `MAX_MONEY = 21_000_000 * COIN` (`src/consensus/amount.h`). It limits single amounts only, not the cumulative supply.
+- The schedule emits 21,023,999.72668800 Elek in total, about 24,000 Elek above the nominal 21,000,000. Reason: 2,102,400 blocks (4 x 365 days) is slightly more than 10 x 210,000, so the series converges to 2 x 2,102,400 x 5 = 21,024,000 Elek, reduced by integer truncation of the reward. `GetBlockSubsidy` has no cumulative cap. The nominal figure is passed at block 20,668,801 (about year 39).
 - `nSubsidyHalvingInterval = 2_102_400`.
 - `nPowTargetSpacing = 60`, `nPowTargetTimespan = 2016 * 60`.
 - BIP34/65/66/CSV/Segwit active from height **1** on mainnet.

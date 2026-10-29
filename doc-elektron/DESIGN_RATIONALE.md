@@ -51,7 +51,10 @@ ten minutes for the first confirmation is a museum piece. At 60 seconds:
 
 ### What stays the same
 
-- **Total supply** is unchanged: `MAX_MONEY = 21,000,000 * COIN`.
+- **Total supply** is nominally unchanged: `MAX_MONEY = 21,000,000 * COIN`.
+  The rescaled schedule emits 21,023,999.73 Elek in total, about 24,000 Elek
+  more, because 2,102,400 blocks (exactly 4 x 365 days) is slightly more than
+  10 x 210,000. `MAX_MONEY` limits single amounts, not the cumulative supply.
 - **Halving cadence** is rescaled to `nSubsidyHalvingInterval = 2,102,400`
   — same ~4 calendar years, just expressed in more blocks.
 - **Smallest unit** is still 10⁸ per coin (called *lepton* here, instead of
