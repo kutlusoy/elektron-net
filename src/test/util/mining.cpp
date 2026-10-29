@@ -12,7 +12,9 @@
 #include <pow.h>
 #include <primitives/transaction.h>
 #include <test/util/script.h>
+#include <test/util/setup_common.h>
 #include <util/check.h>
+#include <util/time.h>
 #include <validation.h>
 #include <validationinterface.h>
 #include <versionbits.h>
@@ -36,36 +38,24 @@ COutPoint generatetoaddress(const NodeContext& node, const std::string& address)
 
 std::vector<std::shared_ptr<CBlock>> CreateBlockChain(size_t total_height, const CChainParams& params)
 {
-    std::vector<std::shared_ptr<CBlock>> ret{total_height};
-    auto time{params.GenesisBlock().nTime};
-    // NOTE: here `height` does not correspond to the block height but the block height - 1.
-    for (size_t height{0}; height < total_height; ++height) {
-        CBlock& block{*(ret.at(height) = std::make_shared<CBlock>())};
+    // Every block commits to the UTXO set in its coinbase, so the chain is mined on a throwaway node
+    const auto setup{MakeNoLogFileContext<TestingSetup>(params.GetChainType(), TestOpts{.setup_net = false})};
+    BlockAssembler::Options options;
+    options.coinbase_output_script = P2WSH_OP_TRUE;
+    options.include_dummy_extranonce = true;
 
-        CMutableTransaction coinbase_tx;
-        coinbase_tx.nLockTime = static_cast<uint32_t>(height);
-        coinbase_tx.vin.resize(1);
-        coinbase_tx.vin[0].prevout.SetNull();
-        coinbase_tx.vin[0].nSequence = CTxIn::MAX_SEQUENCE_NONFINAL; // Make sure timelock is enforced.
-        coinbase_tx.vout.resize(1);
-        coinbase_tx.vout[0].scriptPubKey = P2WSH_OP_TRUE;
-        coinbase_tx.vout[0].nValue = GetBlockSubsidy(height + 1, params.GetConsensus());
-        // Always include OP_0 as a dummy extraNonce.
-        coinbase_tx.vin[0].scriptSig = CScript() << (height + 1) << OP_0;
-        block.vtx = {MakeTransactionRef(std::move(coinbase_tx))};
-
-        block.nVersion = VERSIONBITS_LAST_OLD_BLOCK_VERSION;
-        block.hashPrevBlock = (height >= 1 ? *ret.at(height - 1) : params.GenesisBlock()).GetHash();
-        block.hashMerkleRoot = BlockMerkleRoot(block);
-        block.nTime = ++time;
-        block.nBits = params.GenesisBlock().nBits;
-        block.nNonce = 0;
-
-        while (!CheckProofOfWork(block.GetHash(), block.nBits, params.GetConsensus())) {
-            ++block.nNonce;
-            assert(block.nNonce);
-        }
+    std::vector<std::shared_ptr<CBlock>> ret;
+    ret.reserve(total_height);
+    auto time{params.GenesisBlock().Time()};
+    for (size_t i{0}; i < total_height; ++i) {
+        SetMockTime(++time);
+        auto block{std::make_shared<CBlock>(
+            BlockAssembler{setup->m_node.chainman->ActiveChainstate(), setup->m_node.mempool.get(), options}.CreateNewBlock()->block)};
+        block->hashMerkleRoot = BlockMerkleRoot(*block);
+        assert(!MineBlock(setup->m_node, block).IsNull());
+        ret.push_back(std::move(block));
     }
+    SetMockTime(0s);
     return ret;
 }
 
