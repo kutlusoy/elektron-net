@@ -6,7 +6,9 @@
 
 #include <chainparams.h>
 #include <consensus/merkle.h>
+#include <coins.h>
 #include <consensus/validation.h>
+#include <kernel/utxo_muhash.h>
 #include <node/miner.h>
 #include <pow.h>
 #include <random.h>
@@ -14,6 +16,8 @@
 #include <test/util/random.h>
 #include <test/util/script.h>
 #include <test/util/setup_common.h>
+#include <txdb.h>
+#include <util/byte_units.h>
 #include <util/time.h>
 #include <validation.h>
 #include <validationinterface.h>
@@ -29,6 +33,10 @@ struct MinerTestingSetup : public RegTestingSetup {
     std::shared_ptr<const CBlock> GoodBlock(const uint256& prev_hash);
     std::shared_ptr<const CBlock> BadBlock(const uint256& prev_hash);
     std::shared_ptr<CBlock> FinalizeBlock(std::shared_ptr<CBlock> pblock);
+    //! Every block commits to the UTXO set, so the UTXO set after each block built here is tracked.
+    //! The blocks only have coinbases, forks are possible.
+    std::map<uint256, std::map<COutPoint, Coin>> m_utxo_sets;
+    std::map<COutPoint, Coin> AddUTXOAttestation(CBlock& block, int height);
     void BuildChain(const uint256& root, int height, unsigned int invalid_rate, unsigned int branch_rate, unsigned int max_size, std::vector<std::shared_ptr<const CBlock>>& blocks);
 };
 } // namespace validation_block_tests
@@ -74,6 +82,8 @@ std::shared_ptr<CBlock> MinerTestingSetup::Block(const uint256& prev_hash)
     auto pblock = std::make_shared<CBlock>(ptemplate->block);
     pblock->hashPrevBlock = prev_hash;
     pblock->nTime = ++time;
+    // Elektron Net: the required work depends on the block time
+    pblock->nBits = GetNextWorkRequired(WITH_LOCK(::cs_main, return m_node.chainman->m_blockman.LookupBlockIndex(prev_hash)), pblock.get(), Params().GetConsensus());
 
     // Make the coinbase transaction with two outputs:
     // One zero-value one that has a unique pubkey to make sure that blocks at the same height can have a different hash
@@ -93,16 +103,51 @@ std::shared_ptr<CBlock> MinerTestingSetup::Block(const uint256& prev_hash)
     return pblock;
 }
 
+std::map<COutPoint, Coin> MinerTestingSetup::AddUTXOAttestation(CBlock& block, int height)
+{
+    const auto& parent_coins{m_utxo_sets[block.hashPrevBlock]}; // empty for the genesis block
+
+    CCoinsViewDB db{DBParams{.path = "", .cache_bytes = 1_MiB, .memory_only = true}, CoinsViewOptions{}};
+    kernel::UTXOMuHashState muhash;
+    {
+        CCoinsViewCache cache{&db};
+        for (const auto& [outpoint, coin] : parent_coins) {
+            cache.AddCoin(outpoint, Coin{coin}, /*possible_overwrite=*/false);
+            muhash.AddCoin(outpoint, coin);
+        }
+        cache.SetBestBlock(block.hashPrevBlock);
+        cache.Flush();
+    }
+    LOCK(::cs_main);
+    const auto hash{ComputeBlockUTXOAttestationHash(block, height, db, m_node.chainman->m_blockman, m_node.chainman->GetConsensus(), &muhash)};
+    BOOST_REQUIRE(hash);
+
+    CMutableTransaction coinbase{*block.vtx[0]};
+    coinbase.vout.emplace_back(0, CScript{} << OP_RETURN << height << *hash);
+    block.vtx[0] = MakeTransactionRef(std::move(coinbase));
+
+    // The coins enter the UTXO set under the txid of the coinbase with the attestation
+    std::map<COutPoint, Coin> coins{parent_coins};
+    for (uint32_t n = 0; n < block.vtx[0]->vout.size(); ++n) {
+        if (block.vtx[0]->vout[n].scriptPubKey.IsUnspendable()) continue;
+        coins.emplace(COutPoint{block.vtx[0]->GetHash(), n}, Coin{block.vtx[0]->vout[n], height, true});
+    }
+    return coins;
+}
+
 std::shared_ptr<CBlock> MinerTestingSetup::FinalizeBlock(std::shared_ptr<CBlock> pblock)
 {
     const CBlockIndex* prev_block{WITH_LOCK(::cs_main, return m_node.chainman->m_blockman.LookupBlockIndex(pblock->hashPrevBlock))};
     m_node.chainman->GenerateCoinbaseCommitment(*pblock, prev_block);
+    std::optional<std::map<COutPoint, Coin>> coins;
+    if (pblock->vtx.size() == 1) coins = AddUTXOAttestation(*pblock, prev_block->nHeight + 1);
 
     pblock->hashMerkleRoot = BlockMerkleRoot(*pblock);
 
     while (!CheckProofOfWork(pblock->GetHash(), pblock->nBits, Params().GetConsensus())) {
         ++(pblock->nNonce);
     }
+    if (coins) m_utxo_sets[pblock->GetHash()] = std::move(*coins);
 
     // submit block header, so that miner can get the block height from the
     // global state and the node has the topology of the chain

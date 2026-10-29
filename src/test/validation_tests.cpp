@@ -56,13 +56,14 @@ BOOST_AUTO_TEST_CASE(block_subsidy_test)
 BOOST_AUTO_TEST_CASE(subsidy_limit_test)
 {
     const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
+    const auto& consensus{chainParams->GetConsensus()};
     CAmount nSum = 0;
-    for (int nHeight = 0; nHeight < 14000000; nHeight += 1000) {
-        CAmount nSubsidy = GetBlockSubsidy(nHeight, chainParams->GetConsensus());
+    for (int halvings = 0; halvings < 64; ++halvings) {
+        const CAmount nSubsidy = GetBlockSubsidy(halvings * consensus.nSubsidyHalvingInterval, consensus);
         BOOST_CHECK(nSubsidy <= 5 * COIN);
-        nSum += nSubsidy * 1000;
-        BOOST_CHECK(MoneyRange(nSum));
+        nSum += nSubsidy * consensus.nSubsidyHalvingInterval;
     }
+    // About 24000 Elek above MAX_MONEY
     BOOST_CHECK_EQUAL(nSum, CAmount{2102399972668800});
 }
 

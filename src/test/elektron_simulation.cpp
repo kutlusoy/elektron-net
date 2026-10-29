@@ -237,7 +237,7 @@ BOOST_AUTO_TEST_CASE(prune_depth_calculation)
     BOOST_CHECK_EQUAL(MIN_BLOCKS_TO_KEEP, 2 * 24 * 60 * 60 / 60);
 
     // Mainnet pruning must start at the first checkpoint, not after a grace period.
-    BOOST_CHECK_EQUAL(Params().PruneAfterHeight(), MANDATORY_PRUNE_DEPTH);
+    BOOST_CHECK_EQUAL(CreateChainParams(ArgsManager{}, ChainType::MAIN)->PruneAfterHeight(), MANDATORY_PRUNE_DEPTH);
 }
 
 /** Verify the checkpoint height calculation used by MaybeRequestSnapshot(). */

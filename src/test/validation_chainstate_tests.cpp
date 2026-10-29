@@ -84,6 +84,8 @@ BOOST_FIXTURE_TEST_CASE(connect_tip_does_not_cache_inputs_on_failed_connect, Tes
 
     const auto tip{WITH_LOCK(cs_main, return chainstate.m_chain.Tip()->GetBlockHash())};
     const CBlock block{CreateBlock({tx}, CScript{} << OP_TRUE, chainstate)};
+    // Computing the UTXO attestation of the block looked up the input
+    WITH_LOCK(cs_main, chainstate.CoinsTip().Uncache(outpoint));
     BOOST_CHECK(Assert(m_node.chainman)->ProcessNewBlock(std::make_shared<CBlock>(block), true, true, nullptr));
 
     LOCK(cs_main);
