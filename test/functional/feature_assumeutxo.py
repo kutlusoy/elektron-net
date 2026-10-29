@@ -67,7 +67,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         self.extra_args = [
             [],
             ["-fastprune", "-prune=1", "-blockfilterindex=1", "-coinstatsindex=1"],
-            ["-persistmempool=0","-txindex=1", "-blockfilterindex=1", "-coinstatsindex=1"],
+            ["-persistmempool=0", "-blockfilterindex=1", "-coinstatsindex=1"],
             []
         ]
 
@@ -139,12 +139,12 @@ class AssumeutxoTest(BitcoinTestFramework):
         self.log.info("  - snapshot file with alternated but parsable UTXO data results in different hash")
         cases = [
             # (content, offset, wrong_hash, custom_message)
-            [b"\xff" * 32, 0, "77874d48d932a5cb7a7f770696f5224ff05746fdcf732a58270b45da0f665934", None],  # wrong outpoint hash
-            [(2).to_bytes(1, "little"), 32, None, "Bad snapshot format or truncated snapshot after deserializing 1 coins."],  # wrong txid coins count
+            [b"\xff" * 32, 0, "a8db3ac797fe6003d6e51f8464f23886eb90f33ab5f8ee3552ae67bdaa6a2f72", None],  # wrong outpoint hash
+            [(2).to_bytes(1, "little"), 32, None, "Bad snapshot data after deserializing 2 coins."],  # wrong txid coins count
             [b"\xfd\xff\xff", 32, None, "Mismatch in coins count in snapshot metadata and actual snapshot data"],  # txid coins count exceeds coins left
-            [b"\x01", 33, "9f562925721e4f97e6fde5b590dbfede51e2204a68639525062ad064545dd0ea", None],  # wrong outpoint index
-            [b"\x82", 34, "161393f07f8ad71760b3910a914f677f2cb166e5bcf5354e50d46b78c0422d15", None],  # wrong coin code VARINT
-            [b"\x80", 34, "e6fae191ef851554467b68acff01ca09ad0a2e48c9b3dfea46cf7d35a7fd0ad0", None],  # another wrong coin code
+            [b"\x01", 33, "07d1c5f1197d66bac5bb0189ccbe0649b548412753e0c2cb79bd13786b17bfb8", None],  # wrong outpoint index
+            [b"\x82", 34, "192e5149f7b17fa2381263245c69a311b70da0a65281648d793e7196cc46f256", None],  # wrong coin code VARINT
+            [b"\x80\x5c", 34, "6a246ed3400205d23540193758413a1681ebc8a4d5ba8e4832ebda450fab9ef0", None],  # another wrong coin code
             [b"\x84\x58", 34, None, "Bad snapshot data after deserializing 0 coins"],  # wrong coin case with height 364 and coinbase 0
             [
                 # compressed txout value + scriptpubkey
@@ -185,8 +185,8 @@ class AssumeutxoTest(BitcoinTestFramework):
             with self.nodes[0].assert_debug_log([log_msg]):
                 self.nodes[0].assert_start_raises_init_error(expected_msg=error_msg)
 
-        expected_error_msg = "Error: A fatal internal error occurred, see debug.log for details: Assumeutxo data not found for the given blockhash '7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a'."
-        error_details = "Assumeutxo data not found for the given blockhash"
+        expected_error_msg = "Error: A fatal internal error occurred, see debug.log for details: Failed to find block index for the snapshot base block '7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a'."
+        error_details = "Failed to find block index for the snapshot base block"
         expected_error(log_msg=error_details, error_msg=expected_error_msg)
 
         # resurrect node again
@@ -499,7 +499,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         dump_output4 = n0.dumptxoutset(path='utxos4.dat', rollback=prev_snap_height)
         assert_equal(
             dump_output4['txoutset_hash'],
-            "45ac2777b6ca96588210e2a4f14b602b41ec37b8b9370673048cc0af434a1ec8")
+            "1aa1515f6c41324e24f119067d1cb1f2e76c7cf398048d8be47912d7f0bcd9b6")
         assert_not_equal(sha256sum_file(dump_output['path']), sha256sum_file(dump_output4['path']))
 
         # Use a hash instead of a height
@@ -644,7 +644,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         prev_tx = n0.getblock(spend_coin_blockhash, 3)['tx'][0]
         prevout = {"txid": prev_tx['txid'], "vout": 0, "scriptPubKey": prev_tx['vout'][0]['scriptPubKey']['hex']}
         privkey = n0.get_deterministic_priv_key().key
-        raw_tx = n1.createrawtransaction([prevout], {getnewdestination()[2]: 24.99})
+        raw_tx = n1.createrawtransaction([prevout], {getnewdestination()[2]: 2.49})
         signed_tx = n1.signrawtransactionwithkey(raw_tx, [privkey], [prevout])['hex']
         signed_txid = tx_from_hex(signed_tx).txid_hex
 
@@ -774,7 +774,6 @@ class AssumeutxoTest(BitcoinTestFramework):
         completed_idx_state = {
             'basic block filter index': COMPLETE_IDX,
             'coinstatsindex': COMPLETE_IDX,
-            'txindex': COMPLETE_IDX,
         }
         self.wait_until(lambda: n2.getindexinfo() == completed_idx_state)
 

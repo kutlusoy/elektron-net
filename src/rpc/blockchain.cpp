@@ -3306,7 +3306,8 @@ UniValue CreateRolledBackUTXOSnapshot(
                 strprintf("Failed to read block at height %d", block_index->nHeight));
         }
 
-        WITH_LOCK(::cs_main, res = chainstate.DisconnectBlock(block, block_index, rollback_cache));
+        // The rollback runs on a scratch view, it must not change the live UTXO MuHash accumulator
+        WITH_LOCK(::cs_main, res = chainstate.DisconnectBlock(block, block_index, rollback_cache, /*update_muhash=*/false));
         if (res == DISCONNECT_FAILED) {
             throw JSONRPCError(RPC_INTERNAL_ERROR,
                 strprintf("Failed to roll back block at height %d", block_index->nHeight));
