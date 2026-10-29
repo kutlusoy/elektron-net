@@ -227,6 +227,7 @@ Elektron Net contains the code paths of all three issues unchanged from upstream
 - `chainstatemanager_loadblockindex` and `loadblockindex_invalid_descendants` changed block statuses in memory only. The automatic snapshot at height 100 has flushed the block index to disk by then, so reloading it undid the change. The tests now write the changed entries to the block index database first (`TestBlockManager::PersistBlockIndex()`).
 - `chainstatemanager_ibd_exit_after_loading_blocks` skips the case "not enough chain work", which cannot occur while the minimum chain work is 0.
 - `blockfilter_index_tests` built fork blocks without the UTXO attestation that every block needs. The fork builder now computes the attestation on top of the UTXO hash state of each fork. These tests read the undo data of blocks after reorgs and so also cover the 64-bit positions.
+- `feature_assumeutxo.py` runs again. It no longer starts a node with `-txindex` (pruning is mandatory), uses the Elektron hashes, error messages, coin amounts and network magic, and checks the state that Elektron Net actually has after `loadtxoutset`: every node is pruned, no peer serves the historical blocks, so the chainstate below the snapshot stays where it is, the snapshot chainstate stays unvalidated and the indexes stay at that height. The parts that wait for the background validation, `-reindex-chainstate` and the restart of a node with a loaded snapshot were removed.
 - `flatfile_pos_above_4gib` is new and covers seek, truncate and serialization of positions above 4 GiB.
 
 ## Version
