@@ -34,8 +34,18 @@
 #include <utility>
 #include <variant>
 
-const char * const BITCOIN_CONF_FILENAME = "bitcoin.conf";
+// Elektron Net: renamed from bitcoin.conf for fresh installs; see
+// BITCOIN_CONF_FILENAME_LEGACY and GetDefaultConfFilename() below for the
+// migration path that keeps existing installations working unchanged.
+const char * const BITCOIN_CONF_FILENAME = "elektron.conf";
+const char * const BITCOIN_CONF_FILENAME_LEGACY = "bitcoin.conf";
 const char * const BITCOIN_SETTINGS_FILENAME = "settings.json";
+
+fs::path GetDefaultConfFilename(const fs::path& base_path)
+{
+    if (fs::exists(base_path / BITCOIN_CONF_FILENAME_LEGACY)) return fs::PathFromString(BITCOIN_CONF_FILENAME_LEGACY);
+    return fs::PathFromString(BITCOIN_CONF_FILENAME);
+}
 
 ArgsManager gArgs;
 

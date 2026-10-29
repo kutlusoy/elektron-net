@@ -1,10 +1,10 @@
 # Elektron Net: `pow.cpp` Retargeting Overflow Fix Report
 
-- **Version:** 0.1 (draft)
-- **Date:** August 05, 2026
+- **Version:** 0.2 (fix implemented on branch `4.0.6`, code-verified; original August 5, 2026 draft below unchanged for history)
+- **Date:** August 05, 2026 (implemented August 24, 2026)
 - **Audience:** Core consensus maintainers, anyone reviewing chainparams changes
 - **Reference implementation:** [`elektron-net`](https://github.com/kutlusoy/elektron-net) - `src/kernel/chainparams.cpp`, `src/pow.cpp`, `src/test/pow_tests.cpp` - treat as ground truth for anything this doc references
-- **See also:** `WHITEPAPER.md`, `doc-elektron/ELEKTRON_NET_AI_AGENT_GUIDE.md`
+- **See also:** `WHITEPAPER.md`, `doc-elektron/ELEKTRON_NET_AI_AGENT_GUIDE.md`, `doc-elektron/CHANGELOG-Release-v4.0.6.md`
 
 ---
 
@@ -107,19 +107,30 @@ Per Section 2.3, the bug only triggers when the current difficulty sits close to
 
 Recommended: replace the four hardcoded fixtures with values derived from Elektron Net's own parameters (either computed by hand against the corrected `nPowTargetTimespan`, or generated once via a known-good reference run and pinned), so the tests assert against this project's consensus rules instead of inherited upstream ones.
 
-## 6. Checklist
+## 6. Implemented Fix (branch `4.0.6`)
 
-- [ ] Decide fix lever: lower `powLimit`, lower `nPowTargetTimespan`, or both, for Mainnet/Testnet/Testnet4
-- [ ] Add `PowLimitFixActivationHeight` (and post-fix value fields) to `Consensus::Params`, following the existing activation-height convention
-- [ ] Gate `CalculateNextWorkRequired()` (and any other consensus read of `powLimit`/`nPowTargetTimespan`) on that height
-- [ ] Update `sanity_check_chainparams()` to validate the invariant against whichever value set is active at a given height
-- [ ] Decide and announce the target activation height with adequate operator lead time
-- [ ] Re-run `ChainParams_MAIN_sanity`, `ChainParams_TESTNET_sanity`, `ChainParams_TESTNET4_sanity` and confirm they pass
-- [ ] Consider tightening Regtest's `powLimit` for consistency, even though `fPowNoRetargeting` makes it unreachable at runtime
-- [ ] Replace the four stale `get_next_work*` fixtures with values derived from Elektron Net's actual parameters
-- [ ] Re-run the full `pow_tests` suite and confirm 18/18 pass
-- [ ] If any block template, wallet, or mining-pool repo (`elektron-net-pool`, `elektron-net-ppool`) hardcodes assumptions about the current `powLimit` magnitude, check those for consistency after the parameter change
-- [ ] Track operator/node upgrade adoption ahead of the activation height
+- **Lever chosen:** `powLimit` lowered, `nPowTargetSpacing`/`nPowTargetTimespan` left untouched (2016 blocks * 60s), per explicit user decision to change as little as possible and preserve the existing "any small miner, even a single low-end ASIC, can start the network" property as closely as the safety invariant allows.
+- **Magnitude:** the existing `powLimit` right-shifted by exactly 12 bits (divided by 4096) -- same leading-digit shape (`0x7fffff...`), smallest clean reduction that clears the ~945x-violated invariant with a real margin (~4.3x) rather than the bare mathematical minimum. New field `Consensus::Params::powLimitPostFix` (`src/consensus/params.h`), used at and after activation instead of `powLimit`.
+- **Activation heights** (`Consensus::Params::PowLimitFixActivationHeight`, same `-1`-disabled sentinel convention as other activation-height fields):
+  - **Mainnet: 500000** (tip was ~190000 at the time this was set -- real lead time for operators; explicitly noted in `src/kernel/chainparams.cpp` as adjustable before release if more or less lead time turns out to be needed. **No existing mainnet activation height was changed or touched** -- `StoicAwakeningEndHeight`, `MuhashAttestationActivationHeight`, `IntraBlockAttestationFixActivationHeight`, `MandatoryPruneDepth` etc. are all untouched; this is a purely additive new field).
+  - **Testnet / Testnet4: 1** (immediately active -- no operator-coordination need on these networks).
+  - **Regtest: 1**, set for structural consistency only -- regtest's own `powLimit` is already so close to the top of the 256-bit range that even a >>12 shift doesn't satisfy the invariant on its own, but this is a no-op at runtime either way (`fPowNoRetargeting=true` means `CalculateNextWorkRequired()` is never called on regtest, and `sanity_check_chainparams()` already skips the overflow check whenever `fPowNoRetargeting` is set).
+- **Height-gated read**: `src/pow.cpp` gained a small `EffectivePowLimit(params, height)` helper (returns `powLimitPostFix` at/after the activation height, `powLimit` otherwise) used in `GetNextWorkRequired()`, `CalculateNextWorkRequired()`, and `PermittedDifficultyTransition()` (the last already had a `height` parameter in scope, used the same way its existing Stoic-Awakening check does). `CheckProofOfWorkImpl()`/`DeriveTarget()` deliberately left ungated -- see the comment at that call site: `powLimitPostFix` is always smaller (harder) than `powLimit`, so any honest post-fix target is automatically within the unconditional, original bound too; gating it would mean threading a height parameter through every `CheckProofOfWork()` call site codebase-wide for a check that doesn't need it, since the actual nBits-matches-consensus-value enforcement happens elsewhere and *is* height-gated.
+- **Sanity check updated**: `sanity_check_chainparams()` (`src/test/pow_tests.cpp`) now checks the invariant against `powLimitPostFix` when a fix is scheduled for that network, `powLimit` otherwise (e.g. Signet, untouched) -- checking the original `powLimit` unconditionally is no longer meaningful once a height-gated fix exists, since that value is intentionally kept invariant-violating forever (changing it directly would rewrite already-mined chain history).
+- **Regression fixed incidentally**: `stoic_awakening_no_end_height_by_default` (`src/test/pow_tests.cpp`) broke because its test height (500000, chosen before this fix existed, described as "far beyond any realistic end height") collided with the new mainnet activation height. Fixed by explicitly setting `consensus.PowLimitFixActivationHeight = -1` in that test's local params copy, decoupling it from whatever height this or a future fix chooses.
+
+Checklist:
+- [x] Decide fix lever: lower `powLimit`, lower `nPowTargetTimespan`, or both, for Mainnet/Testnet/Testnet4
+- [x] Add `PowLimitFixActivationHeight` (and post-fix value fields) to `Consensus::Params`, following the existing activation-height convention
+- [x] Gate `CalculateNextWorkRequired()` (and any other consensus read of `powLimit`/`nPowTargetTimespan`) on that height
+- [x] Update `sanity_check_chainparams()` to validate the invariant against whichever value set is active at a given height
+- [x] Decide the target activation height with adequate operator lead time (mainnet: 500000) -- **announcing it to operators is still outstanding**, this is a code-only checkmark
+- [x] Re-run `ChainParams_MAIN_sanity`, `ChainParams_TESTNET_sanity`, `ChainParams_TESTNET4_sanity` and confirm they pass -- confirmed, all three pass (6/6, 6/6, 6/6 assertions)
+- [x] Consider tightening Regtest's `powLimit` for consistency, even though `fPowNoRetargeting` makes it unreachable at runtime -- considered and done (see above)
+- [ ] Replace the four stale `get_next_work*` fixtures with values derived from Elektron Net's actual parameters -- explicitly out of scope for this pass (separate, lower-severity, pre-existing issue per §5; still failing, unchanged by this fix, not a regression)
+- [ ] Re-run the full `pow_tests` suite and confirm 18/18 pass -- 14/18 pass (up from 13/18 before this fix once the incidental regression above is also fixed); the remaining 4 are exactly the stale-fixture failures from the item above
+- [ ] If any block template, wallet, or mining-pool repo (`elektron-net-pool`, `elektron-net-ppool`) hardcodes assumptions about the current `powLimit` magnitude, check those for consistency after the parameter change -- not checked in this pass
+- [ ] Track operator/node upgrade adoption ahead of the activation height -- operational, not a code task
 
 ## 7. Open Questions
 

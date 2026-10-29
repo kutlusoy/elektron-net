@@ -87,7 +87,8 @@ This document lists **every deliberate divergence** from upstream Bitcoin Core, 
 
 ### 2.5 Economic parameters (unchanged cap, rescaled schedule)
 
-- `MAX_MONEY = 21_000_000 * COIN` (`src/consensus/amount.h`).
+- `MAX_MONEY = 21_000_000 * COIN` (`src/consensus/amount.h`). It limits single amounts only, not the cumulative supply.
+- The schedule emits 21,023,999.72668800 Elek in total, about 24,000 Elek above the nominal 21,000,000. Reason: 2,102,400 blocks (4 x 365 days) is slightly more than 10 x 210,000, so the series converges to 2 x 2,102,400 x 5 = 21,024,000 Elek, reduced by integer truncation of the reward. `GetBlockSubsidy` has no cumulative cap. The nominal figure is passed at block 20,668,801 (about year 39).
 - `nSubsidyHalvingInterval = 2_102_400`.
 - `nPowTargetSpacing = 60`, `nPowTargetTimespan = 2016 * 60`.
 - BIP34/65/66/CSV/Segwit active from height **1** on mainnet.
@@ -98,7 +99,7 @@ When a wallet's last-synced height is older than available pruned blocks, Elektr
 
 1. **`interfaces::Chain::forEachCoin()`** — iterates the live chain UTXO set (`src/node/interfaces.cpp`).
 2. **`CWallet::ScanUTXOSet()`** — credits outputs matching wallet keys (`src/wallet/wallet.cpp`).
-3. **`CWallet::CreditUTXOFromChain()`** — builds partial `CWalletTx` entries keyed by real txid.
+3. **`CWallet::CreditUTXOFromChain()`**: stores each recovered output in a partial `CWalletTx` (marker version, one input naming the real outpoint). `CWallet::RefreshTXOsFromTx()` registers it under the real outpoint, so balance, coin selection, PSBT creation and signing use the real `txid:vout` and the payment is accepted by the mempool. The `rescanutxoset` RPC runs the scan on demand. After the scan, `CWallet::MarkSpentOutputsFromChain()` marks wallet outputs that are missing from the UTXO set as spent (placeholder spend, only outside initial block download), so coins spent while the wallet was offline do not stay in the balance. See `fix-report-wallet-utxo-recovery-real-outpoints.md`.
 
 Triggered automatically in `CWallet::AttachChain()` when `chain.havePruned()` and block rescan is impossible. User sees a warning: *"Wallet balances recovered from the current UTXO set. Pruned transaction history is unavailable."*
 
@@ -319,9 +320,20 @@ Legend: **●** = functional change · **○** = branding/docs only · **＋** =
 - `PopulateAndValidateSnapshot` called with `expected_utxo_hash` from `.hash` sidecar.
 - `NODE_SNAPSHOT` set only when serving snapshots with `.hash`.
 
+#### `src/common/args.cpp` / `src/common/args.h` ●
+
+- Default config filename renamed from `bitcoin.conf` to `elektron.conf` for fresh
+  installs (v4.0.6+). `BITCOIN_CONF_FILENAME_LEGACY` + `GetDefaultConfFilename()`
+  implement a migration path so an existing installation's `bitcoin.conf` keeps being
+  read (and never gets a conflicting `elektron.conf` written next to it) -- same
+  existence-check pattern `GetDefaultDataDir()` already uses for the datadir root
+  itself (old Bitcoin-branded macOS/Windows paths vs. the new Elektron ones).
+
 #### `src/common/init.cpp` ●
 
-- Default `bitcoin.conf` template: Elektron branding, mandatory pruning notice, no `-txindex`.
+- Default config template (see `src/common/args.cpp` above for the filename): Elektron
+  branding, mandatory pruning notice, no `-txindex`. `server=1` (RPC server) is
+  commented out by default -- an operator must explicitly uncomment it to enable RPC.
 
 #### `src/rpc/mining.cpp` ●
 
@@ -434,6 +446,7 @@ Legend: **●** = functional change · **○** = branding/docs only · **＋** =
 #### `src/test/miner_tests.cpp` ●
 
 - `CreateNewBlock_validity`: adds UTXO attestation to rebuilt coinbase; re-mines PoW.
+- Known limitation: `CreateNewBlock_validity` still fails. It builds invalid mempool states on purpose (orphan transaction, double-spend pair) and shifts median time and tip height by hand, all with Bitcoin's 10-minute timing. In Elektron Net the UTXO attestation runs before the block validity check, so the orphan and double-spend cases abort in `UpdateCoins` instead of throwing, and the BIP68 case at the end rejects the shifted chain. This affects the test only. The block assembler is unchanged and mines valid blocks. Every other unit test suite passes.
 
 #### `src/test/peerman_tests.cpp` ●
 
@@ -533,6 +546,7 @@ Service bit **`NODE_SNAPSHOT` (1<<12)** indicates a peer can serve a verified ch
 6. **No full-node archival mode** — history older than 197,280 blocks is not retained network-wide.
 7. For mining / pools, upgrade to software that reads **`coinbase_required_outputs`** (see §10).
 8. For wallets on pruned nodes, expect **UTXO-scan recovery** at load — not full transaction history.
+9. **Upstream security fixes of 2026-10-28** (bitcoin/bitcoin #36667, #36665, #36669) are applied in v4.0.6: send-buffer timeout for paused peers (`net.cpp`), no exceptional-condition polling of paused sockets (`util/sock.cpp`), 64-bit block and undo file positions (`flatfile.*`, `chain.h`, `streams.*`, `util/fs_helpers.*`). Reconcile with upstream when merging newer base commits.
 
 ---
 

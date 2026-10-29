@@ -197,6 +197,8 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_ibd_exit_after_loading_blocks, ChainTe
         for (const bool loading_blocks : {false, true}) {
             for (const bool tip_exists : {false, true}) {
                 for (const bool enough_work : {false, true}) {
+                    // Elektron Net chains have no minimum chain work, so "not enough work" cannot occur
+                    if (!enough_work && chainman.MinimumChainWork() == 0) continue;
                     for (const bool tip_recent : {false, true}) {
                         apply(cached_is_ibd, loading_blocks, tip_exists, enough_work, tip_recent);
                         const bool expected_ibd = cached_is_ibd && (loading_blocks || !tip_exists || !enough_work || !tip_recent);
@@ -509,6 +511,8 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_loadblockindex, TestChain100Setup)
     reload_all_block_indexes();
     BOOST_CHECK_EQUAL(cs1.setBlockIndexCandidates.size(), 1);
 
+    std::vector<CBlockIndex*> reset_indexes;
+
     // Reset some region of the chain's nStatus, removing the HAVE_DATA flag.
     for (int i = 0; i <= cs1.m_chain.Height(); ++i) {
         LOCK(::cs_main);
@@ -519,6 +523,7 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_loadblockindex, TestChain100Setup)
             index->nStatus = BlockStatus::BLOCK_VALID_TREE;
             index->nTx = 0;
             index->m_chain_tx_count = 0;
+            reset_indexes.push_back(index);
         }
 
         ++num_indexes;
@@ -547,6 +552,9 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_loadblockindex, TestChain100Setup)
     BOOST_CHECK_EQUAL(assumed_tip->nHeight, 120);  // original chain has height 120
     BOOST_CHECK_EQUAL(validated_tip->nHeight, 90); // current cs1 chain has height 90
     BOOST_CHECK_EQUAL(assumed_base->nHeight, 110); // current cs2 chain has height 110
+
+    // LoadBlockIndex() re-reads the on-disk index, so the changes must be persisted
+    WITH_LOCK(::cs_main, static_cast<TestBlockManager&>(chainman.m_blockman).PersistBlockIndex(reset_indexes));
 
     // Regenerate cs1.setBlockIndexCandidates and cs2.setBlockIndexCandidate and
     // check contents below.
@@ -609,6 +617,7 @@ BOOST_FIXTURE_TEST_CASE(loadblockindex_invalid_descendants, TestChain100Setup)
     grand_parent->nStatus = (grand_parent->nStatus | BLOCK_FAILED_VALID);
     parent->nStatus = (parent->nStatus & ~BLOCK_FAILED_VALID) | BLOCK_FAILED_CHILD;
     child->nStatus = (child->nStatus & ~BLOCK_FAILED_VALID);
+    static_cast<TestBlockManager&>(m_node.chainman->m_blockman).PersistBlockIndex({grand_parent, parent, child});
 
     // Reload block index to recompute block status validity flags.
     m_node.chainman->LoadBlockIndex();
@@ -708,7 +717,7 @@ BOOST_FIXTURE_TEST_CASE(invalidate_block_and_reconsider_fork, TestChain100Setup)
 }
 
 //! Ensure that snapshot chainstate can be loaded when found on disk after a
-//! restart, and that new blocks can be connected to both chainstates.
+//! restart, and that new blocks can be connected to it.
 BOOST_FIXTURE_TEST_CASE(chainstatemanager_snapshot_init, SnapshotTestSetup)
 {
     ChainstateManager& chainman = *Assert(m_node.chainman);
@@ -726,10 +735,12 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_snapshot_init, SnapshotTestSetup)
 
     BOOST_CHECK_EQUAL(WITH_LOCK(chainman.GetMutex(), return chainman.m_chainstates.size()), 2);
 
-    // "Rewind" the background chainstate so that its tip is not at the
-    // base block of the snapshot - this is so after simulating a node restart,
-    // it will initialize instead of attempting to complete validation.
+    // Test that simulating a shutdown (resetting ChainstateManager) and then performing
+    // chainstate reinitializing successfully reloads the snapshot chainstate. The chainstate
+    // below the snapshot is dropped on startup, as no peer serves the blocks it would need.
     //
+    // "Rewind" the background chainstate so that its tip is not at the base block of the
+    // snapshot, otherwise the validation of the snapshot would complete on startup.
     // Note that this is not a realistic use of DisconnectTip().
     DisconnectedBlockTransactions unused_pool{MAX_DISCONNECTED_TX_POOL_BYTES};
     BlockValidationState unused_state;
@@ -740,8 +751,6 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_snapshot_init, SnapshotTestSetup)
     }
     BOOST_CHECK_EQUAL(bg_chainstate.m_chain.Height(), 109);
 
-    // Test that simulating a shutdown (resetting ChainstateManager) and then performing
-    // chainstate reinitializing successfully reloads both chainstates.
     ChainstateManager& chainman_restarted = this->SimulateNodeRestart();
 
     BOOST_TEST_MESSAGE("Performing Load/Verify/Activate of chainstate");
@@ -751,20 +760,15 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_snapshot_init, SnapshotTestSetup)
 
     {
         LOCK(chainman_restarted.GetMutex());
-        BOOST_CHECK_EQUAL(chainman_restarted.m_chainstates.size(), 2);
-        // Background chainstate has height of 109 not 110 here due to a quirk
-        // of the LoadVerifyActivate only calling ActivateBestChain on one
-        // chainstate. The height would be 110 after a real restart, but it's
-        // fine for this test which is focused on the snapshot chainstate.
-        BOOST_CHECK_EQUAL(chainman_restarted.m_chainstates[0]->m_chain.Height(), 109);
-        BOOST_CHECK_EQUAL(chainman_restarted.m_chainstates[1]->m_chain.Height(), 210);
+        BOOST_CHECK_EQUAL(chainman_restarted.m_chainstates.size(), 1);
+        BOOST_CHECK_EQUAL(chainman_restarted.m_chainstates[0]->m_chain.Height(), 210);
 
         BOOST_CHECK(chainman_restarted.CurrentChainstate().m_from_snapshot_blockhash);
-        BOOST_CHECK(chainman_restarted.CurrentChainstate().m_assumeutxo == Assumeutxo::UNVALIDATED);
+        BOOST_CHECK(chainman_restarted.CurrentChainstate().m_assumeutxo == Assumeutxo::VALIDATED);
 
         BOOST_CHECK_EQUAL(chainman_restarted.ActiveTip()->GetBlockHash(), snapshot_tip_hash);
         BOOST_CHECK_EQUAL(chainman_restarted.ActiveHeight(), 210);
-        BOOST_CHECK_EQUAL(chainman_restarted.HistoricalChainstate()->m_chain.Height(), 109);
+        BOOST_CHECK_EQUAL(chainman_restarted.HistoricalChainstate(), nullptr);
     }
 
     BOOST_TEST_MESSAGE(
@@ -773,12 +777,8 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_snapshot_init, SnapshotTestSetup)
     {
         LOCK(chainman_restarted.GetMutex());
         BOOST_CHECK_EQUAL(chainman_restarted.ActiveHeight(), 220);
-
-        // Background chainstate should be unaware of new blocks on the snapshot
-        // chainstate, but the block disconnected above is now reattached.
-        BOOST_CHECK_EQUAL(chainman_restarted.m_chainstates.size(), 2);
-        BOOST_CHECK_EQUAL(chainman_restarted.m_chainstates[0]->m_chain.Height(), 110);
-        BOOST_CHECK_EQUAL(chainman_restarted.m_chainstates[1]->m_chain.Height(), 220);
+        BOOST_CHECK_EQUAL(chainman_restarted.m_chainstates.size(), 1);
+        BOOST_CHECK_EQUAL(chainman_restarted.m_chainstates[0]->m_chain.Height(), 220);
         BOOST_CHECK_EQUAL(chainman_restarted.HistoricalChainstate(), nullptr);
     }
 }

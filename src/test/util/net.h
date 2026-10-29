@@ -43,6 +43,11 @@ struct ConnmanTestMsg : public CConnman {
 
     void SetAddrman(AddrMan& in) { addrman = in; }
 
+    bool CheckInactivity(const CNode& node, NodeClock::time_point now) const
+    {
+        return InactivityCheck(node, now);
+    }
+
     void SetPeerConnectTimeout(std::chrono::seconds timeout)
     {
         m_peer_connect_timeout = timeout;

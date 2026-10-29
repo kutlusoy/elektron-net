@@ -1462,7 +1462,7 @@ RPCMethod sendall()
                     if (pwallet->IsSpent(input.prevout)) {
                         throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Input not available. UTXO (%s:%d) was already spent.", input.prevout.hash.ToString(), input.prevout.n));
                     }
-                    const CWalletTx* tx{pwallet->GetWalletTx(input.prevout.hash)};
+                    const CWalletTx* tx{pwallet->GetWalletTxByOutpoint(input.prevout)};
                     if (!tx || input.prevout.n >= tx->tx->vout.size() || !pwallet->IsMine(tx->tx->vout[input.prevout.n])) {
                         throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Input not found. UTXO (%s:%d) is not part of wallet.", input.prevout.hash.ToString(), input.prevout.n));
                     }

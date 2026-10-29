@@ -7,6 +7,7 @@
 #include <flatfile.h>
 #include <streams.h>
 #include <test/util/setup_common.h>
+#include <util/fs_helpers.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -128,6 +129,31 @@ BOOST_AUTO_TEST_CASE(flatfile_flush)
     // Flush with finalize should truncate file.
     seq.Flush(FlatFilePos(0, 1), true);
     BOOST_CHECK_EQUAL(fs::file_size(seq.FileName(FlatFilePos(0, 1))), 1U);
+}
+
+BOOST_AUTO_TEST_CASE(flatfile_pos_above_4gib)
+{
+    const auto data_dir = m_args.GetDataDirBase();
+    FlatFileSeq seq(data_dir, "big", 16 * 1024);
+
+    const uint64_t pos_above_4gib{(uint64_t{1} << 32) + 1234};
+    const FlatFilePos pos(0, pos_above_4gib);
+    BOOST_CHECK_EQUAL(pos.nPos, pos_above_4gib);
+
+    FILE* file{seq.Open(pos)};
+    BOOST_REQUIRE(file);
+    BOOST_CHECK_EQUAL(FileTell64(file), static_cast<int64_t>(pos_above_4gib));
+    BOOST_CHECK_EQUAL(fwrite("x", 1, 1, file), 1U);
+    BOOST_CHECK_EQUAL(FileTell64(file), static_cast<int64_t>(pos_above_4gib + 1));
+    BOOST_CHECK(TruncateFile(file, pos_above_4gib + 1));
+    fclose(file);
+    BOOST_CHECK_EQUAL(fs::file_size(seq.FileName(pos)), pos_above_4gib + 1);
+
+    DataStream ss;
+    ss << pos;
+    FlatFilePos pos2;
+    ss >> pos2;
+    BOOST_CHECK(pos == pos2);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

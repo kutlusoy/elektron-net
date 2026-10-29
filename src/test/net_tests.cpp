@@ -1590,4 +1590,41 @@ BOOST_AUTO_TEST_CASE(private_broadcast_version_does_not_update_addrman_services)
     m_node.peerman->FinalizeNode(node);
 }
 
+BOOST_AUTO_TEST_CASE(inactivity_check_pause_send_timeout)
+{
+    SetMockTime(NodeSeconds{1h});
+    in_addr peer_addr;
+    peer_addr.s_addr = htonl(0x01020304);
+    const CAddress addr{CService{peer_addr, 8333}, NODE_NONE};
+    CNode node{/*id=*/0,
+               /*sock=*/nullptr,
+               /*addrIn=*/addr,
+               /*nKeyedNetGroupIn=*/0,
+               /*nLocalHostNonceIn=*/0,
+               /*addrBindIn=*/CService{},
+               /*addrNameIn=*/"",
+               /*conn_type_in=*/ConnectionType::INBOUND,
+               /*inbound_onion=*/false,
+               /*network_key=*/0};
+    auto& connman = static_cast<ConnmanTestMsg&>(*m_node.connman);
+
+    const auto start{NodeClock::now() + 1h};
+    // Peer keeps sending and receiving, so only the paused send buffer can time it out
+    node.m_last_send = start;
+    node.m_last_recv = start;
+    node.fSuccessfullyConnected = true;
+    node.fPauseSend = true;
+    node.m_pause_send_since = start;
+
+    BOOST_CHECK(!connman.CheckInactivity(node, start + TIMEOUT_INTERVAL));
+
+    const auto later{start + TIMEOUT_INTERVAL + 1s};
+    node.m_last_send = later;
+    node.m_last_recv = later;
+    BOOST_CHECK(connman.CheckInactivity(node, later));
+
+    node.fPauseSend = false;
+    BOOST_CHECK(!connman.CheckInactivity(node, later));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

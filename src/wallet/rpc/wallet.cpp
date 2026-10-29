@@ -276,6 +276,44 @@ static RPCMethod loadwallet()
     };
 }
 
+static RPCMethod rescanutxoset()
+{
+    return RPCMethod{
+        "rescanutxoset",
+        "Elektron Net: scan the current chain UTXO set for outputs owned by this wallet. "
+        "This is intended for seed recovery on mandatory-pruned nodes where historical "
+        "funding transactions are no longer available. The node must be fully synchronized.\n",
+        {},
+        RPCResult{RPCResult::Type::OBJ, "", "", {
+            {RPCResult::Type::BOOL, "success", "true when the UTXO scan completed"},
+        }},
+        RPCExamples{HelpExampleCli("rescanutxoset", "") + HelpExampleRpc("rescanutxoset", "")},
+        [](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
+        {
+            std::shared_ptr<CWallet> const pwallet = GetWalletForJSONRPCRequest(request);
+            if (!pwallet) return UniValue::VNULL;
+
+            pwallet->BlockUntilSyncedToCurrentChain();
+            LOCK(pwallet->cs_wallet);
+            if (pwallet->chain().isInitialBlockDownload()) {
+                throw JSONRPCError(RPC_WALLET_ERROR, "Node must be fully synchronized before scanning the UTXO set");
+            }
+
+            bilingual_str error;
+            if (!pwallet->ScanUTXOSet(error)) {
+                throw JSONRPCError(
+                    RPC_WALLET_ERROR,
+                    error.empty() ? "Failed to scan current UTXO set" : error.original
+                );
+            }
+
+            UniValue result(UniValue::VOBJ);
+            result.pushKV("success", true);
+            return result;
+        },
+    };
+}
+
 static RPCMethod setwalletflag()
 {
             std::string flags;
@@ -944,6 +982,7 @@ std::span<const CRPCCommand> GetWalletRPCCommands()
         {"wallet", &lockunspent},
         {"wallet", &migratewallet},
         {"wallet", &removeprunedfunds},
+        {"wallet", &rescanutxoset},
         {"wallet", &rescanblockchain},
         {"wallet", &send},
         {"wallet", &sendmany},

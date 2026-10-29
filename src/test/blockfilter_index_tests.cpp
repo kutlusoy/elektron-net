@@ -9,6 +9,7 @@
 #include <consensus/validation.h>
 #include <index/blockfilterindex.h>
 #include <interfaces/chain.h>
+#include <kernel/utxo_muhash.h>
 #include <node/miner.h>
 #include <pow.h>
 #include <test/util/blockfilter.h>
@@ -27,7 +28,8 @@ using node::CBlockTemplate;
 BOOST_AUTO_TEST_SUITE(blockfilter_index_tests)
 
 struct BuildChainTestingSetup : public TestChain100Setup {
-    CBlock CreateBlock(const CBlockIndex* prev, const std::vector<CMutableTransaction>& txns, const CScript& scriptPubKey);
+    CBlock CreateBlock(const CBlockIndex* prev, const std::vector<CMutableTransaction>& txns, const CScript& scriptPubKey, kernel::UTXOMuHashState& muhash_state);
+    kernel::UTXOMuHashState MuHashStateAt(const CBlockIndex* pindex);
     bool BuildChain(const CBlockIndex* pindex, const CScript& coinbase_script_pub_key, size_t length, std::vector<std::shared_ptr<CBlock>>& chain);
 };
 
@@ -65,9 +67,37 @@ static bool CheckFilterLookups(BlockFilterIndex& filter_index, const CBlockIndex
     return true;
 }
 
+// Coinbase without its UTXO attestation output, as it is when its coins enter the UTXO set hash.
+static CMutableTransaction StripAttestation(const CTransaction& coinbase, int height)
+{
+    CMutableTransaction mtx{coinbase};
+    if (ExtractCoinbaseUTXOAttestation(coinbase, height)) mtx.vout.pop_back();
+    return mtx;
+}
+
+// UTXO set hash state at pindex, an ancestor of the active tip whose blocks above it only contain coinbases.
+kernel::UTXOMuHashState BuildChainTestingSetup::MuHashStateAt(const CBlockIndex* pindex)
+{
+    LOCK(cs_main);
+    ChainstateManager& chainman{*Assert(m_node.chainman)};
+    kernel::UTXOMuHashState state{chainman.ActiveChainstate().UTXOMuHash()};
+    for (const CBlockIndex* it{chainman.ActiveChain().Tip()}; it != pindex; it = it->pprev) {
+        CBlock block;
+        BOOST_REQUIRE(chainman.m_blockman.ReadBlock(block, *it));
+        BOOST_REQUIRE_EQUAL(block.vtx.size(), 1U);
+        const CTransaction& coinbase{*block.vtx[0]};
+        for (uint32_t o = 0; o < coinbase.vout.size(); ++o) {
+            if (coinbase.vout[o].scriptPubKey.IsUnspendable()) continue;
+            state.RemoveCoin(COutPoint{coinbase.GetHash(), o}, Coin{coinbase.vout[o], it->nHeight, true});
+        }
+    }
+    return state;
+}
+
 CBlock BuildChainTestingSetup::CreateBlock(const CBlockIndex* prev,
     const std::vector<CMutableTransaction>& txns,
-    const CScript& scriptPubKey)
+    const CScript& scriptPubKey,
+    kernel::UTXOMuHashState& muhash_state)
 {
     BlockAssembler::Options options;
     options.coinbase_output_script = scriptPubKey;
@@ -87,6 +117,26 @@ CBlock BuildChainTestingSetup::CreateBlock(const CBlockIndex* prev,
         tx_coinbase.nLockTime = static_cast<uint32_t>(prev->nHeight);
         tx_coinbase.vin.at(0).scriptSig = CScript{} << prev->nHeight + 1;
         block.vtx.at(0) = MakeTransactionRef(std::move(tx_coinbase));
+    }
+
+    // Re-attest the UTXO set hash for this block on top of the (possibly forked) parent state
+    {
+        LOCK(cs_main);
+        ChainstateManager& chainman{*Assert(m_node.chainman)};
+        const int height{prev->nHeight + 1};
+        // The template's attestation is for the child of the active tip
+        const CMutableTransaction stripped{StripAttestation(*block.vtx.at(0), chainman.ActiveChain().Height() + 1)};
+        block.vtx.at(0) = MakeTransactionRef(stripped);
+        const auto hash{ComputeBlockUTXOAttestationHash(block, height, chainman.ActiveChainstate().CoinsTip(), chainman.m_blockman, chainman.GetConsensus(), &muhash_state)};
+        BOOST_REQUIRE(hash);
+        CMutableTransaction attested{stripped};
+        attested.vout.push_back(CTxOut{0, CScript{} << OP_RETURN << height << *hash});
+        block.vtx.at(0) = MakeTransactionRef(std::move(attested));
+        // The coins enter the UTXO set under the txid of the attested coinbase
+        for (uint32_t o = 0; o < block.vtx[0]->vout.size(); ++o) {
+            if (block.vtx[0]->vout[o].scriptPubKey.IsUnspendable()) continue;
+            muhash_state.AddCoin(COutPoint{block.vtx[0]->GetHash(), o}, Coin{block.vtx[0]->vout[o], height, true});
+        }
         block.hashMerkleRoot = BlockMerkleRoot(block);
     }
 
@@ -101,10 +151,11 @@ bool BuildChainTestingSetup::BuildChain(const CBlockIndex* pindex,
     std::vector<std::shared_ptr<CBlock>>& chain)
 {
     std::vector<CMutableTransaction> no_txns;
+    kernel::UTXOMuHashState muhash_state{MuHashStateAt(pindex)};
 
     chain.resize(length);
     for (auto& block : chain) {
-        block = std::make_shared<CBlock>(CreateBlock(pindex, no_txns, coinbase_script_pub_key));
+        block = std::make_shared<CBlock>(CreateBlock(pindex, no_txns, coinbase_script_pub_key, muhash_state));
 
         BlockValidationState state;
         if (!Assert(m_node.chainman)->ProcessNewBlockHeaders({{*block}}, true, state, &pindex)) {

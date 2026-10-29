@@ -15,6 +15,7 @@
 #include <txdb.h>
 #include <uint256.h>
 #include <util/byte_units.h>
+#include <util/exec.h>
 #include <util/fs.h>
 #include <util/log.h>
 #include <util/signalinterrupt.h>
@@ -24,9 +25,117 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cerrno>
+#include <fstream>
+#include <string>
 #include <vector>
 
 using kernel::CacheSizes;
+
+namespace node {
+namespace {
+// Elektron Net: shared wording for the manual "delete and restart plainly" recovery
+// option, used across several messages below (both in RestartWithReindex() and the
+// one-shot-guard failure message in CompleteChainstateInitialization()). Building the
+// exact three directory paths here -- rather than a vague relative hint -- so the
+// message is directly actionable without the operator having to guess the datadir
+// layout. All three must be deleted together: leaving blocks/index/ in place means
+// chainman.m_best_header stays populated from it, so the node would just re-enter this
+// same automatic-restart logic instead of bootstrapping fresh like a brand-new node.
+std::string ManualDeleteHint(const fs::path& datadir)
+{
+    return strprintf(
+        "delete these three directories together: %s, %s, and %s (do not delete the "
+        "wallets/ directory or the configuration file), and then restart normally with "
+        "no special flags -- this makes the node bootstrap exactly like a brand-new node",
+        fs::PathToString(datadir / "blocks"),
+        fs::PathToString(datadir / "chainstate"),
+        fs::PathToString(datadir / "chainstate_snapshot"));
+}
+
+// Elektron Net: see doc-elektron/fix-report-snapshot-restart-deadlock.md. Restarts the
+// current process with -reindex appended, reusing the already-verified-reliable full
+// reindex recovery path (confirmed live in that report) instead of trying to patch
+// through a local chainstate state that mandatory pruning guarantees can never be
+// locally replayable again. Reads the original command line from /proc/self/cmdline
+// (Linux-specific); on any other platform, or if anything here fails, this simply
+// returns and leaves the existing (slower, requires manual intervention) failure path
+// to run instead -- this is a best-effort convenience, never required for correctness.
+//
+// Deliberately Linux/macOS-only, not a gap left to close later: a native Windows
+// self-restart (GetCommandLineW/CommandLineToArgvW) was evaluated and rejected, since
+// it could only ever be verified by code review (no Windows toolchain in this
+// project's usual test environment), and an unverified process-replacing restart is
+// too risky to run unsupervised. Windows operators get a clear, actionable log message
+// with both manual recovery options instead -- see the WIN32 branch below.
+void RestartWithReindex(const fs::path& datadir)
+{
+#ifdef WIN32
+    LogWarning("[snapshot] No chainstate has a usable local tip, and this network's "
+               "mandatory pruning means local replay cannot recover it. Automatic "
+               "-reindex restart is not supported on this platform -- please either "
+               "restart manually with -reindex, or stop the node and %s.\n",
+               ManualDeleteHint(datadir));
+    return;
+#else
+    std::ifstream cmdline_file("/proc/self/cmdline", std::ios::binary);
+    if (!cmdline_file) {
+        LogWarning("[snapshot] Could not read /proc/self/cmdline for automatic -reindex "
+                   "restart. Please either restart manually with -reindex, or stop the "
+                   "node and %s.\n", ManualDeleteHint(datadir));
+        return;
+    }
+    std::vector<std::string> args;
+    std::string arg;
+    char ch;
+    while (cmdline_file.get(ch)) {
+        if (ch == '\0') {
+            args.push_back(arg);
+            arg.clear();
+        } else {
+            arg += ch;
+        }
+    }
+    if (!arg.empty()) args.push_back(arg);
+    if (args.empty()) {
+        LogWarning("[snapshot] Empty /proc/self/cmdline; cannot automatically restart "
+                   "with -reindex. Please either restart manually with -reindex, or "
+                   "stop the node and %s.\n", ManualDeleteHint(datadir));
+        return;
+    }
+
+    for (const auto& a : args) {
+        if (a == "-reindex" || a.rfind("-reindex=", 0) == 0) {
+            // Already restarting with -reindex and still ended up here somehow --
+            // don't loop forever, fall through to the normal failure path instead.
+            // -reindex clearly didn't resolve it this time, so only offer the other
+            // recovery option here, not -reindex again.
+            LogWarning("[snapshot] Already running with -reindex; not restarting again. "
+                       "As an alternative, you can stop the node and %s.\n",
+                       ManualDeleteHint(datadir));
+            return;
+        }
+    }
+    args.push_back("-reindex");
+
+    LogInfo("[snapshot] No chainstate has a usable local tip, and this network's "
+            "mandatory pruning means local replay cannot recover it -- restarting with "
+            "-reindex to bootstrap fresh, the same recovery path a brand-new node takes.\n");
+
+    std::vector<const char*> exec_args;
+    exec_args.reserve(args.size() + 1);
+    for (const auto& a : args) exec_args.push_back(a.c_str());
+    exec_args.push_back(nullptr);
+
+    util::ExecVp("/proc/self/exe", const_cast<char* const*>(exec_args.data()));
+    // Only reaches here if exec failed.
+    LogWarning("[snapshot] Failed to restart with -reindex (errno=%d). Please either "
+               "restart manually with -reindex, or stop the node and %s.\n",
+               errno, ManualDeleteHint(datadir));
+#endif
+}
+} // namespace
+} // namespace node
 
 namespace node {
 // Complete initialization of chainstates after the initial call has been made
@@ -193,10 +302,96 @@ ChainstateLoadResult LoadChainstate(ChainstateManager& chainman, const CacheSize
         return {init_status, init_error};
     }
 
-    // Elektron Net: automatic snapshots have no hardcoded assumeutxo data in
-    // chainparams. Background validation would stall forever because historical
+    // Elektron Net: a snapshot chainstate directory can be left in a torn state if a
+    // live snapshot-chainstate replacement (ActivateSnapshot(), validation.cpp) is
+    // interrupted between wiping the old coins DB and finishing repopulating the new
+    // one -- the wipe-and-reopen (InitCoinsDB) happens first, PopulateAndValidateSnapshot()
+    // second, and base_blockhash (the file LoadAssumeutxoChainstate() uses to decide
+    // whether a snapshot chainstate is present at all) is only rewritten last, on
+    // success. An interruption in between leaves base_blockhash still pointing at the
+    // *previous* checkpoint while the coins DB behind it is empty. LoadAssumeutxoChainstate()
+    // has no way to tell this apart from a real, complete snapshot chainstate -- it only
+    // checks that base_blockhash exists -- so it registers a chainstate for this broken
+    // directory, and CompleteChainstateInitialization() above correctly leaves it tip-less
+    // (is_coinsview_empty() is true) but does not remove it either. Left as-is, this
+    // chainstate can become CurrentChainstate() with m_chain.Tip() == nullptr, which hangs
+    // AppInitMain() forever waiting on a tip block that will never be reported -- see
+    // doc-elektron/fix-report-snapshot-restart-deadlock.md for the live reproduction.
+    // Detect it here and discard it exactly like "no snapshot chainstate exists at all"
+    // (the same, already-reliable path a node with no prior snapshot takes), rather than
+    // trying to load or repair it.
+    if (assumeutxo_cs && assumeutxo_cs->m_chain.Tip() == nullptr) {
+        LogInfo("[snapshot] Discarded an incomplete snapshot chainstate (found on disk but never "
+                "fully populated, likely from an interrupted replacement) -- will re-request a "
+                "fresh snapshot from peers.\n");
+        assumeutxo_cs->ResetCoinsViews();
+        if (!chainman.DeleteChainstate(*assumeutxo_cs)) {
+            return {ChainstateLoadStatus::FAILURE_FATAL, Untranslated("Couldn't remove incomplete snapshot chainstate.")};
+        }
+        assumeutxo_cs = nullptr;
+    }
+
+    // Elektron Net: broader self-heal for the same underlying problem. The specific
+    // "torn assumeutxo_cs" case above is not the only way a node can end up with no
+    // usable local chain data -- a *rejected* snapshot-replacement candidate (e.g. a
+    // node's own stale local snapshot file, correctly rejected as not exceeding the
+    // active chainstate's work) also destroys the currently-active snapshot chainstate
+    // as a side effect, because ActivateSnapshot() wipes the old data before validating
+    // the new candidate, not after. When that happens, LoadAssumeutxoChainstate() above
+    // finds no snapshot chainstate directory at all, and the "historical" chainstate is
+    // permanently empty by design for an automatic-snapshot node (its pre-snapshot data
+    // was deliberately discarded once it first became snapshot-based) -- so *no*
+    // chainstate here has a usable tip, and none ever can via local replay once the
+    // chain has passed MandatoryPruneDepth blocks, by construction of mandatory pruning
+    // (even genesis itself may no longer be present locally). Trying to patch this
+    // forward (e.g. re-writing just the genesis block) reaches into chainstate-loading
+    // invariants this codebase does not expect touched this early and is not worth the
+    // risk. Restarting the process with -reindex reuses the already-verified-reliable
+    // recovery path instead -- see doc-elektron/fix-report-snapshot-restart-deadlock.md.
+    if (!options.wipe_chainstate_db && chainman.m_blockman.m_blockfiles_indexed && chainman.m_best_header) {
+        const bool any_chainstate_has_tip = std::any_of(
+            chainman.m_chainstates.begin(), chainman.m_chainstates.end(),
+            [](const auto& cs) { return cs->m_chain.Tip() != nullptr; });
+        // Elektron Net: one-shot guard, so this can never fire "willkürlich" (repeatedly
+        // / on its own initiative beyond a single automatic attempt). A marker file,
+        // separate per network subdirectory, records that an automatic restart already
+        // happened here; if a second occurrence is detected before the marker is
+        // cleared, this is no longer treated as the same, already-verified-recoverable
+        // situation -- something is unexpectedly still wrong even after a fresh reindex,
+        // so fail loudly and ask for manual investigation instead of restart-looping.
+        const fs::path auto_reindex_marker = chainman.m_options.datadir / ".elektron_auto_reindex_attempted";
+        if (!any_chainstate_has_tip &&
+            chainman.m_best_header->nHeight >= static_cast<int>(chainman.GetConsensus().MandatoryPruneDepth)) {
+            if (fs::exists(auto_reindex_marker)) {
+                return {ChainstateLoadStatus::FAILURE_FATAL, Untranslated(strprintf(
+                    "No chainstate has a usable local tip, and an automatic -reindex restart "
+                    "was already attempted once before (see %s) without resolving it. Not "
+                    "restarting again automatically -- this needs manual investigation. "
+                    "Delete that marker file to allow another automatic attempt, restart "
+                    "manually with -reindex, or stop the node and %s.",
+                    fs::PathToString(auto_reindex_marker), ManualDeleteHint(chainman.m_options.datadir)))};
+            }
+            FILE* marker{fsbridge::fopen(auto_reindex_marker, "w")};
+            if (marker) {
+                fputs(FormatISO8601DateTime(GetTime()).c_str(), marker);
+                fclose(marker);
+            }
+            RestartWithReindex(chainman.m_options.datadir);
+            // Only returns on failure (unsupported platform or exec error); fall
+            // through to the existing failure path below in that case.
+        } else if (any_chainstate_has_tip && fs::exists(auto_reindex_marker)) {
+            // A real tip exists now (this restart recovered fine, whether via the
+            // automatic reindex above or otherwise) -- clear the marker so a genuinely
+            // new future occurrence gets its own one-shot attempt again.
+            fs::remove(auto_reindex_marker);
+        }
+    }
+
+    // Elektron Net: background validation would stall forever because historical
     // blocks older than the snapshot are pruned and unavailable on all peers, so the
-    // pre-snapshot ("historical") chainstate must be abandoned. This used to just
+    // pre-snapshot ("historical") chainstate must be abandoned. This holds for automatic
+    // snapshots (no hardcoded assumeutxo data in chainparams) and for snapshots loaded with
+    // loadtxoutset (hardcoded data) alike. This used to just
     // clear its target block, but that broke ChainstateManager::CurrentChainstate():
     // it picks the *first* chainstate in m_chainstates with no m_target_blockhash, and
     // clearing the historical chainstate's target left BOTH it and the snapshot
@@ -223,7 +418,12 @@ ChainstateLoadResult LoadChainstate(ChainstateManager& chainman, const CacheSize
     bool deleted_historical_cs{false};
     if (assumeutxo_cs) {
         const CBlockIndex* base = assumeutxo_cs->SnapshotBase();
-        if (base && !chainman.GetParams().AssumeutxoForHeight(base->nHeight).has_value()) {
+        // Only a chainstate that already reached a snapshot with a hardcoded entry is kept,
+        // the validation of that snapshot completes below.
+        const bool background_reached_base = base && validated_cs.m_chain.Tip() &&
+                                             validated_cs.m_chain.Tip()->nHeight >= base->nHeight &&
+                                             chainman.GetParams().AssumeutxoForHeight(base->nHeight).has_value();
+        if (base && !background_reached_base) {
             validated_cs.ResetCoinsViews();
             if (!chainman.DeleteChainstate(validated_cs)) {
                 return {ChainstateLoadStatus::FAILURE_FATAL, Untranslated("Couldn't remove abandoned pre-snapshot chainstate.")};

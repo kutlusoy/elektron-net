@@ -418,6 +418,8 @@ CBlock TestChain100Setup::CreateBlock(
         block.vtx.push_back(MakeTransactionRef(tx));
     }
     RegenerateCommitments(block, *Assert(m_node.chainman));
+    // Elektron Net: the attestation of the coinbase was made for an empty block, it must cover the added transactions
+    Assert(RegenerateUTXOAttestation(block, chainstate.m_chain.Tip()->nHeight + 1, *Assert(m_node.chainman)));
 
     while (!CheckProofOfWork(block.GetHash(), block.nBits, m_node.chainman->GetConsensus())) ++block.nNonce;
 

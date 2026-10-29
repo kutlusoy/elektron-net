@@ -114,6 +114,7 @@ BASE_SCRIPTS = [
     'p2p_segwit.py',
     'feature_maxuploadtarget.py',
     'feature_assumeutxo.py',
+    'feature_snapshot_stale_own_file.py',
     'mempool_updatefromblock.py',
     'mempool_persist.py',
     # vv Tests less than 60s vv
@@ -312,6 +313,7 @@ BASE_SCRIPTS = [
     'wallet_resendwallettransactions.py',
     'wallet_fallbackfee.py',
     'rpc_dumptxoutset.py',
+    'rpc_dumptxoutset_rollback_muhash.py',
     'feature_minchainwork.py',
     'rpc_estimatefee.py',
     'p2p_private_broadcast.py',

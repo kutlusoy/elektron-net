@@ -366,7 +366,11 @@ public:
     bool isConfirmed() const { return state<TxStateConfirmed>(); }
     const Txid& GetHash() const LIFETIMEBOUND { return tx->GetHash(); }
     const Wtxid& GetWitnessHash() const LIFETIMEBOUND { return tx->GetWitnessHash(); }
-    bool IsCoinBase() const { return tx->IsCoinBase(); }
+    // Elektron Net: the partial transaction of a coinbase output that was recovered from the UTXO set carries this marker
+    // version, since its input names the real outpoint and so it is not a coinbase by its own shape. The wallet has to treat
+    // it as one, or a reward that is still immature would count as spendable.
+    static constexpr uint32_t RECOVERED_COINBASE_TX_VERSION{0x52435633};
+    bool IsCoinBase() const { return tx->IsCoinBase() || (tx->version == RECOVERED_COINBASE_TX_VERSION && tx->vin.size() == 1); }
 
 private:
     // Disable copying of CWalletTx objects to prevent bugs where instances get

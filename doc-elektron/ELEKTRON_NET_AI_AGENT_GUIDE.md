@@ -191,7 +191,7 @@ The following rows summarize **what the project states** and **where to look**. 
 | Stated claim | Primary inspection points |
 |--------------|---------------------------|
 | Bitcoin Core C++ fork; SHA-256d PoW | Tree layout; PoW path vs upstream Core; no alternate PoW module |
-| ~21M supply; 60s blocks; scaled subsidy | `src/kernel/chainparams.cpp`, subsidy / halving parameters |
+| ~21M nominal supply (21,023,999.73 emitted, see `BITCOIN_CORE_DIFF.md`); 60s blocks; scaled subsidy | `src/kernel/chainparams.cpp`, subsidy / halving parameters |
 | No pre-mine / no founder allocation | Genesis construction in `chainparams`; subsidy schedule |
 | Mandatory ~137-day pruning | `MandatoryPruneDepth`; prune paths in `validation` / `blockstorage`; GUI options |
 | **Per-block UTXO attestation (design hinge)** | `ComputeBlockUTXOAttestationHash`, `ValidateUTXOCheckpoint`, miner GBT fields — see section above |

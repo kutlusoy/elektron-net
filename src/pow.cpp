@@ -11,10 +11,25 @@
 #include <uint256.h>
 #include <util/check.h>
 
+// Elektron Net: powLimit overflow fix (doc-elektron/fix-report-powlimit-retarget-overflow.md).
+// The original params.powLimit violates the safety invariant
+// powLimit * 4 * nPowTargetTimespan < 2^256 that the retargeting math below relies on
+// to avoid silent arith_uint256 overflow. Height-gated (not a wall-clock flag day) so
+// every upgraded node switches at the exact same block: before
+// PowLimitFixActivationHeight, retargeting is byte-for-byte identical to before this
+// fix existed; at and after it, the corrected params.powLimitPostFix is used instead.
+static const uint256& EffectivePowLimit(const Consensus::Params& params, int height)
+{
+    if (params.PowLimitFixActivationHeight >= 0 && height >= params.PowLimitFixActivationHeight) {
+        return params.powLimitPostFix;
+    }
+    return params.powLimit;
+}
+
 unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params& params)
 {
     assert(pindexLast != nullptr);
-    unsigned int nProofOfWorkLimit = UintToArith256(params.powLimit).GetCompact();
+    unsigned int nProofOfWorkLimit = UintToArith256(EffectivePowLimit(params, pindexLast->nHeight + 1)).GetCompact();
 
     // Only change once per difficulty adjustment interval
     if ((pindexLast->nHeight+1) % params.DifficultyAdjustmentInterval() != 0)
@@ -64,7 +79,7 @@ unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nF
         nActualTimespan = params.nPowTargetTimespan*4;
 
     // Retarget
-    const arith_uint256 bnPowLimit = UintToArith256(params.powLimit);
+    const arith_uint256 bnPowLimit = UintToArith256(EffectivePowLimit(params, pindexLast->nHeight + 1));
     arith_uint256 bnNew;
 
     // Special difficulty rule for Testnet4
@@ -102,7 +117,7 @@ bool PermittedDifficultyTransition(const Consensus::Params& params, int64_t heig
         int64_t smallest_timespan = params.nPowTargetTimespan/4;
         int64_t largest_timespan = params.nPowTargetTimespan*4;
 
-        const arith_uint256 pow_limit = UintToArith256(params.powLimit);
+        const arith_uint256 pow_limit = UintToArith256(EffectivePowLimit(params, height));
         arith_uint256 observed_new_target;
         observed_new_target.SetCompact(new_nbits);
 
@@ -168,6 +183,17 @@ std::optional<arith_uint256> DeriveTarget(unsigned int nBits, const uint256 pow_
 
 bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Params& params)
 {
+    // Elektron Net: deliberately NOT height-gated to EffectivePowLimit() here (see the
+    // powLimit overflow fix above). This function has no height parameter, and threading
+    // one through would mean touching every CheckProofOfWork() call site across the
+    // codebase for a check that doesn't need it: params.powLimitPostFix is always
+    // smaller (harder) than params.powLimit, so any target a post-fix-honest node
+    // actually computes (via CalculateNextWorkRequired(), which IS height-gated) is
+    // automatically within this unconditional, original powLimit bound too -- no honest
+    // post-fix block can ever be falsely rejected here. The real enforcement that a
+    // block's nBits matches the height-appropriate consensus value happens elsewhere
+    // (nBits must equal GetNextWorkRequired()'s output, which IS height-gated); this is
+    // only the PoW-hash-vs-claimed-target sanity/range check.
     auto bnTarget{DeriveTarget(nBits, params.powLimit)};
     if (!bnTarget) return false;
 

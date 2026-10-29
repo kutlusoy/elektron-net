@@ -553,7 +553,7 @@ Difficulty retargets every **2,016 blocks** (roughly 1.4 days at 60-second spaci
 |-----------|-------|
 | Block time target | 60 seconds |
 | Halving interval | 2,102,400 blocks (~4 years) |
-| Total supply | 21,000,000 ELEK |
+| Total supply | 21,000,000 ELEK (nominal; the schedule emits 21,023,999.73 ELEK in total, about 24,000 ELEK more, because the halving interval of 2,102,400 blocks is slightly more than 10 x 210,000) |
 | Smallest unit | lepton (1 ELEK = 100,000,000 lepton) |
 | Genesis reward | 5 ELEK |
 | Initial difficulty | `0x1d7fffff` (CPU-friendly) |

@@ -303,12 +303,12 @@ RPCMethod lockunspent()
 
         const COutPoint outpt(txid, nOutput);
 
-        const auto it = pwallet->mapWallet.find(outpt.hash);
-        if (it == pwallet->mapWallet.end()) {
+        const CWalletTx* known = pwallet->GetWalletTxByOutpoint(outpt);
+        if (!known) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, unknown transaction");
         }
 
-        const CWalletTx& trans = it->second;
+        const CWalletTx& trans = *known;
 
         if (outpt.n >= trans.tx->vout.size()) {
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, vout index out of bounds");

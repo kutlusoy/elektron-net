@@ -9,7 +9,6 @@ to a hash that has been compiled into bitcoind.
 The assumeutxo value generated and used here is committed to in
 `CRegTestParams::m_assumeutxo_data` in `src/kernel/chainparams.cpp`.
 """
-import contextlib
 
 from dataclasses import dataclass
 from test_framework.blocktools import (
@@ -31,6 +30,7 @@ from test_framework.p2p import (
     P2PInterface,
 )
 from test_framework.test_framework import BitcoinTestFramework
+from test_framework.test_node import ErrorMatch
 from test_framework.util import (
     assert_approx,
     assert_equal,
@@ -67,7 +67,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         self.extra_args = [
             [],
             ["-fastprune", "-prune=1", "-blockfilterindex=1", "-coinstatsindex=1"],
-            ["-persistmempool=0","-txindex=1", "-blockfilterindex=1", "-coinstatsindex=1"],
+            ["-persistmempool=0", "-blockfilterindex=1", "-coinstatsindex=1"],
             []
         ]
 
@@ -76,6 +76,16 @@ class AssumeutxoTest(BitcoinTestFramework):
         including blocks the other hasn't yet seen."""
         self.add_nodes(4)
         self.start_nodes(extra_args=self.extra_args)
+
+    def assert_no_background_validation(self, node, snapshot_tip_height):
+        """Every Elektron Net node is pruned, so the chainstate below the snapshot never catches up."""
+        normal, snapshot = node.getchainstates()['chainstates']
+        assert_equal(normal['blocks'], START_HEIGHT)
+        assert_equal(normal.get('snapshot_blockhash'), None)
+        assert_equal(snapshot['blocks'], snapshot_tip_height)
+        assert_equal(snapshot['validated'], False)
+        assert 'backgroundvalidation' in node.getblockchaininfo()
+        assert_equal(node.getblockchaininfo()['backgroundvalidation']['blocks'], START_HEIGHT)
 
     def test_invalid_snapshot_scenarios(self, valid_snapshot_path):
         self.log.info("Test different scenarios of loading invalid snapshot files")
@@ -139,12 +149,12 @@ class AssumeutxoTest(BitcoinTestFramework):
         self.log.info("  - snapshot file with alternated but parsable UTXO data results in different hash")
         cases = [
             # (content, offset, wrong_hash, custom_message)
-            [b"\xff" * 32, 0, "77874d48d932a5cb7a7f770696f5224ff05746fdcf732a58270b45da0f665934", None],  # wrong outpoint hash
-            [(2).to_bytes(1, "little"), 32, None, "Bad snapshot format or truncated snapshot after deserializing 1 coins."],  # wrong txid coins count
+            [b"\xff" * 32, 0, "a8db3ac797fe6003d6e51f8464f23886eb90f33ab5f8ee3552ae67bdaa6a2f72", None],  # wrong outpoint hash
+            [(2).to_bytes(1, "little"), 32, None, "Bad snapshot data after deserializing 2 coins."],  # wrong txid coins count
             [b"\xfd\xff\xff", 32, None, "Mismatch in coins count in snapshot metadata and actual snapshot data"],  # txid coins count exceeds coins left
-            [b"\x01", 33, "9f562925721e4f97e6fde5b590dbfede51e2204a68639525062ad064545dd0ea", None],  # wrong outpoint index
-            [b"\x82", 34, "161393f07f8ad71760b3910a914f677f2cb166e5bcf5354e50d46b78c0422d15", None],  # wrong coin code VARINT
-            [b"\x80", 34, "e6fae191ef851554467b68acff01ca09ad0a2e48c9b3dfea46cf7d35a7fd0ad0", None],  # another wrong coin code
+            [b"\x01", 33, "07d1c5f1197d66bac5bb0189ccbe0649b548412753e0c2cb79bd13786b17bfb8", None],  # wrong outpoint index
+            [b"\x82", 34, "192e5149f7b17fa2381263245c69a311b70da0a65281648d793e7196cc46f256", None],  # wrong coin code VARINT
+            [b"\x80\x5c", 34, "6a246ed3400205d23540193758413a1681ebc8a4d5ba8e4832ebda450fab9ef0", None],  # another wrong coin code
             [b"\x84\x58", 34, None, "Bad snapshot data after deserializing 0 coins"],  # wrong coin case with height 364 and coinbase 0
             [
                 # compressed txout value + scriptpubkey
@@ -163,12 +173,12 @@ class AssumeutxoTest(BitcoinTestFramework):
                 f.write(content)
                 f.write(valid_snapshot_contents[(5 + 2 + 4 + 32 + 8 + offset + len(content)):])
 
-            msg = custom_message if custom_message is not None else f"Bad snapshot content hash: expected d2b051ff5e8eef46520350776f4100dd710a63447a8e01d917e92e79751a63e2, got {wrong_hash}."
+            msg = custom_message if custom_message is not None else f"Bad snapshot content hash: expected 6b1244c5dd5bdd1431a5c4a759248ffe13919dce391c73d370e00dc1438da83f, got {wrong_hash}."
             expected_error(msg)
 
     def test_headers_not_synced(self, valid_snapshot_path):
         for node in self.nodes[1:]:
-            msg = "Unable to load UTXO snapshot: The base block header (7cc695046fec709f8c9394b6f928f81e81fd3ac20977bb68760fa1faa7916ea2) must appear in the headers chain. Make sure all headers are syncing, and call loadtxoutset again."
+            msg = "Unable to load UTXO snapshot: The base block header (709b01af5b41fb123fb07876c0d13d2c95b3de5c62eda8851b27349bb5519d04) must appear in the headers chain. Make sure all headers are syncing, and call loadtxoutset again."
             assert_raises_rpc_error(-32603, msg, node.loadtxoutset, valid_snapshot_path)
 
     def test_invalid_chainstate_scenarios(self):
@@ -185,8 +195,8 @@ class AssumeutxoTest(BitcoinTestFramework):
             with self.nodes[0].assert_debug_log([log_msg]):
                 self.nodes[0].assert_start_raises_init_error(expected_msg=error_msg)
 
-        expected_error_msg = "Error: A fatal internal error occurred, see debug.log for details: Assumeutxo data not found for the given blockhash '7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a'."
-        error_details = "Assumeutxo data not found for the given blockhash"
+        expected_error_msg = "Error: A fatal internal error occurred, see debug.log for details: Failed to find block index for the snapshot base block '7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a'."
+        error_details = "Failed to find block index for the snapshot base block"
         expected_error(log_msg=error_details, error_msg=expected_error_msg)
 
         # resurrect node again
@@ -228,7 +238,7 @@ class AssumeutxoTest(BitcoinTestFramework):
             block_hash = node.getblockhash(height)
             node.invalidateblock(block_hash)
             assert_equal(node.getblockcount(), height - 1)
-            msg = "Unable to load UTXO snapshot: The base block header (7cc695046fec709f8c9394b6f928f81e81fd3ac20977bb68760fa1faa7916ea2) is part of an invalid chain."
+            msg = "Unable to load UTXO snapshot: The base block header (709b01af5b41fb123fb07876c0d13d2c95b3de5c62eda8851b27349bb5519d04) is part of an invalid chain."
             assert_raises_rpc_error(-32603, msg, node.loadtxoutset, dump_output_path)
             node.reconsiderblock(block_hash)
 
@@ -256,10 +266,13 @@ class AssumeutxoTest(BitcoinTestFramework):
         assert_equal(normal['target'], target_str(REGTEST_TARGET))
         assert_equal(normal['target'], snapshot['target'])
 
-        # Now lets sync the nodes and wait for the background validation to finish
+        # Now lets sync the nodes, the snapshot chainstate follows the chain of node 0
         self.connect_nodes(0, 3)
         self.sync_blocks(nodes=(n0, n3))
-        self.wait_until(lambda: len(n3.getchainstates()['chainstates']) == 1)
+        normal, snapshot = n3.getchainstates()["chainstates"]
+        assert_equal(normal['blocks'], START_HEIGHT + 99)
+        assert_equal(snapshot['blocks'], FINAL_HEIGHT)
+        assert_equal(snapshot['validated'], False)
 
     def test_snapshot_not_on_most_work_chain(self, dump_output_path):
         self.log.info("Test snapshot is not loaded when the node knows the headers of another chain with more work.")
@@ -285,119 +298,19 @@ class AssumeutxoTest(BitcoinTestFramework):
         node1.submitheader(main_block1)
         node1.submitheader(main_block2)
 
-    def test_sync_from_assumeutxo_node(self, snapshot):
-        """
-        This test verifies that:
-        1. An IBD node can sync headers from an AssumeUTXO node at any time.
-        2. IBD nodes do not request historical blocks from AssumeUTXO nodes while they are syncing the background-chain.
-        3. The assumeUTXO node dynamically adjusts the network services it offers according to its state.
-        4. IBD nodes can fully sync from AssumeUTXO nodes after they finish the background-chain sync.
-        """
-        self.log.info("Testing IBD-sync from assumeUTXO node")
-        # Node2 starts clean and loads the snapshot.
-        # Node3 starts clean and seeks to sync-up from snapshot_node.
-        miner = self.nodes[0]
-        snapshot_node = self.nodes[2]
-        ibd_node = self.nodes[3]
-
-        # Start test fresh by cleaning up node directories
-        for node in (snapshot_node, ibd_node):
-            self.stop_node(node.index)
-            self.cleanup_folder(node.chain_path)
-            self.start_node(node.index, extra_args=self.extra_args[node.index])
-
-        # Sync-up headers chain on snapshot_node to load snapshot
-        headers_provider_conn = snapshot_node.add_p2p_connection(P2PInterface())
-        headers_provider_conn.wait_for_getheaders()
-        msg = msg_headers()
-        for block_num in range(1, miner.getblockcount()+1):
-            msg.headers.append(from_hex(CBlockHeader(), miner.getblockheader(miner.getblockhash(block_num), verbose=False)))
-        headers_provider_conn.send_without_ping(msg)
-
-        # Ensure headers arrived
-        default_value = {'status': ''}  # No status
-        headers_tip_hash = miner.getbestblockhash()
-        self.wait_until(lambda: next(filter(lambda x: x['hash'] == headers_tip_hash, snapshot_node.getchaintips()), default_value)['status'] == "headers-only")
-        snapshot_node.disconnect_p2ps()
-
-        # Load snapshot
-        snapshot_node.loadtxoutset(snapshot['path'])
-
-        # Connect nodes and verify the ibd_node can sync-up the headers-chain from the snapshot_node
-        self.connect_nodes(ibd_node.index, snapshot_node.index)
-        snapshot_block_hash = snapshot['base_hash']
-        self.wait_until(lambda: next(filter(lambda x: x['hash'] == snapshot_block_hash, ibd_node.getchaintips()), default_value)['status'] == "headers-only")
-
-        # Once the headers-chain is synced, the ibd_node must avoid requesting historical blocks from the snapshot_node.
-        # If it does request such blocks, the snapshot_node will ignore requests it cannot fulfill, causing the ibd_node
-        # to stall. This stall could last for up to 10 min, ultimately resulting in an abrupt disconnection due to the
-        # ibd_node's perceived unresponsiveness.
-        ensure_for(duration=3, f=lambda: len(ibd_node.getpeerinfo()[0]['inflight']) == 0)
-
-        # Now disconnect nodes and finish background chain sync
-        self.disconnect_nodes(ibd_node.index, snapshot_node.index)
-        self.connect_nodes(snapshot_node.index, miner.index)
-        self.sync_blocks(nodes=(miner, snapshot_node))
-        # Check the base snapshot block was stored and ensure node signals full-node service support
-        self.wait_until(lambda: not try_rpc(-1, "Block not available (not fully downloaded)", snapshot_node.getblock, snapshot_block_hash))
-        self.wait_until(lambda: 'NETWORK' in snapshot_node.getnetworkinfo()['localservicesnames'])
-
-        # Now that the snapshot_node is synced, verify the ibd_node can sync from it
-        self.connect_nodes(snapshot_node.index, ibd_node.index)
-        assert 'NETWORK' in ibd_node.getpeerinfo()[0]['servicesnames']
-        self.sync_blocks(nodes=(ibd_node, snapshot_node))
-
-    def test_sync_to_most_work_chain_after_background_validation(self):
-        """
-        After background validation completes, node should be able
-        to download and process blocks from peers without the snapshot block in their chain.
-        """
-        self.log.info("Testing sync to the most-work chain without the snapshot block after background validation")
-
-        forking_node = self.nodes[0]
-        snapshot_node = self.nodes[2]  # Has already completed background validation
-
-        self.log.info("Forking node switches to an alternative chain that forks one block before the snapshot block")
-        fork_point = SNAPSHOT_BASE_HEIGHT - 1
-        forking_node_old_height = forking_node.getblockcount()
-        forking_node_old_chainwork = int(forking_node.getblockchaininfo()['chainwork'], 16)
-        forking_node.invalidateblock(forking_node.getblockhash(fork_point + 1))
-
-        self.log.info("Mine one more block than original chain to make the new chain have most work")
-        self.generate(forking_node, nblocks=(forking_node_old_height - fork_point) + 1, sync_fun=self.no_op)
-        assert int(forking_node.getblockchaininfo()['chainwork'], 16) > forking_node_old_chainwork
-
-        self.log.info("Snapshot node should reorg to the most-work chain without the snapshot block")
-        self.sync_blocks(nodes=(snapshot_node, forking_node))
-
     def assert_only_network_limited_service(self, node):
         node_services = node.getnetworkinfo()['localservicesnames']
         assert 'NETWORK' not in node_services
         assert 'NETWORK_LIMITED' in node_services
-
-    @contextlib.contextmanager
-    def assert_disk_cleanup(self, node, assumeutxo_used):
-        """
-        Ensure an assumeutxo node is cleaning up the background chainstate
-        """
-        msg = []
-        if assumeutxo_used:
-            # Check that the snapshot actually existed before restart
-            assert (node.datadir_path / node.chain / "chainstate_snapshot").exists()
-            msg = ["cleaning up unneeded background chainstate"]
-
-        with node.assert_debug_log(msg):
-            yield
-
-        assert not (node.datadir_path / node.chain / "chainstate_snapshot").exists()
 
     def run_test(self):
         """
         Bring up two (disconnected) nodes, mine some new blocks on the first,
         and generate a UTXO snapshot.
 
-        Load the snapshot into the second, ensure it syncs to tip and completes
-        background validation when connected to the first.
+        Load the snapshot into the second and ensure it syncs to tip when connected
+        to the first. Every node is pruned, so no peer serves the historical blocks
+        and the background validation of the snapshot never runs.
         """
         n0 = self.nodes[0]
         n1 = self.nodes[1]
@@ -469,7 +382,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         def check_dump_output(output):
             assert_equal(
                 output['txoutset_hash'],
-                "d2b051ff5e8eef46520350776f4100dd710a63447a8e01d917e92e79751a63e2")
+                "6b1244c5dd5bdd1431a5c4a759248ffe13919dce391c73d370e00dc1438da83f")
             assert_equal(output["nchaintx"], blocks[SNAPSHOT_BASE_HEIGHT].chain_tx)
 
         check_dump_output(dump_output)
@@ -499,7 +412,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         dump_output4 = n0.dumptxoutset(path='utxos4.dat', rollback=prev_snap_height)
         assert_equal(
             dump_output4['txoutset_hash'],
-            "45ac2777b6ca96588210e2a4f14b602b41ec37b8b9370673048cc0af434a1ec8")
+            "1aa1515f6c41324e24f119067d1cb1f2e76c7cf398048d8be47912d7f0bcd9b6")
         assert_not_equal(sha256sum_file(dump_output['path']), sha256sum_file(dump_output4['path']))
 
         # Use a hash instead of a height
@@ -644,7 +557,7 @@ class AssumeutxoTest(BitcoinTestFramework):
         prev_tx = n0.getblock(spend_coin_blockhash, 3)['tx'][0]
         prevout = {"txid": prev_tx['txid'], "vout": 0, "scriptPubKey": prev_tx['vout'][0]['scriptPubKey']['hex']}
         privkey = n0.get_deterministic_priv_key().key
-        raw_tx = n1.createrawtransaction([prevout], {getnewdestination()[2]: 24.99})
+        raw_tx = n1.createrawtransaction([prevout], {getnewdestination()[2]: 2.49})
         signed_tx = n1.signrawtransactionwithkey(raw_tx, [privkey], [prevout])['hex']
         signed_txid = tx_from_hex(signed_tx).txid_hex
 
@@ -683,57 +596,58 @@ class AssumeutxoTest(BitcoinTestFramework):
         self.wait_until(lambda: n1.getchainstates()['chainstates'][-1]['blocks'] == FINAL_HEIGHT)
         self.sync_blocks(nodes=(n0, n1))
 
-        self.log.info("Ensuring background validation completes")
-        self.wait_until(lambda: len(n1.getchainstates()['chainstates']) == 1)
-
-        # Since n1 is a pruned node, it will not signal NODE_NETWORK after
-        # completing the background sync.
+        self.log.info("Background validation does not run, no peer serves the historical blocks")
+        self.assert_no_background_validation(n1, FINAL_HEIGHT)
         self.assert_only_network_limited_service(n1)
 
-        # Ensure indexes have synced.
-        completed_idx_state = {
-            'basic block filter index': COMPLETE_IDX,
-            'coinstatsindex': COMPLETE_IDX,
+        # The indexes follow the chainstate below the snapshot, which does not move.
+        idx_state = {
+            'basic block filter index': {'synced': True, 'best_block_height': START_HEIGHT},
+            'coinstatsindex': {'synced': True, 'best_block_height': START_HEIGHT},
         }
-        self.wait_until(lambda: n1.getindexinfo() == completed_idx_state)
+        self.wait_until(lambda: n1.getindexinfo() == idx_state)
 
-        self.log.info("Re-check nTx and nChainTx values")
-        check_tx_counts(final=True)
+        self.log.info("Check nTx and nChainTx values of the blocks above the snapshot")
+        for height in range(SNAPSHOT_BASE_HEIGHT + 1, FINAL_HEIGHT + 1):
+            assert n1.getblockheader(n1.getblockhash(height))["nTx"] > 0
 
-        for i in (0, 1):
-            n = self.nodes[i]
-            self.log.info(f"Restarting node {i} to ensure (Check|Load)BlockIndex passes")
-            with self.assert_disk_cleanup(n, i == 1):
-                self.restart_node(i, extra_args=self.extra_args[i])
+        self.log.info("Restarting node 0 to ensure (Check|Load)BlockIndex passes")
+        self.restart_node(0, extra_args=self.extra_args[0])
+        assert_equal(n0.getblockchaininfo()["blocks"], FINAL_HEIGHT)
+        chainstate, = n0.getchainstates()['chainstates']
+        assert_equal(chainstate['blocks'], FINAL_HEIGHT)
 
-            assert_equal(n.getblockchaininfo()["blocks"], FINAL_HEIGHT)
-
-            chainstate, = n.getchainstates()['chainstates']
-            assert_equal(chainstate['blocks'], FINAL_HEIGHT)
-
-            if i != 0:
-                # Ensure indexes have synced for the assumeutxo node
-                self.wait_until(lambda: n.getindexinfo() == completed_idx_state)
-
+        self.log.info("Restarting node 1 drops the chainstate below the snapshot")
+        self.stop_node(1)
+        # The indexes cannot continue past the missing blocks below the snapshot
+        n1.assert_start_raises_init_error(
+            extra_args=self.extra_args[1],
+            expected_msg="basic block filter index best block of the index goes beyond pruned data",
+            match=ErrorMatch.PARTIAL_REGEX)
+        self.start_node(1, extra_args=["-fastprune", "-prune=1"])
+        assert_equal(n1.getblockchaininfo()["blocks"], FINAL_HEIGHT)
+        chainstate, = n1.getchainstates()['chainstates']
+        assert_equal(chainstate['blocks'], FINAL_HEIGHT)
+        assert_equal(chainstate['snapshot_blockhash'], dump_output['base_hash'])
+        assert_equal(chainstate['validated'], True)
+        assert 'backgroundvalidation' not in n1.getblockchaininfo()
 
         # Node 2: all indexes + reindex
         # -----------------------------
 
         self.log.info("-- Testing all indexes + reindex")
         assert_equal(n2.getblockcount(), START_HEIGHT)
-        assert 'NETWORK' in n2.getnetworkinfo()['localservicesnames']  # sanity check
 
         self.log.info(f"Loading snapshot into third node from {dump_output['path']}")
         loaded = n2.loadtxoutset(dump_output['path'])
         assert_equal(loaded['coins_loaded'], SNAPSHOT_BASE_HEIGHT)
         assert_equal(loaded['base_height'], SNAPSHOT_BASE_HEIGHT)
 
-        # Even though n2 is a full node, it will unset the 'NETWORK' service flag during snapshot loading.
-        # This indicates other peers that the node will temporarily not provide historical blocks.
         self.log.info("Check node2 updated the local services during snapshot load")
         self.assert_only_network_limited_service(n2)
 
-        for reindex_arg in ['-reindex=1', '-reindex-chainstate=1']:
+        # Pruned nodes cannot use -reindex-chainstate
+        for reindex_arg in ['-reindex=1']:
             self.log.info(f"Check that restarting with {reindex_arg} will delete the snapshot chainstate")
             self.restart_node(2, extra_args=[reindex_arg, *self.extra_args[2]])
             assert_equal(1, len(n2.getchainstates()["chainstates"]))
@@ -756,60 +670,15 @@ class AssumeutxoTest(BitcoinTestFramework):
         msg = "Unable to load UTXO snapshot: Can't activate a snapshot-based chainstate more than once"
         assert_raises_rpc_error(-32603, msg, n2.loadtxoutset, dump_output['path'])
 
-        # Upon restart, the node must stay in 'limited' mode until the background
-        # chain sync completes.
-        self.restart_node(2, extra_args=self.extra_args[2])
-        self.assert_only_network_limited_service(n2)
-
+        # A gap of a full checkpoint interval is not synced from pruned peers, only the last blocks are
+        dumb_sync_blocks(src=n0, dst=n2, height=FINAL_HEIGHT - 40)
         self.connect_nodes(0, 2)
         self.wait_until(lambda: n2.getchainstates()['chainstates'][-1]['blocks'] == FINAL_HEIGHT)
         self.sync_blocks(nodes=(n0, n2))
-
-        self.log.info("Ensuring background validation completes")
-        self.wait_until(lambda: len(n2.getchainstates()['chainstates']) == 1)
-
-        # Once background chain sync completes, the full node must start offering historical blocks again.
-        self.wait_until(lambda: {'NETWORK', 'NETWORK_LIMITED'}.issubset(n2.getnetworkinfo()['localservicesnames']))
-
-        completed_idx_state = {
-            'basic block filter index': COMPLETE_IDX,
-            'coinstatsindex': COMPLETE_IDX,
-            'txindex': COMPLETE_IDX,
-        }
-        self.wait_until(lambda: n2.getindexinfo() == completed_idx_state)
-
-        for i in (0, 2):
-            n = self.nodes[i]
-            self.log.info(f"Restarting node {i} to ensure (Check|Load)BlockIndex passes")
-            with self.assert_disk_cleanup(n, i == 2):
-                self.restart_node(i, extra_args=self.extra_args[i])
-
-            assert_equal(n.getblockchaininfo()["blocks"], FINAL_HEIGHT)
-
-            chainstate, = n.getchainstates()['chainstates']
-            assert_equal(chainstate['blocks'], FINAL_HEIGHT)
-
-            if i != 0:
-                # Ensure indexes have synced for the assumeutxo node
-                self.wait_until(lambda: n.getindexinfo() == completed_idx_state)
-
-        self.log.info("Test -reindex-chainstate of an assumeutxo-synced node")
-        self.restart_node(2, extra_args=[
-            '-reindex-chainstate=1', *self.extra_args[2]])
-        assert_equal(n2.getblockchaininfo()["blocks"], FINAL_HEIGHT)
-        self.wait_until(lambda: n2.getblockcount() == FINAL_HEIGHT)
-
-        self.log.info("Test -reindex of an assumeutxo-synced node")
-        self.restart_node(2, extra_args=['-reindex=1', *self.extra_args[2]])
-        self.connect_nodes(0, 2)
-        self.wait_until(lambda: n2.getblockcount() == FINAL_HEIGHT)
+        self.assert_no_background_validation(n2, FINAL_HEIGHT)
+        self.assert_only_network_limited_service(n2)
 
         self.test_snapshot_in_a_divergent_chain(dump_output['path'])
-
-        # The following test cleans node2 and node3 chain directories.
-        self.test_sync_from_assumeutxo_node(snapshot=dump_output)
-
-        self.test_sync_to_most_work_chain_after_background_validation()
 
 @dataclass
 class Block:

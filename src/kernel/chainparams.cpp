@@ -91,6 +91,15 @@ public:
         consensus.SegwitHeight = 1;
         consensus.MinBIP9WarningHeight = 0;
         consensus.powLimit = uint256{"007fffff00000000000000000000000000000000000000000000000000000000"};
+        // Elektron Net: fixes the powLimit/retarget overflow (see
+        // doc-elektron/fix-report-powlimit-retarget-overflow.md) -- powLimit above,
+        // right-shifted by 12 bits (divided by 4096), restores the safety invariant
+        // powLimit * 4 * nPowTargetTimespan < 2^256 with a real ~4.3x margin, without
+        // touching nPowTargetSpacing/nPowTargetTimespan. Activation height chosen with
+        // real lead time ahead of the current mainnet tip (~190000 at the time this was
+        // set); adjust before release if more or less lead time is needed.
+        consensus.powLimitPostFix = uint256{"000007fffff00000000000000000000000000000000000000000000000000000"};
+        consensus.PowLimitFixActivationHeight = 500000;
         consensus.nPowTargetTimespan = 2016 * 60; // 1.4 days
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = false;
@@ -262,6 +271,10 @@ public:
         consensus.SegwitHeight = 1;
         consensus.MinBIP9WarningHeight = 0;
         consensus.powLimit = uint256{"007fffff00000000000000000000000000000000000000000000000000000000"};
+        // Elektron Net: powLimit overflow fix (doc-elektron/fix-report-powlimit-retarget-overflow.md).
+        // Active immediately on testnet -- no operator-coordination need here, unlike mainnet.
+        consensus.powLimitPostFix = uint256{"000007fffff00000000000000000000000000000000000000000000000000000"};
+        consensus.PowLimitFixActivationHeight = 1;
         consensus.nPowTargetTimespan = 2016 * 60; // 1.4 days
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = true;
@@ -352,6 +365,10 @@ public:
         consensus.SegwitHeight = 1;
         consensus.MinBIP9WarningHeight = 0;
         consensus.powLimit = uint256{"007fffff00000000000000000000000000000000000000000000000000000000"};
+        // Elektron Net: powLimit overflow fix (doc-elektron/fix-report-powlimit-retarget-overflow.md).
+        // Active immediately on testnet4 -- no operator-coordination need here, unlike mainnet.
+        consensus.powLimitPostFix = uint256{"000007fffff00000000000000000000000000000000000000000000000000000"};
+        consensus.PowLimitFixActivationHeight = 1;
         consensus.nPowTargetTimespan = 2016 * 60; // 1.4 days
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = true;
@@ -549,6 +566,16 @@ public:
         consensus.SegwitHeight = 0; // Always active unless overridden
         consensus.MinBIP9WarningHeight = 0;
         consensus.powLimit = uint256{"7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
+        // Elektron Net: powLimit overflow fix (doc-elektron/fix-report-powlimit-retarget-overflow.md).
+        // Set here for structural consistency with the other networks only -- regtest's
+        // powLimit is already near the top of the 256-bit range (right-shifting it by 12
+        // bits still doesn't satisfy the safety invariant on its own), but this is a
+        // no-op at runtime either way: fPowNoRetargeting below means
+        // CalculateNextWorkRequired() is never actually called on regtest, and
+        // sanity_check_chainparams() (pow_tests.cpp) already skips the overflow check
+        // entirely whenever fPowNoRetargeting is set.
+        consensus.powLimitPostFix = uint256{"0007ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"};
+        consensus.PowLimitFixActivationHeight = 1;
         consensus.nPowTargetTimespan = 2016 * 60; // 1.4 days
         consensus.nPowTargetSpacing = 60;
         consensus.fPowAllowMinDifficultyBlocks = true;
@@ -627,23 +654,23 @@ public:
         m_assumeutxo_data = {
             {   // For use by unit tests
                 .height = 110,
-                .hash_serialized = AssumeutxoHash{uint256{"b952555c8ab81fec46f3d4253b7af256d766ceb39fb7752b9d18cdf4a0141327"}},
+                .hash_serialized = AssumeutxoHash{uint256{"b4c31a0217aa2f9a50dd5f3b972560b05fdbc7c73867c20eebc5880fb1eb9a9f"}},
                 .m_chain_tx_count = 111,
-                .blockhash = uint256{"6affe030b7965ab538f820a56ef56c8149b7dc1d1c144af57113be080db7c397"},
+                .blockhash = uint256{"66da30e2366d0d3665cd7350a56416e117b6262a8ef487a0107a922cb04c172c"},
             },
             {
                 // For use by fuzz target src/test/fuzz/utxo_snapshot.cpp
                 .height = 200,
-                .hash_serialized = AssumeutxoHash{uint256{"17dcc016d188d16068907cdeb38b75691a118d43053b8cd6a25969419381d13a"}},
+                .hash_serialized = AssumeutxoHash{uint256{"1adc436d3958b17a770cff2116a7cdf8ef9a32723b5df0cc253c48397f057240"}},
                 .m_chain_tx_count = 201,
-                .blockhash = uint256{"385901ccbd69dff6bbd00065d01fb8a9e464dede7cfe0372443884f9b1dcf6b9"},
+                .blockhash = uint256{"25db4ca434500c2b06a93d120f5eb048b9e9c3384ddb4a6a933e04bb4fff6401"},
             },
             {
                 // For use by test/functional/feature_assumeutxo.py and test/functional/tool_bitcoin_chainstate.py
                 .height = 299,
-                .hash_serialized = AssumeutxoHash{uint256{"d2b051ff5e8eef46520350776f4100dd710a63447a8e01d917e92e79751a63e2"}},
+                .hash_serialized = AssumeutxoHash{uint256{"6b1244c5dd5bdd1431a5c4a759248ffe13919dce391c73d370e00dc1438da83f"}},
                 .m_chain_tx_count = 334,
-                .blockhash = uint256{"7cc695046fec709f8c9394b6f928f81e81fd3ac20977bb68760fa1faa7916ea2"},
+                .blockhash = uint256{"709b01af5b41fb123fb07876c0d13d2c95b3de5c62eda8851b27349bb5519d04"},
             },
         };
 

@@ -92,7 +92,8 @@ BOOST_AUTO_TEST_CASE(outbound_slow_chain_eviction)
     connman.FlushSendBuffer(dummyNode1);
 
     NodeClockContext clock_ctx{};
-    clock_ctx += 21min;
+    // CHAIN_SYNC_TIMEOUT (40 minutes) and HEADERS_RESPONSE_TIME (4 minutes) of net_processing.cpp
+    clock_ctx += 41min;
 
     BOOST_CHECK(peerman.SendMessages(dummyNode1)); // should result in getheaders
     {
@@ -101,7 +102,7 @@ BOOST_AUTO_TEST_CASE(outbound_slow_chain_eviction)
         BOOST_CHECK(!to_send.empty());
     }
 
-    clock_ctx += 3min;
+    clock_ctx += 5min;
     BOOST_CHECK(peerman.SendMessages(dummyNode1)); // should result in disconnect
     BOOST_CHECK(dummyNode1.fDisconnect == true);
 
@@ -154,7 +155,8 @@ BOOST_FIXTURE_TEST_CASE(stale_tip_peer_management, OutboundTest)
 
     const auto time_init{Now<NodeSeconds>()};
     NodeClockContext clock_ctx{time_init};
-    const auto delta{3 * std::chrono::seconds{m_node.chainman->GetConsensus().nPowTargetSpacing} + 1s};
+    // The tip has to be stale and the stale tip check interval (20 minutes in net_processing.cpp) has to be over
+    const auto delta{std::max<std::chrono::seconds>(3 * std::chrono::seconds{m_node.chainman->GetConsensus().nPowTargetSpacing}, 20min) + 1s};
     connman->Init(options);
     std::vector<CNode *> vNodes;
 

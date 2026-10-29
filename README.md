@@ -29,7 +29,7 @@ introduced:
 Key properties:
 - **SHA-256d Proof-of-Work** — unchanged from Bitcoin Core
 - **60-second block time** — halving every 4 years (2,102,400 blocks)
-- **21,000,000 Elek** maximum supply (1 Elek = 100,000,000 Lep)
+- **21,000,000 Elek** maximum supply (1 Elek = 100,000,000 Lep); the schedule mathematically emits about 24,000 Elek more in total, see `WHITEPAPER.md` section 3.2
 - **5 Elek** genesis block reward, scaled proportionally to the 60s interval
 - **Bech32m addresses** — standard P2WPKH / P2TR (`be1q...` / `be1p...` prefix)
 - **137-day pruning** — cryptographic forgetting, structural privacy by design

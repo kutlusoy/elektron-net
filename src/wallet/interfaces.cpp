@@ -324,6 +324,7 @@ public:
         LOCK(m_wallet->cs_wallet);
         std::set<WalletTx> result;
         for (const auto& entry : m_wallet->mapWallet) {
+            if (CWallet::IsRecoveredPartial(*entry.second.tx) || CWallet::IsRecoveredSpend(*entry.second.tx)) continue;
             result.emplace(MakeWalletTx(*m_wallet, entry.second));
         }
         return result;
@@ -454,11 +455,11 @@ public:
         result.reserve(outputs.size());
         for (const auto& output : outputs) {
             result.emplace_back();
-            auto it = m_wallet->mapWallet.find(output.hash);
-            if (it != m_wallet->mapWallet.end()) {
-                int depth = m_wallet->GetTxDepthInMainChain(it->second);
+            const CWalletTx* known = m_wallet->GetWalletTxByOutpoint(output);
+            if (known) {
+                int depth = m_wallet->GetTxDepthInMainChain(*known);
                 if (depth >= 0) {
-                    result.back() = MakeWalletTxOut(*m_wallet, it->second, output.n, depth);
+                    result.back() = MakeWalletTxOut(*m_wallet, *known, output.n, depth);
                 }
             }
         }

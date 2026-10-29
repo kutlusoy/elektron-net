@@ -12,7 +12,7 @@ Elektron Net is a minimal, focused fork of Bitcoin Core. It preserves Bitcoin's 
 
 Every block carries an on-chain UTXO attestation (37 bytes); full snapshot *files* are written only every 137 days. See §4.3 and [`doc-elektron/BITCOIN_CORE_DIFF.md`](doc-elektron/BITCOIN_CORE_DIFF.md) for the complete implementation diff vs Bitcoin Core.
 
-Everything else remains Bitcoin Core. The SHA-256d proof-of-work, the 21-million supply cap, the halving rhythm, and the Nakamoto consensus are untouched.
+Everything else remains Bitcoin Core. The SHA-256d proof-of-work, the 21-million nominal supply (21,023,999.73 Elek emitted in total, see section 3.2), the halving rhythm, and the Nakamoto consensus are untouched.
 
 ---
 
@@ -132,7 +132,7 @@ Reducing block time by 10× would inflate supply by 10× if the block reward wer
 | Blocks per day | 1,440 |
 | Genesis block reward | **5.00 Elek** |
 | Halving interval | 2,102,400 blocks (4 years) |
-| Maximum supply | **21,000,000 Elek** |
+| Maximum supply | **21,000,000 Elek** (see the note below on the exact emitted sum) |
 
 | Period | Block Reward | Per Day | Cumulative |
 |---|---|---|---|
@@ -140,7 +140,9 @@ Reducing block time by 10× would inflate supply by 10× if the block reward wer
 | Year 5–8 | 2.50 Elek | 3,600 | 15,768,000 |
 | Year 9–12 | 1.25 Elek | 1,800 | 18,396,000 |
 | … | … | … | … |
-| ~Year 115 | ≈0.00000 | 0 | 21,000,000 |
+| ~Year 115 | ≈0.00000 | 0 | 21,000,000 (exactly 21,023,999.73, see note) |
+
+**Note on the exact total.** The nominal maximum supply is 21,000,000 Elek. Because the halving interval of 2,102,400 blocks is exactly 4 x 365 days at 60 seconds per block, it is slightly more than 10 times Bitcoin's 210,000 blocks. The geometric series of the schedule therefore converges to 2 x 2,102,400 x 5 = 21,024,000 Elek instead of 21,000,000 Elek, and the integer truncation of the reward in Lep lowers this to 21,023,999.72668800 Elek. The emitted sum is thus about 24,000 Elek (0.11 %) above the nominal figure. The consensus rules do not cap the cumulative supply: `MAX_MONEY` limits single amounts only, and block rewards follow the halving schedule until it ends. The 21,000,000 mark is passed at block 20,668,801 (about year 39), long after the last practically relevant halvings. All other figures in this document use the nominal 21,000,000 Elek.
 
 **No pre-mine. No airdrop. No founder allocation.** Every Elek is earned by producing valid proof-of-work.
 
@@ -366,7 +368,7 @@ If a credible quantum threat emerges, the network can soft-fork to post-quantum 
 | | Block time | 60 seconds |
 | | Difficulty retarget | Every 2,016 blocks |
 | | Finality | Probabilistic (Nakamoto) |
-| **Economy** | Max supply | 21,000,000 Elek |
+| **Economy** | Max supply | 21,000,000 Elek (nominal, 21,023,999.73 emitted, see section 3.2) |
 | | Genesis reward | 5.00 Elek |
 | | Halving interval | 2,102,400 blocks (4 years) |
 | | Fee model | Market-based, 100 % to miner |

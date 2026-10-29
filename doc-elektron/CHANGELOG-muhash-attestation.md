@@ -376,6 +376,65 @@ Rebuilt a wallet-enabled, test-enabled binary (`-DENABLE_WALLET=ON -DBUILD_TESTS
 
 ---
 
+## 2026-08-24 (v4.0.5 regression re-verification: three-node, multi-checkpoint bootstrap)
+
+Re-verification only, no code changes. Triggered by a request to confirm the automatic UTXO-snapshot bootstrap mechanism documented above still works, unmodified, on the current v4.0.5 build (`CMakeLists.txt` CLIENT_VERSION_BUILD=5, commit `cf60579`, "emergency activation release" -- unrelated to snapshot code), and to additionally cover two scenarios the 2026-07-01/07-02 rounds above did not: (a) a peer that stays connected and caught up while several checkpoints pass on the source node, and (b) a fresh node joining only after multiple checkpoints (not just the first) have already occurred, so only the latest snapshot is available.
+
+Setup: built `elektrond`/`elektron-cli` from current `main` (regtest, wallet on, IPC off with `-DENABLE_IPC=OFF` since Cap'n Proto is not installed in this environment; this only affects multiprocess mode, not the daemon binary under test). Three regtest nodes, default per-network activation heights unchanged (Muhash@50, IntraBlockAttestationFix@110, MandatoryPruneDepth@100):
+- Node A: mining node, `generatetoaddress` from genesis to height 505, crossing five checkpoints (100/200/300/400/500) plus both activation heights.
+- Node B: connected to A at height 20 and left running for the whole test; stayed in ordinary IBD/relay sync throughout (never itself far enough behind to trigger `MaybeRequestSnapshot()`), reaching height 505 in lockstep with A.
+- Node C: started only after A reached height 500 (so checkpoints 100 through 400 had already been superseded), connected to both A and B, no other configuration.
+
+Result: as designed, `WriteAutomaticSnapshot()` deletes superseded checkpoint files, keeping only the newest one on disk (confirmed: after A reached height 500, only `500-<hash>.dat` remained in `regtest/snapshots/`, the four earlier ones were logged as "Removed obsolete snapshot file"). Node C's `MaybeRequestSnapshot()` fired automatically on schedule (`header_height=500`, `tip_height=0`, gap 500 >= checkpoint_interval 100), sent `GETUTXOSNAPSHOT` for the height-500 checkpoint to both peers, downloaded and activated it (`[snapshot] successfully activated snapshot ... at height 500`) about 30 seconds after the request, with no manual RPC intervention. Post-activation, mining 5 more blocks on A propagated to B and C normally. Final state, all three nodes: `bestblockhash` and `gettxoutsetinfo muhash` identical bit-for-bit at height 505; no crash, no deadlock, and Node C did not get stuck reporting `blocks: 0` (the exact regression class that Bug 6, 2026-07-01 above, previously caused).
+
+Muhash attestation (active from height 50) and the IntraBlockAttestationFix (active from height 110) were both exercised incidentally by mining past them and produced no attestation errors or asserts on any of the three nodes.
+
+**Scope and limits of this re-verification (unchanged from the original rounds above):**
+- Regtest only, single machine, three local processes. Not run against the live public testnet or mainnet.
+- Mainnet still has not reached its first mandatory checkpoint (height 197280, ~137 days of blocks at the 60s target spacing; see `fix-report-snapshot-bootstrap-trust.md` for the same caveat) -- so this feature has still never executed the P2P bootstrap path on mainnet, and this test does not change that. Behavior identical to regtest is expected there given the code path is not network-specific beyond the per-network constants, but that expectation itself remains untested on mainnet.
+- The known trust gap from `fix-report-snapshot-bootstrap-trust.md` (a bootstrapping node accepts the first peer's advertised UTXO hash without cross-checking further peers or the on-chain coinbase attestation) is unaffected by this test and remains open; this round deliberately verified only that the existing mechanism still functions, not that gap.
+
+Conclusion: no regression against the 2026-07-01/07-02 verification above. The mechanism, unchanged in this pass, behaves identically under v4.0.5 with multiple sequential checkpoints already passed and a late-joining fresh node.
+
+---
+
+## 2026-08-24 (follow-up: offline/reconnect testing for already-synced nodes, two new bugs found)
+
+Extension of the same-day re-verification above, at the user's request: instead of only testing a brand-new node bootstrapping once, alternately take already-synced nodes offline for several checkpoint heights and reconnect them, to check that recovery also works for nodes that have synced before (not just fresh ones). Documentation only in this round -- neither bug below was fixed, by explicit decision.
+
+Setup: same three-node regtest, rebuilt with real pruning active this time (`-fastprune -prune=550` on the source node, so old blocks are genuinely deleted from disk rather than merely eligible for deletion -- without this, a node that fell behind just re-syncs the "pruned" blocks normally from a peer that in practice still has them, which does not exercise the automatic-snapshot recovery path at all).
+
+Three rounds: (1) Node B offline while the source mines past one more checkpoint, reconnect -- succeeded, including correctly rejecting its own stale local snapshot before fetching the current one from a peer. (2) Node C offline while the source mines past two more checkpoints, reconnect -- succeeded. (3) Both B and C offline simultaneously while the source mines past two more checkpoints, reconnected alternately (C first, then B) -- C recovered via a full `-reindex` workaround after hitting Bug 1 below; B hit Bug 2 below and never recovered without a manual kill and fresh resync.
+
+Two new, previously undocumented bugs found and written up separately (not fixed, per instruction):
+
+- `doc-elektron/fix-report-verifydb-pruned-undo-false-positive.md`: a node whose tip sits at (or within the last-6-blocks check window of) its own snapshot-bootstrap checkpoint height fails the standard startup sanity check with a false "Corrupted block database detected" and demands `-reindex` for what is actually a normal restart -- root cause pinned to `CVerifyDB::VerifyDB()` (`src/validation.cpp`) checking only `BLOCK_HAVE_DATA`, not `BLOCK_HAVE_UNDO`, before attempting a disconnect that needs undo data the snapshot-base block never had.
+- `doc-elektron/fix-report-snapshot-restart-deadlock.md`: a node that is itself running on a snapshot chainstate and falls behind by two or more checkpoints (not just one) while offline can hang permanently at `Pruning blockstore…` on every subsequent restart after its live snapshot-chainstate replacement is interrupted -- confirmed via gdb that the main thread is stuck waiting on `kernel_notifications.m_tip_block_cv` in `AppInitMain` (`src/init.cpp`) with no corresponding notification ever arriving. Root cause not yet pinned to a specific line; see the report for the two most likely call sites and recommended next steps.
+
+---
+
+## 2026-08-24 (follow-up: isolating the actual trigger of the snapshot-replacement crash/deadlock)
+
+Second follow-up, same day, at the user's request: the previous entry's hypothesis ("falling behind by 2+ checkpoints while offline") was tested directly and refuted -- a clean two-node, `-fastprune`-only reproduction (no manual `pruneblockchain` calls) showed both a one-checkpoint and a six-checkpoint live snapshot replacement completing without issue.
+
+Isolated the actual trigger instead: a node that (a) is snapshot-based, (b) stays online afterward long enough to cross a further checkpoint through ordinary live block validation -- which automatically writes its own local snapshot file at that checkpoint, unrelated to what its chainstate bookkeeping still considers its snapshot base -- then (c) goes offline and reconnects after the network has moved past that local file too. On reconnect the node first finds and correctly rejects its own now-stale local file (`Population failed: Work does not exceed active chainstate`), and the very next scheduled attempt (30s later) begins a real replacement with the current network snapshot -- and that second, real replacement is where the process dies. Reproduced on the first attempt with this exact sequence, entirely through `-fastprune`'s own natural block-file pruning, no manual intervention.
+
+Practical implication: this significantly changes the earlier "how long would a mainnet outage need to be" risk framing. The precondition isn't a specific outage length -- it's any node that has recovered via snapshot once and then simply stayed running for a while afterward (ordinary, unremarkable operation). Under mandatory pruning, that describes most long-lived nodes, not an edge case, once mainnet has been running for a while past its first couple of checkpoints.
+
+`doc-elektron/fix-report-snapshot-restart-deadlock.md` rewritten with the corrected reproduction (§2.1), the refuted checkpoint-distance hypothesis kept as a documented negative result, and the original three-node finding retained for record (§2.2). Still documentation only, not fixed, per instruction.
+
+---
+
+## 2026-08-24 (follow-up: the snapshot-restart deadlock, fixed on branch `4.0.6`)
+
+Third follow-up, same day: at the user's request, moved from documenting the deadlock in `fix-report-snapshot-restart-deadlock.md` to actually fixing it, alongside the also-previously-unfixed `fix-report-powlimit-retarget-overflow.md`, on a new `4.0.6` branch.
+
+Two fix attempts for the deadlock were tried and reverted before landing on the one that worked (all three are detailed in the fix report's §5, kept there so the dead ends are not re-walked later): discarding a torn snapshot chainstate at startup (real, but only covers the narrower of two ways this can happen); rewriting genesis's block body when its data is missing (got further, but surfaced a new `setBlockIndexCandidates` assertion failure -- reverted). The fix that stuck: detect "no chainstate has a usable local tip, and the network is `MandatoryPruneDepth` blocks past it" and restart the process with `-reindex` automatically (`execv`, same PID), reusing the already-verified `-reindex` recovery path instead of patching chainstate-loading internals further. Live-verified end to end on regtest: crash reproduced, automatic restart observed in the log and process list, re-exec'd node re-bootstrapped via a fresh snapshot with no manual intervention, `bestblockhash`/`gettxoutsetinfo muhash` bit-for-bit identical to the source node afterward, and a subsequent plain restart came up cleanly.
+
+The powLimit overflow fix (height-gated `powLimitPostFix`, mainnet activation height 500000, testnet/testnet4/regtest immediately active) landed the same session -- no existing mainnet activation height touched, `ChainParams_MAIN_sanity`/`_TESTNET_sanity`/`_TESTNET4_sanity` now pass. Full detail in `fix-report-powlimit-retarget-overflow.md` and the new `CHANGELOG-Release-v4.0.6.md`.
+
+---
+
 ## Deferred (not part of this pass)
 
 - **Phase 4 (P2P protocol-version gate):** no `PROTOCOL_VERSION` bump or peer-disconnect-on-old-version behavior was added. The consensus cutover is height-only (mirrors the existing `MANDATORY_PRUNE_DEPTH` / `MinDifficultyActivationHeight` precedent), which the fix report already identifies as sufficient for correctness; the P2P gate is a pure UX nicety for a scenario (stale peers lingering post-activation) that the now-mature automatic-recovery machinery (stuck-chain recovery, fell-behind-prune-horizon recovery, wallet UTXO-scan retry) already covers more directly, on a small, directly-reachable operator base. Revisit only if that assumption changes.

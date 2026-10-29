@@ -1670,7 +1670,9 @@ std::pair<size_t, bool> CConnman::SocketSendData(CNode& node) const
         }
     }
 
-    node.fPauseSend = node.m_send_memusage + node.m_transport->GetSendMemoryUsage() > nSendBufferMaxSize;
+    const bool pause_send{node.m_send_memusage + node.m_transport->GetSendMemoryUsage() > nSendBufferMaxSize};
+    if (pause_send && !node.fPauseSend) node.m_pause_send_since = NodeClock::now();
+    node.fPauseSend = pause_send;
 
     if (it == node.vSendMsg.end()) {
         assert(node.m_send_memusage == 0);
@@ -2048,6 +2050,14 @@ bool CConnman::InactivityCheck(const CNode& node, NodeClock::time_point now) con
     if (now > last_send + TIMEOUT_INTERVAL) {
         LogDebug(BCLog::NET,
             "socket sending timeout: %is, %s", Ticks<std::chrono::seconds>(now - last_send),
+            node.DisconnectMsg()
+        );
+        return true;
+    }
+
+    if (node.fPauseSend && now > node.m_pause_send_since.load() + TIMEOUT_INTERVAL) {
+        LogDebug(BCLog::NET,
+            "send buffer full for %is, %s", Ticks<std::chrono::seconds>(now - node.m_pause_send_since.load()),
             node.DisconnectMsg()
         );
         return true;
@@ -4145,7 +4155,10 @@ void CConnman::PushMessage(CNode* pnode, CSerializedNetMsg&& msg)
 
         // Update memory usage of send buffer.
         pnode->m_send_memusage += msg.GetMemoryUsage();
-        if (pnode->m_send_memusage + pnode->m_transport->GetSendMemoryUsage() > nSendBufferMaxSize) pnode->fPauseSend = true;
+        if (pnode->m_send_memusage + pnode->m_transport->GetSendMemoryUsage() > nSendBufferMaxSize) {
+            if (!pnode->fPauseSend) pnode->m_pause_send_since = NodeClock::now();
+            pnode->fPauseSend = true;
+        }
         // Move message to vSendMsg queue.
         pnode->vSendMsg.push_back(std::move(msg));
 

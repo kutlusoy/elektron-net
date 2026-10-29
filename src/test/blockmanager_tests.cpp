@@ -307,8 +307,9 @@ BOOST_FIXTURE_TEST_CASE(blockmanager_mandatory_prune_depth, TestChain100Setup)
     auto& chainstate = chainman.ActiveChainstate();
     CChain& chain = chainman.ActiveChain();
 
-    // Verify the mandatory prune depth constant (137 days at 60s block time)
-    BOOST_CHECK_EQUAL(MANDATORY_PRUNE_DEPTH, 197280U);
+    // Mainnet: 137 days at 60s block time. This fixture runs on regtest, which uses a shorter depth.
+    BOOST_CHECK_EQUAL(CreateChainParams(ArgsManager{}, ChainType::MAIN)->GetConsensus().MandatoryPruneDepth, 197280U);
+    const int depth{static_cast<int>(chainman.GetConsensus().MandatoryPruneDepth)};
 
     CBlockIndex* original_tip = chain.Tip();
     BOOST_REQUIRE(original_tip != nullptr);
@@ -323,15 +324,15 @@ BOOST_FIXTURE_TEST_CASE(blockmanager_mandatory_prune_depth, TestChain100Setup)
 
     chain.SetTip(*fake_tip);
 
-    // At height 200,000: max_prune = 200000 - 197280 = 2720
+    const int expected_end{200000 - depth};
     auto [prune_start, prune_end] = chainstate.GetPruneRange(INT_MAX);
     BOOST_CHECK_EQUAL(prune_start, 0);
-    BOOST_CHECK_EQUAL(prune_end, 2720);
+    BOOST_CHECK_EQUAL(prune_end, expected_end);
 
-    // A large caller-specified limit is still capped by MANDATORY_PRUNE_DEPTH
-    auto [start2, end2] = chainstate.GetPruneRange(5000);
+    // A large caller-specified limit is still capped by the mandatory prune depth
+    auto [start2, end2] = chainstate.GetPruneRange(expected_end + 5000);
     BOOST_CHECK_EQUAL(start2, 0);
-    BOOST_CHECK_EQUAL(end2, 2720);
+    BOOST_CHECK_EQUAL(end2, expected_end);
 
     // A smaller caller-specified limit is respected
     auto [start3, end3] = chainstate.GetPruneRange(1000);

@@ -1657,6 +1657,19 @@ static void MaybeActivateAutomaticSnapshot(NodeContext& node)
         }
     }
 
+    // Elektron Net: skip a snapshot that does not have more work than the active chain, typically
+    // the node's own file from a checkpoint it already passed. ActivateSnapshot() rejects such a
+    // snapshot as well, but only after it has wiped the snapshot chainstate it replaces.
+    {
+        LOCK(::cs_main);
+        const CBlockIndex* base_index = chainman.m_blockman.LookupBlockIndex(metadata.m_base_blockhash);
+        if (base_index && !node::CBlockIndexWorkComparator()(chainman.ActiveTip(), base_index)) {
+            LogDebug(BCLog::NET, "[snapshot] Snapshot at height %d does not exceed the active chainstate, not activating it.\n",
+                     base_index->nHeight);
+            return;
+        }
+    }
+
     auto activation_result = chainman.ActivateSnapshot(afile, metadata, false, /*verify_assumeutxo_hash=*/false, expected_hash);
     if (!activation_result) {
         LogWarning("[snapshot] Failed to activate snapshot: %s\n",
