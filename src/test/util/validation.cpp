@@ -19,6 +19,12 @@ void TestBlockManager::CleanupForFuzzing()
     m_blockfile_info.resize(1);
 }
 
+void TestBlockManager::PersistBlockIndex(const std::vector<CBlockIndex*>& indexes)
+{
+    m_dirty_blockindex.insert(indexes.begin(), indexes.end());
+    WriteBlockIndexDB();
+}
+
 void TestChainstateManager::DisableNextWrite()
 {
     struct TestChainstate : public Chainstate {

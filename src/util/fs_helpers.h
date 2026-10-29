@@ -44,9 +44,28 @@ bool FileCommit(FILE* file);
  */
 void DirectoryCommit(const fs::path& dirname);
 
-bool TruncateFile(FILE* file, unsigned int length);
+//! fseek/ftell with 64-bit offsets; plain long is 32-bit on Windows.
+inline int FileSeek64(FILE* file, int64_t offset, int origin)
+{
+#ifdef WIN32
+    return _fseeki64(file, offset, origin);
+#else
+    return fseeko(file, static_cast<off_t>(offset), origin);
+#endif
+}
+
+inline int64_t FileTell64(FILE* file)
+{
+#ifdef WIN32
+    return _ftelli64(file);
+#else
+    return ftello(file);
+#endif
+}
+
+bool TruncateFile(FILE* file, uint64_t length);
 int RaiseFileDescriptorLimit(int nMinFD);
-void AllocateFileRange(FILE* file, unsigned int offset, unsigned int length);
+void AllocateFileRange(FILE* file, uint64_t offset, uint64_t length);
 
 /**
  * Rename src to dest.

@@ -7,6 +7,8 @@
 
 #include <validation.h>
 
+#include <vector>
+
 namespace node {
 class BlockManager;
 }
@@ -15,6 +17,8 @@ class CValidationInterface;
 struct TestBlockManager : public node::BlockManager {
     /** Test-only method to clear internal state for fuzzing */
     void CleanupForFuzzing();
+    /** Test-only method to write the given in-memory block index entries to the block index database */
+    void PersistBlockIndex(const std::vector<CBlockIndex*>& indexes) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 };
 
 struct TestChainstateManager : public ChainstateManager {

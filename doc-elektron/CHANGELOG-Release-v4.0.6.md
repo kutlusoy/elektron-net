@@ -208,6 +208,23 @@ download, outputs missing from the UTXO set are marked spent. No consensus or pr
 - The test helper `CreateBlock()` now recomputes the UTXO attestation of the coinbase after it has added transactions to a block, as the `generateblock` RPC does. Before, such blocks were rejected as invalid and tests that build blocks with transactions failed or waited forever.
 - Other unit test suites that fail on this branch for reasons of their own (for example `bip324_tests`, `key_io_tests`, `descriptor_tests`, `validation_*`) are not part of this change, they fail the same way without it.
 
+## Node: fixes for three vulnerabilities disclosed by Bitcoin Core on 2026-10-28
+
+Elektron Net contains the code paths of all three issues unchanged from upstream. The fixes follow the upstream pull requests (bitcoin/bitcoin #36667, #36665 and #36669, backported there to 29.5, 30.4, 31.2 and 32.1). None of them touches validation, consensus rules or the UTXO attestation, and the on-disk formats are unchanged.
+
+- **Paused sends never time out** (`src/net.cpp`, `src/net.h`). A peer that claims a protocol version at or below BIP 31 is exempt from the ping timeout. If it also stops reading, the node keeps queueing announcements for it without limit (about 2 MB per hour for an inbound and 5 MB per hour for an outbound peer). `CNode` now records since when `fPauseSend` is set (`m_pause_send_since`), and `InactivityCheck()` disconnects a peer whose send buffer has been full for `TIMEOUT_INTERVAL` (20 minutes).
+- **TCP urgent data bypasses the receive limit on Windows, macOS and BSD** (`src/util/sock.cpp`). On these platforms the socket wait uses `select()` and watched every socket for exceptional conditions, even when reading was paused. Urgent data then caused a read that skipped the per-peer limit, so one peer could exhaust the memory of the node. `Sock::WaitMany()` now watches for exceptional conditions only on sockets that want to read. Linux uses `poll()` and was not affected.
+- **Undo files larger than 4 GiB** (`src/flatfile.*`, `src/chain.h`, `src/kernel/chain.h`, `src/node/blockstorage.h`, `src/streams.*`, `src/util/fs_helpers.*`). Positions in block and undo files and the size of an undo file were 32-bit. A miner can make the undo data of a block file far larger than the block data, so the position wraps, newer undo data overwrites older data, and a later reorg stops the node, which then needs `-reindex`. On Windows the file position is limited to 2 GiB by the 32-bit `long`, so the node already failed to write undo data past that size. Positions and sizes are now `uint64_t`, with `FileSeek64()` and `FileTell64()` (`_fseeki64()` and `_ftelli64()` on Windows) and `_chsize_s()` for truncating. Positions are still serialized as variable-length integers, so existing data directories are read as before and no reindex is needed. 32-bit systems and block directories on FAT32 stay affected.
+
+## Tests: unit tests of the block index, snapshots and the block filter index match Elektron Net
+
+- `blockmanager_mandatory_prune_depth` expected the Mainnet prune depth while running on Regtest. It now takes the depth from the consensus parameters of the running chain and checks the Mainnet value separately.
+- The hardcoded Regtest assumeutxo entry for height 110 was still the Bitcoin one. Its block hash and UTXO hash are now those of the Elektron Net test chain (`src/kernel/chainparams.cpp`). The entries for heights 200 and 299 are used by the fuzz target and the functional tests and still have to be regenerated.
+- `chainstatemanager_loadblockindex` and `loadblockindex_invalid_descendants` changed block statuses in memory only. The automatic snapshot at height 100 has flushed the block index to disk by then, so reloading it undid the change. The tests now write the changed entries to the block index database first (`TestBlockManager::PersistBlockIndex()`).
+- `chainstatemanager_ibd_exit_after_loading_blocks` skips the case "not enough chain work", which cannot occur while the minimum chain work is 0.
+- `blockfilter_index_tests` built fork blocks without the UTXO attestation that every block needs. The fork builder now computes the attestation on top of the UTXO hash state of each fork. These tests read the undo data of blocks after reorgs and so also cover the 64-bit positions.
+- `flatfile_pos_above_4gib` is new and covers seek, truncate and serialization of positions above 4 GiB.
+
 ## Version
 
 `CLIENT_VERSION_BUILD` bumped from 5 to 6 in `CMakeLists.txt`

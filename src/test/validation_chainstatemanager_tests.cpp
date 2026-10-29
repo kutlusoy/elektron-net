@@ -197,6 +197,8 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_ibd_exit_after_loading_blocks, ChainTe
         for (const bool loading_blocks : {false, true}) {
             for (const bool tip_exists : {false, true}) {
                 for (const bool enough_work : {false, true}) {
+                    // Elektron Net chains have no minimum chain work, so "not enough work" cannot occur
+                    if (!enough_work && chainman.MinimumChainWork() == 0) continue;
                     for (const bool tip_recent : {false, true}) {
                         apply(cached_is_ibd, loading_blocks, tip_exists, enough_work, tip_recent);
                         const bool expected_ibd = cached_is_ibd && (loading_blocks || !tip_exists || !enough_work || !tip_recent);
@@ -509,6 +511,8 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_loadblockindex, TestChain100Setup)
     reload_all_block_indexes();
     BOOST_CHECK_EQUAL(cs1.setBlockIndexCandidates.size(), 1);
 
+    std::vector<CBlockIndex*> reset_indexes;
+
     // Reset some region of the chain's nStatus, removing the HAVE_DATA flag.
     for (int i = 0; i <= cs1.m_chain.Height(); ++i) {
         LOCK(::cs_main);
@@ -519,6 +523,7 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_loadblockindex, TestChain100Setup)
             index->nStatus = BlockStatus::BLOCK_VALID_TREE;
             index->nTx = 0;
             index->m_chain_tx_count = 0;
+            reset_indexes.push_back(index);
         }
 
         ++num_indexes;
@@ -547,6 +552,9 @@ BOOST_FIXTURE_TEST_CASE(chainstatemanager_loadblockindex, TestChain100Setup)
     BOOST_CHECK_EQUAL(assumed_tip->nHeight, 120);  // original chain has height 120
     BOOST_CHECK_EQUAL(validated_tip->nHeight, 90); // current cs1 chain has height 90
     BOOST_CHECK_EQUAL(assumed_base->nHeight, 110); // current cs2 chain has height 110
+
+    // LoadBlockIndex() re-reads the on-disk index, so the changes must be persisted
+    WITH_LOCK(::cs_main, static_cast<TestBlockManager&>(chainman.m_blockman).PersistBlockIndex(reset_indexes));
 
     // Regenerate cs1.setBlockIndexCandidates and cs2.setBlockIndexCandidate and
     // check contents below.
@@ -609,6 +617,7 @@ BOOST_FIXTURE_TEST_CASE(loadblockindex_invalid_descendants, TestChain100Setup)
     grand_parent->nStatus = (grand_parent->nStatus | BLOCK_FAILED_VALID);
     parent->nStatus = (parent->nStatus & ~BLOCK_FAILED_VALID) | BLOCK_FAILED_CHILD;
     child->nStatus = (child->nStatus & ~BLOCK_FAILED_VALID);
+    static_cast<TestBlockManager&>(m_node.chainman->m_blockman).PersistBlockIndex({grand_parent, parent, child});
 
     // Reload block index to recompute block status validity flags.
     m_node.chainman->LoadBlockIndex();

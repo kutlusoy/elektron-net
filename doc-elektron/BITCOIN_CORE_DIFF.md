@@ -544,6 +544,7 @@ Service bit **`NODE_SNAPSHOT` (1<<12)** indicates a peer can serve a verified ch
 6. **No full-node archival mode** — history older than 197,280 blocks is not retained network-wide.
 7. For mining / pools, upgrade to software that reads **`coinbase_required_outputs`** (see §10).
 8. For wallets on pruned nodes, expect **UTXO-scan recovery** at load — not full transaction history.
+9. **Upstream security fixes of 2026-10-28** (bitcoin/bitcoin #36667, #36665, #36669) are applied in v4.0.6: send-buffer timeout for paused peers (`net.cpp`), no exceptional-condition polling of paused sockets (`util/sock.cpp`), 64-bit block and undo file positions (`flatfile.*`, `chain.h`, `streams.*`, `util/fs_helpers.*`). Reconcile with upstream when merging newer base commits.
 
 ---
 
