@@ -1593,7 +1593,9 @@ BOOST_AUTO_TEST_CASE(private_broadcast_version_does_not_update_addrman_services)
 BOOST_AUTO_TEST_CASE(inactivity_check_pause_send_timeout)
 {
     SetMockTime(NodeSeconds{1h});
-    const CAddress addr{CService{in_addr{0x01020304}, 8333}, NODE_NONE};
+    in_addr peer_addr;
+    peer_addr.s_addr = htonl(0x01020304);
+    const CAddress addr{CService{peer_addr, 8333}, NODE_NONE};
     CNode node{/*id=*/0,
                /*sock=*/nullptr,
                /*addrIn=*/addr,
