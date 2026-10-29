@@ -387,10 +387,11 @@ ChainstateLoadResult LoadChainstate(ChainstateManager& chainman, const CacheSize
         }
     }
 
-    // Elektron Net: automatic snapshots have no hardcoded assumeutxo data in
-    // chainparams. Background validation would stall forever because historical
+    // Elektron Net: background validation would stall forever because historical
     // blocks older than the snapshot are pruned and unavailable on all peers, so the
-    // pre-snapshot ("historical") chainstate must be abandoned. This used to just
+    // pre-snapshot ("historical") chainstate must be abandoned. This holds for automatic
+    // snapshots (no hardcoded assumeutxo data in chainparams) and for snapshots loaded with
+    // loadtxoutset (hardcoded data) alike. This used to just
     // clear its target block, but that broke ChainstateManager::CurrentChainstate():
     // it picks the *first* chainstate in m_chainstates with no m_target_blockhash, and
     // clearing the historical chainstate's target left BOTH it and the snapshot
@@ -417,7 +418,12 @@ ChainstateLoadResult LoadChainstate(ChainstateManager& chainman, const CacheSize
     bool deleted_historical_cs{false};
     if (assumeutxo_cs) {
         const CBlockIndex* base = assumeutxo_cs->SnapshotBase();
-        if (base && !chainman.GetParams().AssumeutxoForHeight(base->nHeight).has_value()) {
+        // Only a chainstate that already reached a snapshot with a hardcoded entry is kept,
+        // the validation of that snapshot completes below.
+        const bool background_reached_base = base && validated_cs.m_chain.Tip() &&
+                                             validated_cs.m_chain.Tip()->nHeight >= base->nHeight &&
+                                             chainman.GetParams().AssumeutxoForHeight(base->nHeight).has_value();
+        if (base && !background_reached_base) {
             validated_cs.ResetCoinsViews();
             if (!chainman.DeleteChainstate(validated_cs)) {
                 return {ChainstateLoadStatus::FAILURE_FATAL, Untranslated("Couldn't remove abandoned pre-snapshot chainstate.")};

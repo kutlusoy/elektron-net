@@ -11,6 +11,7 @@ The assumeutxo value generated and used here is committed to in
 """
 
 from dataclasses import dataclass
+import shutil
 from test_framework.blocktools import (
         create_block,
 )
@@ -30,6 +31,7 @@ from test_framework.p2p import (
     P2PInterface,
 )
 from test_framework.test_framework import BitcoinTestFramework
+from test_framework.test_node import ErrorMatch
 from test_framework.util import (
     assert_approx,
     assert_equal,
@@ -615,6 +617,23 @@ class AssumeutxoTest(BitcoinTestFramework):
         assert_equal(n0.getblockchaininfo()["blocks"], FINAL_HEIGHT)
         chainstate, = n0.getchainstates()['chainstates']
         assert_equal(chainstate['blocks'], FINAL_HEIGHT)
+
+        self.log.info("Restarting node 1 drops the chainstate below the snapshot")
+        self.stop_node(1)
+        # The node's own automatic snapshots would be taken for newer snapshots to load on startup
+        shutil.rmtree(n1.chain_path / "snapshots")
+        # The indexes cannot continue past the missing blocks below the snapshot
+        n1.assert_start_raises_init_error(
+            extra_args=self.extra_args[1],
+            expected_msg="basic block filter index best block of the index goes beyond pruned data",
+            match=ErrorMatch.PARTIAL_REGEX)
+        self.start_node(1, extra_args=["-fastprune", "-prune=1"])
+        assert_equal(n1.getblockchaininfo()["blocks"], FINAL_HEIGHT)
+        chainstate, = n1.getchainstates()['chainstates']
+        assert_equal(chainstate['blocks'], FINAL_HEIGHT)
+        assert_equal(chainstate['snapshot_blockhash'], dump_output['base_hash'])
+        assert_equal(chainstate['validated'], True)
+        assert 'backgroundvalidation' not in n1.getblockchaininfo()
 
         # Node 2: all indexes + reindex
         # -----------------------------
