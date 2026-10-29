@@ -446,6 +446,7 @@ Legend: **●** = functional change · **○** = branding/docs only · **＋** =
 #### `src/test/miner_tests.cpp` ●
 
 - `CreateNewBlock_validity`: adds UTXO attestation to rebuilt coinbase; re-mines PoW.
+- Known limitation: `CreateNewBlock_validity` still fails. It builds invalid mempool states on purpose (orphan transaction, double-spend pair) and shifts median time and tip height by hand, all with Bitcoin's 10-minute timing. In Elektron Net the UTXO attestation runs before the block validity check, so the orphan and double-spend cases abort in `UpdateCoins` instead of throwing, and the BIP68 case at the end rejects the shifted chain. This affects the test only. The block assembler is unchanged and mines valid blocks. Every other unit test suite passes.
 
 #### `src/test/peerman_tests.cpp` ●
 
