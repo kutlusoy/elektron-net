@@ -2435,6 +2435,42 @@ std::optional<uint256> ComputeBlockUTXOAttestationHash(const CBlock& block, int 
     return stats->hashSerialized;
 }
 
+std::optional<kernel::UTXOMuHashState> ComputeAttestationBaseState(const CBlock& block, int nHeight, CCoinsView& base_view,
+                                                                   const Consensus::Params& params, const kernel::UTXOMuHashState& tip_muhash)
+{
+    if (!IsMuhashAttestationActive(nHeight, params)) return std::nullopt;
+    const bool fix_active = IsIntraBlockAttestationFixActive(nHeight, params);
+    kernel::UTXOMuHashState base{tip_muhash};
+    CCoinsViewCache lookup_view{&base_view};
+    for (size_t t = 1; t < block.vtx.size(); ++t) {
+        const CTransaction& tx = *block.vtx[t];
+        for (const CTxIn& txin : tx.vin) {
+            const Coin& coin = lookup_view.AccessCoin(txin.prevout);
+            if (coin.IsSpent()) return std::nullopt;
+            base.RemoveCoin(txin.prevout, coin);
+            if (fix_active) lookup_view.SpendCoin(txin.prevout);
+        }
+        for (size_t o = 0; o < tx.vout.size(); ++o) {
+            if (tx.vout[o].scriptPubKey.IsUnspendable()) continue;
+            Coin new_coin(tx.vout[o], nHeight, false);
+            base.AddCoin(COutPoint(tx.GetHash(), o), new_coin);
+            if (fix_active) lookup_view.AddCoin(COutPoint(tx.GetHash(), o), std::move(new_coin), false);
+        }
+    }
+    return base;
+}
+
+uint256 AttestationForCoinbase(const kernel::UTXOMuHashState& base, const CTransaction& stripped_coinbase, int nHeight)
+{
+    kernel::UTXOMuHashState state{base};
+    const Txid txid{stripped_coinbase.GetHash()};
+    for (size_t o = 0; o < stripped_coinbase.vout.size(); ++o) {
+        if (stripped_coinbase.vout[o].scriptPubKey.IsUnspendable()) continue;
+        state.AddCoin(COutPoint(txid, o), Coin(stripped_coinbase.vout[o], nHeight, true));
+    }
+    return state.GetHash();
+}
+
 std::optional<uint256> ExtractCoinbaseUTXOAttestation(const CTransaction& coinbase, int nHeight)
 {
     for (const CTxOut& out : coinbase.vout) {

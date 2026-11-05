@@ -136,6 +136,15 @@ inline bool IsIntraBlockAttestationFixActive(int nHeight, const Consensus::Param
  *         instead of a full rescan of the UTXO set. */
 std::optional<uint256> ComputeBlockUTXOAttestationHash(const CBlock& block, int nHeight, CCoinsView& base_view, node::BlockManager& blockman,
                                                          const Consensus::Params& params, const kernel::UTXOMuHashState* tip_muhash);
+/** attestation base state of a block candidate: the tip's MuHash accumulator with
+ *  all non-coinbase transactions of `block` applied (same rules as the incremental path of
+ *  ComputeBlockUTXOAttestationHash, including the intra-block fix gate). Returns std::nullopt before
+ *  the MuHash activation height or if an input cannot be resolved. Existing code paths are unchanged. */
+std::optional<kernel::UTXOMuHashState> ComputeAttestationBaseState(const CBlock& block, int nHeight, CCoinsView& base_view,
+                                                                   const Consensus::Params& params, const kernel::UTXOMuHashState& tip_muhash);
+/** attestation of one coinbase variant on top of a base state. `stripped_coinbase` must not
+ *  contain the attestation output. Equals ComputeBlockUTXOAttestationHash() for the full block. */
+uint256 AttestationForCoinbase(const kernel::UTXOMuHashState& base, const CTransaction& stripped_coinbase, int nHeight);
 /** Parse OP_RETURN UTXO attestation from a coinbase at the expected height. */
 std::optional<uint256> ExtractCoinbaseUTXOAttestation(const CTransaction& coinbase, int nHeight);
 /** Elektron Net: strip block.vtx[0]'s attestation output (if any -- e.g. stale, from an

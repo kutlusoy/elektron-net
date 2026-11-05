@@ -20,7 +20,10 @@
 #include <deploymentstatus.h>
 #include <interfaces/mining.h>
 #include <key_io.h>
+#include <common/args.h>
 #include <logging.h>
+#include <atomic>
+#include <chrono>
 #include <net.h>
 #include <node/context.h>
 #include <node/miner.h>
@@ -1201,6 +1204,242 @@ static RPCMethod submitheader()
     };
 }
 
+
+//! Attestations for many coinbase variants of one block template in a single call (mining pools).
+static RPCMethod getattestationbatch()
+{
+    return RPCMethod{
+        "getattestationbatch",
+        "Builds one block template for the current tip and returns, for every requested\n"
+        "coinbase variant, the UTXO attestation the node would require, plus the finished coinbase. All variants share the same tip and\n"
+        "transaction selection; only the coinbase differs. Attestation is computed with the consensus code of the node and only from\n"
+        "the MuHash activation height on. The result of a variant must be validated like any block, getblocktemplate proposal mode\n"
+        "accepts the assembled candidate.\n"
+        "Per candidate the coinbase is: outputs (values in leptons; at most one output may omit its value and receives the remainder\n"
+        "of the reward), attestation OP_RETURN, witness commitment, tail_outputs. The scriptSig is the template prefix plus script_sig_suffix.",
+        {
+            {"request", RPCArg::Type::OBJ, RPCArg::Optional::NO, "",
+                {
+                    {"candidates", RPCArg::Type::ARR, RPCArg::Optional::NO, "coinbase variants (1 to 4096)",
+                        {
+                            {"candidate", RPCArg::Type::OBJ, RPCArg::Optional::OMITTED, "",
+                                {
+                                    {"outputs", RPCArg::Type::ARR, RPCArg::Optional::NO, "payout outputs", {{"output", RPCArg::Type::OBJ, RPCArg::Optional::OMITTED, "", {{"scriptPubKey", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, ""}, {"value", RPCArg::Type::NUM, RPCArg::Optional::OMITTED, "leptons; omitted = remainder"}}}}},
+                                    {"tail_outputs", RPCArg::Type::ARR, RPCArg::Optional::OMITTED, "outputs after the witness commitment", {{"output", RPCArg::Type::OBJ, RPCArg::Optional::OMITTED, "", {{"scriptPubKey", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, ""}, {"value", RPCArg::Type::NUM, RPCArg::Optional::OMITTED, "leptons, default 0"}}}}},
+                                    {"script_sig_suffix", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED, "bytes appended to the coinbase scriptSig prefix (extranonce)"},
+                                }},
+                        }},
+                }},
+        },
+        RPCResult{RPCResult::Type::ANY, "", "template fields (tip, height, bits, version, curtime, mintime, coinbasevalue, coinbase fields, transactions) and candidates[] with attestation_script, coinbase_txid, coinbase_hex"},
+        RPCExamples{HelpExampleCli("getattestationbatch", "'{\"candidates\":[{\"outputs\":[{\"scriptPubKey\":\"0014...\"}]}]}'")},
+        [](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
+{
+    // At most two calls at a time; further ones fail at once instead of queueing behind cs_main.
+    static std::atomic<int> g_batch_running{0};
+    struct BatchSlot {
+        explicit BatchSlot(std::atomic<int>& c) : m_c{c} { if (m_c.fetch_add(1) >= 2) { m_c.fetch_sub(1); throw JSONRPCError(RPC_MISC_ERROR, "getattestationbatch is busy, try again"); } }
+        ~BatchSlot() { m_c.fetch_sub(1); }
+        std::atomic<int>& m_c;
+    } batch_slot{g_batch_running};
+
+    NodeContext& node = EnsureAnyNodeContext(request.context);
+    if (!EnsureArgsman(node).GetBoolArg("-enableattestationbatch", false)) {
+        throw JSONRPCError(RPC_MISC_ERROR, "getattestationbatch is disabled, start the node with -enableattestationbatch");
+    }
+    ChainstateManager& chainman = EnsureChainman(node);
+    Mining& miner = EnsureMining(node);
+
+    const UniValue& req = request.params[0].get_obj();
+    const UniValue& cands = req.find_value("candidates");
+    if (!cands.isArray()) throw JSONRPCError(RPC_INVALID_PARAMETER, "candidates must be an array");
+    constexpr size_t MAX_BATCH{4096};
+    constexpr size_t MAX_OUTPUTS{1000};
+    // Budgets over the whole request: the cost is per output (MuHash), the memory per script byte.
+    constexpr size_t MAX_TOTAL_OUTPUTS{400000};
+    constexpr size_t MAX_TOTAL_SCRIPT_BYTES{8 * 1024 * 1024};
+    size_t total_outputs{0}, total_script_bytes{0};
+    if (cands.empty() || cands.size() > MAX_BATCH) throw JSONRPCError(RPC_INVALID_PARAMETER, "candidates must hold 1 to 4096 entries");
+
+    struct Out { std::optional<CAmount> value; CScript script; };
+    struct Cand { std::vector<Out> outputs; std::vector<Out> tail; std::vector<unsigned char> suffix; };
+    auto parse_outputs = [&total_outputs, &total_script_bytes](const UniValue& arr, bool allow_remainder) {
+        std::vector<Out> out;
+        if (arr.isNull()) return out;
+        if (!arr.isArray() || arr.size() > MAX_OUTPUTS) throw JSONRPCError(RPC_INVALID_PARAMETER, "outputs must be an array of at most 1000 entries");
+        size_t remainder{0};
+        for (const UniValue& o : arr.getValues()) {
+            if (!o.isObject()) throw JSONRPCError(RPC_INVALID_PARAMETER, "each output must be an object");
+            const UniValue& spk = o.find_value("scriptPubKey");
+            if (!spk.isStr() || !IsHex(spk.get_str())) throw JSONRPCError(RPC_INVALID_PARAMETER, "scriptPubKey must be hex");
+            const std::vector<unsigned char> bytes{ParseHex(spk.get_str())};
+            if (bytes.size() > 10000) throw JSONRPCError(RPC_INVALID_PARAMETER, "scriptPubKey too large");
+            if (++total_outputs > MAX_TOTAL_OUTPUTS || (total_script_bytes += bytes.size()) > MAX_TOTAL_SCRIPT_BYTES) throw JSONRPCError(RPC_INVALID_PARAMETER, "request exceeds the budget of 400000 outputs or 8 MiB of scripts");
+            Out e;
+            e.script = CScript(bytes.begin(), bytes.end());
+            const UniValue& v = o.find_value("value");
+            if (v.isNull()) {
+                if (allow_remainder) {
+                    if (++remainder > 1) throw JSONRPCError(RPC_INVALID_PARAMETER, "at most one output of the main list may omit its value");
+                } else {
+                    e.value = 0;
+                }
+            } else {
+                e.value = v.getInt<int64_t>();
+                if (*e.value < 0 || *e.value > MAX_MONEY) throw JSONRPCError(RPC_INVALID_PARAMETER, "output value out of range");
+            }
+            out.push_back(std::move(e));
+        }
+        return out;
+    };
+    std::vector<Cand> parsed;
+    parsed.reserve(cands.size());
+    for (const UniValue& c : cands.getValues()) {
+        if (!c.isObject()) throw JSONRPCError(RPC_INVALID_PARAMETER, "each candidate must be an object");
+        Cand pc;
+        pc.outputs = parse_outputs(c.find_value("outputs"), /*allow_remainder=*/true);
+        if (pc.outputs.empty()) throw JSONRPCError(RPC_INVALID_PARAMETER, "a candidate needs at least one output");
+        pc.tail = parse_outputs(c.find_value("tail_outputs"), /*allow_remainder=*/false);
+        for (Out& t : pc.tail) if (!t.value) t.value = 0;
+        const UniValue& sfx = c.find_value("script_sig_suffix");
+        if (!sfx.isNull()) {
+            if (!sfx.isStr() || !IsHex(sfx.get_str())) throw JSONRPCError(RPC_INVALID_PARAMETER, "script_sig_suffix must be hex");
+            pc.suffix = ParseHex(sfx.get_str());
+        }
+        parsed.push_back(std::move(pc));
+    }
+
+    // The chainstate snapshot (template, tip, attestation base state) is taken under cs_main; the per-candidate work below runs on copies without the lock.
+    const Consensus::Params& params = chainman.GetParams().GetConsensus();
+    int nHeight{0};
+    int64_t min_time{0};
+    CBlock block;
+    CAmount reward{0};
+    std::vector<CAmount> tx_fees;
+    CScript witness_commitment;
+    std::optional<kernel::UTXOMuHashState> base;
+    std::optional<node::CoinbaseTx> cbinfo_opt;
+    {
+        const auto lock_start{std::chrono::steady_clock::now()};
+        LOCK(::cs_main);
+        Chainstate& chainstate = chainman.ActiveChainstate();
+        const CBlockIndex* tip = chainstate.m_chain.Tip();
+        nHeight = tip->nHeight + 1;
+        if (!IsMuhashAttestationActive(nHeight, params)) throw JSONRPCError(RPC_MISC_ERROR, "unsupported-height: batch attestation needs the MuHash attestation");
+        if (chainman.IsInitialBlockDownload()) throw JSONRPCError(RPC_CLIENT_IN_INITIAL_DOWNLOAD, "node is still syncing");
+
+        // Reserve room in the template for the largest coinbase of this request (upper bound: non-witness bytes at 4 WU plus witness and a margin for the
+        // attestation and witness commitment outputs).
+        size_t max_coinbase_weight{0};
+        for (const Cand& pc : parsed) {
+            size_t bytes{4 + 1 + 32 + 4 + 1 + 100 + 4 + 3 + 4 + (8 + 1 + 40) + (8 + 1 + 38)};
+            for (const Out& o : pc.outputs) bytes += 8 + 3 + o.script.size();
+            for (const Out& o : pc.tail) bytes += 8 + 3 + o.script.size();
+            max_coinbase_weight = std::max(max_coinbase_weight, bytes * 4 + 40);
+        }
+        if (max_coinbase_weight + 400 > MAX_BLOCK_WEIGHT / 2) throw JSONRPCError(RPC_INVALID_PARAMETER, "a coinbase would use more than half of the block weight");
+        const size_t reserved_weight{std::clamp<size_t>(std::max<size_t>(DEFAULT_BLOCK_RESERVED_WEIGHT, max_coinbase_weight + 400), MINIMUM_BLOCK_RESERVED_WEIGHT, MAX_BLOCK_WEIGHT / 2)};
+        std::unique_ptr<BlockTemplate> tmpl{miner.createNewBlock({.block_reserved_weight = reserved_weight, .coinbase_output_script = CScript() << OP_TRUE, .include_dummy_extranonce = true}, /*cooldown=*/false)};
+        if (!tmpl) throw JSONRPCError(RPC_INTERNAL_ERROR, "failed to create a block template");
+        block = tmpl->getBlock();
+        cbinfo_opt = tmpl->getCoinbaseTx();
+        reward = cbinfo_opt->block_reward_remaining;
+        tx_fees = tmpl->getTxFees();
+        min_time = GetMinimumTime(tip, params.DifficultyAdjustmentInterval());
+
+        for (const CTxOut& out : cbinfo_opt->required_outputs) {
+            if (out.scriptPubKey.size() >= 6 && out.scriptPubKey[0] == OP_RETURN && out.scriptPubKey[1] == 0x24 && out.scriptPubKey[2] == 0xaa &&
+                out.scriptPubKey[3] == 0x21 && out.scriptPubKey[4] == 0xa9 && out.scriptPubKey[5] == 0xed) {
+                witness_commitment = out.scriptPubKey;
+            }
+        }
+        if (witness_commitment.empty()) throw JSONRPCError(RPC_INTERNAL_ERROR, "the template has no witness commitment");
+
+        base = ComputeAttestationBaseState(block, nHeight, chainstate.CoinsTip(), params, chainstate.UTXOMuHash());
+        if (!base) throw JSONRPCError(RPC_INTERNAL_ERROR, "attestation-compute-failed");
+        LogDebug(BCLog::RPC, "getattestationbatch: cs_main held for %d ms (%d candidates)\n",
+                 std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - lock_start).count(), parsed.size());
+    }
+    const node::CoinbaseTx& cbinfo{*cbinfo_opt};
+
+    UniValue results(UniValue::VARR);
+    for (const Cand& pc : parsed) {
+        CMutableTransaction cb;
+        cb.version = cbinfo.version;
+        cb.nLockTime = cbinfo.lock_time;
+        cb.vin.resize(1);
+        cb.vin[0].prevout.SetNull();
+        cb.vin[0].nSequence = cbinfo.sequence;
+        CScript sig{cbinfo.script_sig_prefix};
+        sig.insert(sig.end(), pc.suffix.begin(), pc.suffix.end());
+        if (sig.size() < 2 || sig.size() > 100) throw JSONRPCError(RPC_INVALID_PARAMETER, "coinbase scriptSig must be 2 to 100 bytes");
+        cb.vin[0].scriptSig = sig;
+
+        // Checked before the addition, so the sum cannot overflow.
+        CAmount fixed{0};
+        auto add_value = [&](CAmount value) {
+            if (value < 0 || fixed > reward || value > reward - fixed) throw JSONRPCError(RPC_INVALID_PARAMETER, "outputs exceed the block reward of the template");
+            fixed += value;
+        };
+        for (const Out& o : pc.outputs) if (o.value) add_value(*o.value);
+        for (const Out& o : pc.tail) add_value(*o.value);
+        std::vector<CTxOut> head;
+        for (const Out& o : pc.outputs) head.emplace_back(o.value ? *o.value : reward - fixed, o.script);
+
+        CMutableTransaction stripped{cb};
+        stripped.vout = head;
+        stripped.vout.emplace_back(0, witness_commitment);
+        for (const Out& o : pc.tail) stripped.vout.emplace_back(*o.value, o.script);
+        const CTransaction stripped_tx{stripped};
+        if (ExtractCoinbaseUTXOAttestation(stripped_tx, nHeight)) throw JSONRPCError(RPC_INVALID_PARAMETER, "an output has the shape of an attestation output");
+        const uint256 att{AttestationForCoinbase(*base, stripped_tx, nHeight)};
+        const CScript att_script{CScript() << OP_RETURN << nHeight << att};
+
+        cb.vout = head;
+        cb.vout.emplace_back(0, att_script);
+        cb.vout.emplace_back(0, witness_commitment);
+        for (const Out& o : pc.tail) cb.vout.emplace_back(*o.value, o.script);
+        UniValue entry(UniValue::VOBJ);
+        entry.pushKV("attestation_script", HexStr(att_script));
+        entry.pushKV("coinbase_txid", stripped_tx.GetHash().GetHex());
+        entry.pushKV("coinbase_hex", EncodeHexTx(CTransaction{cb}));
+        results.push_back(std::move(entry));
+    }
+
+    UniValue transactions(UniValue::VARR);
+    for (size_t i = 1; i < block.vtx.size(); ++i) {
+        const CTransaction& tx = *block.vtx[i];
+        UniValue e(UniValue::VOBJ);
+        e.pushKV("data", EncodeHexTx(tx));
+        e.pushKV("txid", tx.GetHash().GetHex());
+        e.pushKV("hash", tx.GetWitnessHash().GetHex());
+        e.pushKV("fee", tx_fees.at(i - 1));
+        e.pushKV("weight", GetTransactionWeight(tx));
+        transactions.push_back(std::move(e));
+    }
+
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("tip", block.hashPrevBlock.GetHex());
+    result.pushKV("height", nHeight);
+    result.pushKV("version", block.nVersion);
+    result.pushKV("bits", strprintf("%08x", block.nBits));
+    result.pushKV("target", arith_uint256().SetCompact(block.nBits).GetHex());
+    result.pushKV("curtime", block.GetBlockTime());
+    result.pushKV("mintime", min_time);
+    result.pushKV("coinbasevalue", reward);
+    result.pushKV("coinbase_version", static_cast<int64_t>(cbinfo.version));
+    result.pushKV("coinbase_sequence", static_cast<int64_t>(cbinfo.sequence));
+    result.pushKV("coinbase_locktime", static_cast<int64_t>(cbinfo.lock_time));
+    result.pushKV("coinbase_script_sig_prefix", HexStr(cbinfo.script_sig_prefix));
+    result.pushKV("witness_commitment_script", HexStr(witness_commitment));
+    if (cbinfo.witness) result.pushKV("coinbase_witness", cbinfo.witness->GetHex());
+    result.pushKV("transactions", std::move(transactions));
+    result.pushKV("candidates", std::move(results));
+    return result;
+},
+    };
+}
+
 void RegisterMiningRPCCommands(CRPCTable& t)
 {
     static const CRPCCommand commands[]{
@@ -1209,6 +1448,7 @@ void RegisterMiningRPCCommands(CRPCTable& t)
         {"mining", &prioritisetransaction},
         {"mining", &getprioritisedtransactions},
         {"mining", &getblocktemplate},
+        {"mining", &getattestationbatch},
         {"mining", &submitblock},
         {"mining", &submitheader},
 

@@ -108,6 +108,7 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "walletpassphrase", 0, "passphrase", ParamFormat::STRING },
     { "walletpassphrase", 1, "timeout" },
     { "getblocktemplate", 0, "template_request" },
+    { "getattestationbatch", 0, "request" },
     { "listsinceblock", 0, "blockhash", ParamFormat::STRING },
     { "listsinceblock", 1, "target_confirmations" },
     { "listsinceblock", 2, "include_watchonly" },
