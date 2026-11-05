@@ -8,7 +8,7 @@ Test the getattestationbatch RPC.
 The RPC builds one block template and returns, for every requested coinbase variant,
 the UTXO attestation and the finished coinbase. Every block assembled from the response
 must be accepted by the regular validation path, so the test submits each one to a
-second node that runs without the option (and therefore only validates), and compares
+second node that only validates (it never calls the RPC), and compares
 the active chain tip and the UTXO set hash of both nodes afterwards. A block whose
 attestation was altered must be rejected by both nodes.
 """
@@ -33,7 +33,6 @@ class GetAttestationBatchTest(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 2
         self.setup_clean_chain = True
-        self.extra_args = [[], ["-enableattestationbatch=1"]]
 
     def assemble(self, bt, cand):
         block = CBlock()
@@ -55,9 +54,6 @@ class GetAttestationBatchTest(BitcoinTestFramework):
     def run_test(self):
         validator, builder = self.nodes
         wallet = MiniWallet(builder)
-
-        self.log.info("The RPC is off by default")
-        assert_raises_rpc_error(-1, "disabled", validator.getattestationbatch, self.request([{"scriptPubKey": P2WPKH[0].hex()}]))
 
         self.log.info("Mine past the activation heights and coinbase maturity")
         self.generate(wallet, 130)

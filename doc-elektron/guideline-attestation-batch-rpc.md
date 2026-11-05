@@ -17,11 +17,9 @@ Every coinbase of this chain carries a UTXO attestation. A pool that pays severa
 
 The RPC does not change consensus, block validation or any existing RPC. A block assembled from its response is validated by the normal path (`submitblock`) like any other block, and every node accepts it without having this RPC.
 
-## 2. Activation
+## 2. Availability
 
-The RPC is off by default. It is enabled with `-enableattestationbatch=1`; without the option every call fails with "getattestationbatch is disabled". It is only available from the MuHash attestation activation height on and not during initial block download.
-
-Access control is the one of the RPC server: authenticate (cookie or `rpcauth`), do not expose the RPC port beyond the pool host, and use `rpcwhitelist` to limit a pool user to the methods it needs.
+The RPC is always available and costs nothing while nobody calls it: no background work runs. It is only usable from the MuHash attestation activation height on and not during initial block download. It is a mining RPC like `getblocktemplate`; limit who may call it with the usual RPC access control (authenticate with cookie or `rpcauth`, do not expose the RPC port beyond the pool host, use `rpcwhitelist` to limit a pool user to the methods it needs).
 
 ## 3. Request and response
 
@@ -44,7 +42,7 @@ Response: the template fields (`tip`, `height`, `version`, `bits`, `target`, `cu
 
 ## 5. Tests
 
-`test/functional/rpc_getattestationbatch.py` starts two nodes, one with the option and one without. Blocks assembled from the response (single output, remainder, tail outputs, many outputs with a scriptSig suffix, a template with a dependent transaction pair) must be accepted by the node without the option, and both nodes must end with the same tip and the same UTXO set hash. A block with an altered attestation must be rejected. Invalid requests, the limits and the largest allowed batch are covered as well.
+`test/functional/rpc_getattestationbatch.py` starts two nodes, one that calls the RPC and one that only validates. Blocks assembled from the response (single output, remainder, tail outputs, many outputs with a scriptSig suffix, a template with a dependent transaction pair) must be accepted by the node that only validates, and both nodes must end with the same tip and the same UTXO set hash. A block with an altered attestation must be rejected. Invalid requests, the limits and the largest allowed batch are covered as well.
 
 ## 6. Checklist
 
@@ -52,7 +50,3 @@ Response: the template fields (`tip`, `height`, `version`, `bits`, `target`, `cu
 - [ ] Sanitizer run (ASan, UBSan) of the functional test.
 - [ ] Measurement of the `cs_main` hold time and CPU cost on a mainnet sized UTXO set.
 - [ ] Decision whether `ComputeAttestationBaseState` should share code with `ComputeBlockUTXOAttestationHash` instead of repeating its rules.
-
-## 7. Open Questions
-
-1. Should the option stay off by default permanently, or be enabled once the review and the load measurement are done?

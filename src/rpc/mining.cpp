@@ -20,7 +20,6 @@
 #include <deploymentstatus.h>
 #include <interfaces/mining.h>
 #include <key_io.h>
-#include <common/args.h>
 #include <logging.h>
 #include <atomic>
 #include <chrono>
@@ -1244,9 +1243,6 @@ static RPCMethod getattestationbatch()
     } batch_slot{g_batch_running};
 
     NodeContext& node = EnsureAnyNodeContext(request.context);
-    if (!EnsureArgsman(node).GetBoolArg("-enableattestationbatch", false)) {
-        throw JSONRPCError(RPC_MISC_ERROR, "getattestationbatch is disabled, start the node with -enableattestationbatch");
-    }
     ChainstateManager& chainman = EnsureChainman(node);
     Mining& miner = EnsureMining(node);
 
