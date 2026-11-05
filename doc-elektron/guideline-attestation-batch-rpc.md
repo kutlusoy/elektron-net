@@ -5,7 +5,7 @@
 - **Audience:** Node operators, mining pool developers
 - **Reference implementation:** [`elektron-net`](https://github.com/kutlusoy/elektron-net) - `src/rpc/mining.cpp` (`getattestationbatch`), `src/validation.cpp` (`ComputeAttestationBaseState`, `AttestationForCoinbase`), `test/functional/rpc_getattestationbatch.py` - treat as ground truth for anything the doc references
 - **Consumer:** [`elektron-net-photonpool`](https://github.com/kutlusoy/elektron-net-photonpool)
-- **See also:** [`CHANGELOG-muhash-attestation.md`](./CHANGELOG-muhash-attestation.md)
+- **See also:** [`CHANGELOG-attestation-batch-rpc.md`](./CHANGELOG-attestation-batch-rpc.md), [`CHANGELOG-muhash-attestation.md`](./CHANGELOG-muhash-attestation.md)
 
 ---
 
@@ -47,6 +47,6 @@ Response: the template fields (`tip`, `height`, `version`, `bits`, `target`, `cu
 ## 6. Checklist
 
 - [ ] Independent review of the RPC and the two helper functions.
-- [ ] Sanitizer run (ASan, UBSan) of the functional test.
+- [x] Sanitizer run (ASan, UBSan) of the functional test: built with `-DSANITIZERS=address,undefined` (RelWithDebInfo, `-O1`, wallet off), `rpc_getattestationbatch.py` and `feature_utxo_attestation_intra_block_chain.py` passed, `ASAN_OPTIONS=detect_leaks=0`, no report. The same node also passed the limit, acceptance and end-to-end tests of `elektron-net-photonpool` (4096 candidates, parallel calls, blocks of a real pool accepted by a node without the RPC). Not covered: leak detection and a coverage guided fuzzer.
 - [ ] Measurement of the `cs_main` hold time and CPU cost on a mainnet sized UTXO set.
 - [ ] Decision whether `ComputeAttestationBaseState` should share code with `ComputeBlockUTXOAttestationHash` instead of repeating its rules.

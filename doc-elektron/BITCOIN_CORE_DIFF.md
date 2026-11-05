@@ -141,6 +141,7 @@ Defined in `src/protocol.h`; handlers in `src/net_processing.cpp`.
 |----------|------|---------|
 | `ComputeBlockUTXOAttestationHash()` | `src/validation.cpp` | Return UTXO attestation hash: full rescan pre-activation, incremental MuHash clone post-activation |
 | `ExtractCoinbaseUTXOAttestation()` | `src/validation.cpp` | Parse `OP_RETURN` attestation from coinbase at height |
+| `ComputeAttestationBaseState()` / `AttestationForCoinbase()` | `src/validation.cpp` | RPC helpers: attestation base state of a candidate block and the attestation of one coinbase variant on top of it (used only by `getattestationbatch`, no consensus path calls them) |
 | `ValidateUTXOCheckpoint()` | `src/validation.cpp` | Consensus: verify coinbase attestation every block |
 | `Chainstate::EnsureUTXOMuHashLoaded()` / `Chainstate::UTXOMuHash()` | `src/validation.h/.cpp` | Lazy-load (or one-time rebuild) and expose the persistent MuHash accumulator |
 | `kernel::UTXOMuHashState` | `src/kernel/utxo_muhash.h` | Incrementally-maintained MuHash commitment to the full UTXO set |
@@ -501,6 +502,10 @@ Miners **must** append these outputs (order preserved with witness rules).
 | Submitted block missing attestation | Rejected: `missing-utxo-attestation` |
 | Wrong attestation hash | Rejected: `bad-utxo-attestation` |
 | Stale GBT template (old hash) | Rejected after tip moved — **fetch fresh GBT every block** |
+
+### `getattestationbatch` (new RPC)
+
+Mining pools: one block template and one attestation per requested coinbase variant (1 to 4096) in a single call, instead of one `getblocktemplate` call per payout script. Always available, does no work unless called, adds only code. Limits and tests: `doc-elektron/guideline-attestation-batch-rpc.md`, `doc-elektron/CHANGELOG-attestation-batch-rpc.md`.
 
 ### Unchanged RPC ports
 
