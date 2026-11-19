@@ -187,6 +187,17 @@ static_assert(INVENTORY_BROADCAST_MAX >= INVENTORY_BROADCAST_TARGET, "INVENTORY_
 static_assert(INVENTORY_BROADCAST_MAX <= node::MAX_PEER_TX_ANNOUNCEMENTS, "INVENTORY_BROADCAST_MAX too high");
 /** Average delay between feefilter broadcasts in seconds. */
 static constexpr auto AVG_FEEFILTER_BROADCAST_INTERVAL{10min};
+/** Elektron Net: minimum interval between snapshot advertisements (responses to
+ *  GETUTXOSNAPSHOT) we serve to the same peer. A node only sends
+ *  GETUTXOSNAPSHOT at most every 60 s (m_last_snapshot_request), so anything
+ *  more frequent is spam; each advertisement costs a snapshot-directory scan
+ *  and a .hash sidecar read. */
+static constexpr auto SNAPSHOT_ADVERT_INTERVAL{30s};
+/** Elektron Net: minimum interval between snapshot data chunks (responses to
+ *  GETSNAPSHOTDATA) we serve to the same peer. The chunk request loop asks each
+ *  peer at most every 10 s, so this leaves a wide margin below legitimate use
+ *  while bounding the per-peer read amplification. */
+static constexpr auto SNAPSHOT_CHUNK_SERVE_INTERVAL{2s};
 /** Maximum feefilter broadcast delay after significant change. */
 static constexpr auto MAX_FEEFILTER_CHANGE_DELAY{5min};
 /** Maximum number of compact filters that may be requested with one getcfilters. See BIP 157. */
@@ -402,6 +413,11 @@ struct Peer {
 
     /** Time of the last getheaders message to this peer */
     NodeClock::time_point m_last_getheaders_timestamp GUARDED_BY(NetEventsInterface::g_msgproc_mutex){};
+
+    /** Elektron Net: time of the last snapshot advertisement we served to this peer */
+    NodeClock::time_point m_last_snapshot_advertised GUARDED_BY(NetEventsInterface::g_msgproc_mutex){};
+    /** Elektron Net: time of the last snapshot data chunk we served to this peer */
+    NodeClock::time_point m_last_snapshot_chunk_served GUARDED_BY(NetEventsInterface::g_msgproc_mutex){};
 
     /** Protects m_headers_sync **/
     Mutex m_headers_sync_mutex;
@@ -5346,6 +5362,19 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
         vRecv >> checkpoint_hash;
         LogDebug(BCLog::NET, "Received getutxosnapshot for %s from peer=%d\n",
                  checkpoint_hash.ToString(), pfrom.GetId());
+        // Elektron Net: per-peer rate limit, checked before any validation work
+        // or filesystem access (directory scan + .hash sidecar read). The
+        // timestamp is consumed on every request, not only on successful
+        // service, so repeated requests for an unknown checkpoint cannot
+        // bypass the limit.
+        {
+            const auto now = NodeClock::now();
+            if (now - peer.m_last_snapshot_advertised < SNAPSHOT_ADVERT_INTERVAL) {
+                LogDebug(BCLog::NET, "Rate-limiting getutxosnapshot from peer=%d\n", pfrom.GetId());
+                return;
+            }
+            peer.m_last_snapshot_advertised = now;
+        }
         // LookupBlockIndex() requires cs_main; this handler previously called it
         // unlocked, which asserts and crashes the process (see
         // doc-elektron/CHANGELOG-muhash-attestation.md for the live-tested repro).
@@ -5470,6 +5499,18 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
         vRecv >> checkpoint_hash >> offset >> length;
         static constexpr uint32_t MAX_SNAPSHOT_CHUNK = 1 * 1024 * 1024;
         if (length > MAX_SNAPSHOT_CHUNK) length = MAX_SNAPSHOT_CHUNK;
+        // Elektron Net: per-peer rate limit, checked before the directory scan
+        // and file read. The timestamp is consumed on every request, not only
+        // on successful service, so repeated requests for an unknown checkpoint
+        // cannot bypass the limit.
+        {
+            const auto now = NodeClock::now();
+            if (now - peer.m_last_snapshot_chunk_served < SNAPSHOT_CHUNK_SERVE_INTERVAL) {
+                LogDebug(BCLog::NET, "Rate-limiting getsnapshotdata from peer=%d\n", pfrom.GetId());
+                return;
+            }
+            peer.m_last_snapshot_chunk_served = now;
+        }
         auto maybe_path = FindSnapshotFile(checkpoint_hash);
         if (maybe_path) {
             uint64_t file_size = 0;
