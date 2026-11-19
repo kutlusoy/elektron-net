@@ -1808,11 +1808,15 @@ void PeerManagerImpl::FinalizeNode(const CNode& node)
 
     m_node_states.erase(nodeid);
 
-    // Elektron Net: clean up snapshot peer tracking
+    // Elektron Net: clean up snapshot peer tracking. Remove the peer's edge and
+    // drop the per-checkpoint entry entirely once its last peer is gone, so
+    // entries for checkpoints nobody advertises anymore don't accumulate for
+    // the lifetime of the process.
     {
         LOCK(m_snapshot_download_mutex);
-        for (auto& [hash, peers] : m_snapshot_peers) {
-            peers.erase(nodeid);
+        for (auto it = m_snapshot_peers.begin(); it != m_snapshot_peers.end(); ) {
+            it->second.erase(nodeid);
+            it = it->second.empty() ? m_snapshot_peers.erase(it) : std::next(it);
         }
     }
 
@@ -2185,7 +2189,16 @@ void PeerManagerImpl::MaybeRequestSnapshot()
         LOCK(m_snapshot_download_mutex);
         auto now_steady = std::chrono::steady_clock::now();
         for (auto it = m_snapshot_downloads.begin(); it != m_snapshot_downloads.end(); ) {
-            if (it->second.completed) { ++it; continue; }
+            if (it->second.completed) {
+                // Elektron Net: completed entries are normally erased right after the
+                // file rename; sweep up leftovers (e.g. rename failed) so they don't
+                // accumulate. If the snapshot file is actually missing,
+                // MaybeRequestSnapshot re-requests it below.
+                LogDebug(BCLog::NET, "Erasing completed snapshot download tracker for %s\n",
+                         it->first.ToString());
+                it = m_snapshot_downloads.erase(it);
+                continue;
+            }
             if (now_steady - it->second.last_progress_time > std::chrono::minutes{30}) {
                 LogWarning("[snapshot] Download for %s stalled (>30 min no progress), discarding and retrying.\n",
                            it->first.ToString());
@@ -5532,13 +5545,25 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
                                        checkpoint_hash.ToString());
                         } else {
                             it->second.completed = true;
+                            bool renamed = false;
                             try {
                                 fs::rename(it->second.temp_path, it->second.final_path);
+                                renamed = true;
                                 LogInfo("[snapshot] Download complete for %s -> %s\n",
                                         checkpoint_hash.ToString(), fs::PathToString(it->second.final_path));
                             } catch (const fs::filesystem_error& e) {
                                 LogWarning("[snapshot] Failed to rename downloaded snapshot: %s\n", e.what());
                             }
+                            // Elektron Net: the tracker entry has served its purpose once
+                            // the file is in place; erase it so completed downloads don't
+                            // accumulate for the lifetime of the process. Re-advertisements
+                            // cannot re-initialize a download (final_path existence check in
+                            // the UTXOSNAPSHOT handler), and MaybeRequestSnapshot falls back
+                            // to FindSnapshotFile() rather than the tracker when deciding
+                            // what to request. If the rename failed, the sweep in
+                            // MaybeRequestSnapshot cleans the entry up and a retry resumes
+                            // from the existing temp file.
+                            if (renamed) m_snapshot_downloads.erase(it);
                         }
                     }
                 }
