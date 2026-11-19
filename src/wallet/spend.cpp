@@ -19,6 +19,7 @@
 #include <script/script.h>
 #include <script/signingprovider.h>
 #include <script/solver.h>
+#include <tuple>
 #include <util/check.h>
 #include <util/moneystr.h>
 #include <util/rbf.h>
@@ -339,21 +340,24 @@ CoinsResult AvailableCoins(const CWallet& wallet,
     std::vector<COutPoint> outpoints;
 
     std::set<Txid> trusted_parents;
-    // Cache for whether each tx passes the tx level checks (first bool), and whether the transaction is "safe" (second bool)
-    std::unordered_map<Txid, std::pair<bool, bool>, SaltedTxidHasher> tx_safe_cache;
+    // Cache for whether each tx passes the tx level checks (first bool), whether the transaction is "safe" (second bool),
+    // and the tx's depth in the main chain (third int).
+    std::unordered_map<Txid, std::tuple<bool, bool, int>, SaltedTxidHasher> tx_safe_cache;
     for (const auto& [outpoint, txo] : wallet.GetTXOs()) {
         const CWalletTx& wtx = txo.GetWalletTx();
         const CTxOut& output = txo.GetTxOut();
 
-        if (tx_safe_cache.contains(outpoint.hash) && !tx_safe_cache.at(outpoint.hash).first) {
+        if (tx_safe_cache.contains(outpoint.hash) && !std::get<0>(tx_safe_cache.at(outpoint.hash))) {
             continue;
         }
 
-        int nDepth = wallet.GetTxDepthInMainChain(wtx);
-
         // Perform tx level checks if we haven't already come across outputs from this tx before.
         if (!tx_safe_cache.contains(outpoint.hash)) {
-            tx_safe_cache[outpoint.hash] = {false, false};
+            // Elektron Net: depth (and its underlying block-index lookup) is per-tx,
+            // not per-outpoint — compute it once here and cache it alongside the
+            // tx-level verdicts.
+            int nDepth = wallet.GetTxDepthInMainChain(wtx);
+            tx_safe_cache[outpoint.hash] = {false, false, nDepth};
 
             if (wallet.IsTxImmatureCoinBase(wtx) && !params.include_immature_coinbase)
                 continue;
@@ -422,9 +426,9 @@ CoinsResult AvailableCoins(const CWallet& wallet,
                 continue;
             }
 
-            tx_safe_cache[outpoint.hash] = {true, safeTx};
+            tx_safe_cache[outpoint.hash] = {true, safeTx, nDepth};
         }
-        const auto& [tx_ok, tx_safe] = tx_safe_cache.at(outpoint.hash);
+        const auto& [tx_ok, tx_safe, nDepth] = tx_safe_cache.at(outpoint.hash);
         if (!Assume(tx_ok)) {
             continue;
         }

@@ -209,7 +209,12 @@ bool CachedTxIsTrusted(const CWallet& wallet, const CWalletTx& wtx, std::set<Txi
     // This wtx is already trusted
     if (trusted_parents.contains(wtx.GetHash())) return true;
 
-    if (wtx.isConfirmed()) return true;
+    // Elektron Net: a recorded TxStateConfirmed may point at a block that has left
+    // the active chain (see CWallet::GetTxDepthInMainChain). Require the block to
+    // actually be in the active chain before trusting the tx. Depth > 0 is exactly
+    // equivalent to "in active chain" for a confirmed tx, and shares the
+    // block-index lookup with the caller's own GetTxDepthInMainChain call.
+    if (wtx.isConfirmed() && wallet.GetTxDepthInMainChain(wtx) > 0) return true;
     if (wtx.isBlockConflicted()) return false;
     // using wtx's cached debit
     if (!wallet.m_spend_zero_conf_change || !CachedTxIsFromMe(wallet, wtx)) return false;
