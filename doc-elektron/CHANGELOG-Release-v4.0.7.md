@@ -15,6 +15,12 @@ Elektron Net is based on a Bitcoin Core version in the affected range (29.0 and 
 - **Impact**: a peer could send an orphan with thousands of missing parents and then an `inv` that repeats its wtxid 50,000 times. Each such message stalled the node for over a dozen seconds, during which it processed no messages from other peers, including blocks. Severity: Medium.
 - **Fix**: the `INV` handler in `src/net_processing.cpp` now processes each transaction hash announced in one message only once, as upstream Bitcoin Core does in 30.5, 31.3 and 32.1 (disclosure: https://bitcoincore.org/en/2026/11/20/disclose-orphan-inv-stall/). No change to relay behavior for honest peers and no consensus change.
 
+## Node: use-after-free in script checks (CVE-2024-52911)
+
+`ConnectBlock()` in `src/validation.cpp` declared the `CCheckQueueControl` before the vector of `PrecomputedTransactionData`. The vector was therefore destroyed first, and on an early return from an invalid block a background script check thread could still read the freed data. Exploiting it needs a block with valid proof of work at the tip. Severity: High.
+
+- **Fix**: `txsdata` is declared before `control`, so the control (which waits for the checks) is destroyed first, as in Bitcoin Core 29.0. No consensus change.
+
 ## Connected repositories
 
 The node version is raised on branch `4.0.7` in the repositories that bundle or build `elektrond`:
