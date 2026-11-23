@@ -21,6 +21,17 @@ Elektron Net is based on a Bitcoin Core version in the affected range (29.0 and 
 
 - **Fix**: `txsdata` is declared before `control`, so the control (which waits for the checks) is destroyed first, as in Bitcoin Core 29.0. No consensus change.
 
+## Node: backported upstream hardening
+
+Small fixes from Bitcoin Core master (merged between May and November 2026) that do not touch consensus rules, the UTXO attestation, the MuHash state or the pruning depth. None of them changes the validity of a block, the attestation hash or the retained block window.
+
+- **Corrupt coin database no longer invalidates blocks** (bitcoin/bitcoin#34931): `CCoinsViewDB::GetCoin()` used to treat a coin record that cannot be deserialized as a missing coin. A node with a damaged chainstate then marked valid blocks as `bad-txns-inputs-missingorspent` and forked itself off permanently. A deserialization or database error is now thrown as `dbwrapper_error`, which makes `CCoinsViewErrorCatcher` shut the node down cleanly. `CDBWrapper::TryRead()` is the new building block, `Read()` keeps its behavior.
+- **Duplicate entries in `m_blocks_unlinked`** (#35070, #35168): the same block could be added twice and then re-added to `setBlockIndexCandidates` with a changed `nSequenceId`, which breaks the ordering of that set (undefined behavior). `BlockManager::AddUnlinkedBlock()` rejects duplicates, and pruned blocks without data are no longer added at startup. This matters for Elektron Net because every node is pruned.
+- **`FetchBlock()` takes `cs_main` before looking up the peer** (#35498), which closes an assertion failure when a peer disconnects during the `getblockfrompeer` RPC.
+- **Compact blocks**: an invalid compact block in the optimistic reconstruction path is now punished as misbehavior (#35321), and a `sendcmpct` with an announce field above 1 is rejected (#35550).
+- **Integer overflows**: saturating `nScore` for local addresses (#34028), `int` cast in `ProcessGetCFCheckPt` (#36321), `int64_t` accumulator for the package weight (#36535).
+- **Mempool memory accounting** includes the unbroadcast set (#35923).
+
 ## Connected repositories
 
 The node version is raised on branch `4.0.7` in the repositories that bundle or build `elektrond`:
