@@ -15,6 +15,15 @@ Elektron Net is based on a Bitcoin Core version in the affected range (29.0 and 
 - **Impact**: a peer could send an orphan with thousands of missing parents and then an `inv` that repeats its wtxid 50,000 times. Each such message stalled the node for over a dozen seconds, during which it processed no messages from other peers, including blocks. Severity: Medium.
 - **Fix**: the `INV` handler in `src/net_processing.cpp` now processes each transaction hash announced in one message only once, as upstream Bitcoin Core does in 30.5, 31.3 and 32.1 (disclosure: https://bitcoincore.org/en/2026/11/20/disclose-orphan-inv-stall/). No change to relay behavior for honest peers and no consensus change.
 
+## Connected repositories
+
+The node version is raised on branch `4.0.7` in the repositories that bundle or build `elektrond`:
+
+- `elektron-net-startos`: `VERSION` build argument and the package version (`4.0.7:0`).
+- `elektron-net-photonpool`: `NODE` in `src/version.rs`.
+- `elektron-net-pool`: `version` in `package.json`.
+- `elektron-net-mobile`: README references node `v4.0.7`. The node version of the app comes from the release tag (`v4.0.7-m<wallet version>`), the tag `v4.0.7` must exist in this repository before the app and the StartOS package are built.
+
 ## Version
 
 `CLIENT_VERSION_BUILD` bumped from 6 to 7 in `CMakeLists.txt`
