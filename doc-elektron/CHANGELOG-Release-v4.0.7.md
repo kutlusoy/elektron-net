@@ -32,6 +32,10 @@ Small fixes from Bitcoin Core master (merged between May and November 2026) that
 - **Integer overflows**: saturating `nScore` for local addresses (#34028), `int` cast in `ProcessGetCFCheckPt` (#36321), `int64_t` accumulator for the package weight (#36535).
 - **Mempool memory accounting** includes the unbroadcast set (#35923).
 
+## Node: private broadcast keeps the proxy on v2 to v1 reconnection
+
+With `-privatebroadcast`, a failed BIP324 v2 handshake made the node retry the connection as v1 directly, without the proxy, which revealed the sender's IP address to the recipient (bitcoin/bitcoin#35410). The proxy override of the first attempt is now kept for the v1 retry, and a private broadcast connection is never opened directly. The option is off by default.
+
 ## Connected repositories
 
 The node version is raised on branch `4.0.7` in the repositories that bundle or build `elektrond`:
@@ -40,6 +44,11 @@ The node version is raised on branch `4.0.7` in the repositories that bundle or 
 - `elektron-net-photonpool`: `NODE` in `src/version.rs`.
 - `elektron-net-pool`: `version` in `package.json`.
 - `elektron-net-mobile`: README references node `v4.0.7`. The node version of the app comes from the release tag (`v4.0.7-m<wallet version>`), the tag `v4.0.7` must exist in this repository before the app and the StartOS package are built.
+
+## Open items
+
+- **Wallet rebroadcast can reveal the node behind an address** (disclosed on Delving Bitcoin, November 25, 2026): a tiny payment with the minimum fee to a previously used address is rebroadcast after about a day only by the node whose wallet watches that address, which identifies its IP. `CWallet::ResubmitWalletTransactions()` with `MEMPOOL_AND_BROADCAST_TO_ALL` has the same behavior as upstream. Watch bitcoin/bitcoin#36482 (rebroadcast only newly added mempool transactions), which is not merged yet. Until then `-walletbroadcast=0` is the workaround, at the price that the wallet no longer rebroadcasts its own transactions. Check whether a transaction can stay unconfirmed for a day on a 60 second chain with the current miner fee floor.
+- Check the Bitcoin Core security advisories and the upstream merges after November 21, 2026 again before the release.
 
 ## Version
 
